@@ -396,6 +396,44 @@ export function SettingsPage() {
           />
         </div>
 
+        <div className="setting-row">
+          <div className="setting-copy">
+            <label>
+              <Globe size={13} /> 浏览器链接捕获
+            </label>
+            <p>
+              安装 Chrome / Edge 扩展后，右键“用 FluxDL 下载”或自动接管浏览器下载（本地端口
+              35917）
+            </p>
+          </div>
+          <div className="setting-control">
+            <button
+              className="ghost-button"
+              disabled={!isTauri}
+              onClick={async () => {
+                try {
+                  await backend.openExtensionFolder();
+                  pushToast("已打开扩展目录，按下方提示加载到浏览器", "info");
+                } catch (error) {
+                  pushToast(`打开扩展目录失败：${error}`, "error");
+                }
+              }}
+            >
+              <FolderOpen size={14} />
+              打开扩展目录
+            </button>
+          </div>
+        </div>
+
+        <div className="tip-card">
+          <Globe size={15} />
+          <p>
+            安装方式：打开 <code>chrome://extensions</code>（Edge 为{" "}
+            <code>edge://extensions</code>）→ 开启“开发者模式” → “加载已解压的扩展程序” →
+            选择上面打开的文件夹。
+          </p>
+        </div>
+
         <div className="setting-row inline">
           <div className="setting-copy">
             <label>关闭窗口时留在托盘</label>

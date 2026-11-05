@@ -39,6 +39,9 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../browser-extension": "browser-extension/"
+    },
     "shortDescription": "更顺手的桌面下载器",
     "longDescription": "FluxDL 迅流下载器：多线程 HTTP 下载、断点续传、队列、限速、视频下载与命令面板。",
     "windows": {

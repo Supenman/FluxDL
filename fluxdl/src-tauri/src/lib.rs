@@ -1,7 +1,11 @@
-use fluxdl_engine::{Engine, EngineEvent, EngineOptions, EngineInfo, NewTaskOptions, TaskKind, TaskView};
-use serde::Serialize;
+use fluxdl_engine::{Engine, EngineOptions, EngineInfo, NewTaskOptions, TaskKind, TaskView};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
@@ -49,38 +53,53 @@ async fn add_tasks(
 }
 
 #[tauri::command]
-async fn pause_task(state: State<'_, AppState>, id: String) {
+async fn pause_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.engine.pause(&id).await;
+    Ok(())
 }
 
 #[tauri::command]
-async fn resume_task(state: State<'_, AppState>, id: String) {
+async fn resume_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.engine.resume(&id).await;
+    Ok(())
 }
 
 #[tauri::command]
-async fn retry_task(state: State<'_, AppState>, id: String) {
+async fn retry_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.engine.retry(&id).await;
+    Ok(())
 }
 
 #[tauri::command]
-async fn remove_task(state: State<'_, AppState>, id: String, delete_file: bool) {
+async fn remove_task(
+    state: State<'_, AppState>,
+    id: String,
+    delete_file: bool,
+) -> Result<(), String> {
     state.engine.remove(&id, delete_file).await;
+    Ok(())
 }
 
 #[tauri::command]
-async fn pause_all(state: State<'_, AppState>) {
+async fn pause_all(state: State<'_, AppState>) -> Result<(), String> {
     state.engine.pause_all().await;
+    Ok(())
 }
 
 #[tauri::command]
-async fn resume_all(state: State<'_, AppState>) {
+async fn resume_all(state: State<'_, AppState>) -> Result<(), String> {
     state.engine.resume_all().await;
+    Ok(())
 }
 
 #[tauri::command]
-async fn set_task_speed_limit(state: State<'_, AppState>, id: String, limit: Option<u64>) {
+async fn set_task_speed_limit(
+    state: State<'_, AppState>,
+    id: String,
+    limit: Option<u64>,
+) -> Result<(), String> {
     state.engine.set_speed_limit(&id, limit).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -147,7 +166,6 @@ async fn probe_binary(binary: &str, args: &[&str]) -> bool {
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
@@ -204,6 +222,276 @@ async fn open_path(path: String) -> Result<(), String> {
 #[tauri::command]
 async fn open_file(path: String) -> Result<(), String> {
     opener::open(path).map_err(|e| e.to_string())
+}
+
+fn extension_dir(app: &AppHandle) -> PathBuf {
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let dir = resource_dir.join("browser-extension");
+        if dir.exists() {
+            return dir;
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension");
+        if dev.exists() {
+            return dev;
+        }
+    }
+    PathBuf::from(".")
+}
+
+#[tauri::command]
+fn open_extension_folder(app: AppHandle) -> Result<(), String> {
+    let dir = extension_dir(&app);
+    if !dir.exists() {
+        return Err("未找到浏览器扩展目录，请重新安装 FluxDL".into());
+    }
+    opener::open(&dir).map_err(|e| e.to_string())
+}
+
+const CAPTURE_PORT: u16 = 35917;
+const CAPTURE_TOKEN: &str = "fluxdl-local-v1";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureRequest {
+    url: String,
+    #[serde(default)]
+    filename: Option<String>,
+    #[serde(default)]
+    referer: Option<String>,
+    #[serde(default)]
+    user_agent: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> Option<HttpRequest> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos;
+        }
+        let n = stream.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > 1 << 20 {
+            return None;
+        }
+    };
+
+    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+    let mut lines = head.lines();
+    let mut request_line = lines.next()?.split_whitespace();
+    let method = request_line.next()?.to_string();
+    let path = request_line.next()?.to_string();
+
+    let mut headers = HashMap::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+
+    let content_length = headers
+        .get("content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(256 * 1024);
+    let mut body = buf[head_end + 4..].to_vec();
+    while body.len() < content_length {
+        let n = stream.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    body.truncate(content_length);
+
+    Some(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+
+async fn write_http_response(stream: &mut TcpStream, status: u16, reason: &str, body: &str) {
+    let payload = format!(
+        "HTTP/1.1 {status} {reason}\r\n\
+         Content-Type: application/json; charset=utf-8\r\n\
+         Content-Length: {len}\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Headers: content-type, x-fluxdl-token\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n{body}",
+        len = body.len(),
+    );
+    let _ = stream.write_all(payload.as_bytes()).await;
+    let _ = stream.flush().await;
+}
+
+fn looks_like_media(url: &str) -> bool {
+    let lowered = url.to_ascii_lowercase();
+    const HOSTS: &[&str] = &[
+        "youtube.com",
+        "youtu.be",
+        "bilibili.com",
+        "b23.tv",
+        "twitter.com",
+        "x.com",
+        "instagram.com",
+        "vimeo.com",
+        "tiktok.com",
+        "douyin.com",
+        "soundcloud.com",
+        "facebook.com",
+        "twitch.tv",
+        "dailymotion.com",
+        "nicovideo.jp",
+        "iqiyi.com",
+        "youku.com",
+        "weibo.com",
+        "xiaohongshu.com",
+        "music.163.com",
+    ];
+    HOSTS.iter().any(|host| lowered.contains(host))
+}
+
+async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
+    let Some(request) = read_http_request(&mut stream).await else {
+        return;
+    };
+
+    if request.method == "OPTIONS" {
+        write_http_response(&mut stream, 204, "No Content", "").await;
+        return;
+    }
+
+    let path = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or("/")
+        .trim_end_matches('/')
+        .to_string();
+
+    if path == "/api/health" {
+        let body = serde_json::json!({
+            "ok": true,
+            "app": "FluxDL",
+            "version": fluxdl_engine::ENGINE_VERSION,
+            "port": CAPTURE_PORT,
+        });
+        write_http_response(&mut stream, 200, "OK", &body.to_string()).await;
+        return;
+    }
+
+    let authorized = request
+        .headers
+        .get("x-fluxdl-token")
+        .map(|token| token == CAPTURE_TOKEN)
+        .unwrap_or(false);
+    if !authorized {
+        write_http_response(
+            &mut stream,
+            401,
+            "Unauthorized",
+            r#"{"ok":false,"error":"扩展令牌无效"}"#,
+        )
+        .await;
+        return;
+    }
+
+    if request.method != "POST" || path != "/api/downloads" {
+        write_http_response(
+            &mut stream,
+            404,
+            "Not Found",
+            r#"{"ok":false,"error":"接口不存在"}"#,
+        )
+        .await;
+        return;
+    }
+
+    let payload = match serde_json::from_slice::<CaptureRequest>(&request.body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            let body = serde_json::json!({
+                "ok": false,
+                "error": format!("请求格式不正确：{err}"),
+            });
+            write_http_response(&mut stream, 400, "Bad Request", &body.to_string()).await;
+            return;
+        }
+    };
+
+    let url = payload.url.trim().to_string();
+    if url.is_empty() {
+        let body = serde_json::json!({ "ok": false, "error": "链接不能为空" });
+        write_http_response(&mut stream, 400, "Bad Request", &body.to_string()).await;
+        return;
+    }
+
+    let kind = match payload.kind.as_deref() {
+        Some("media") => TaskKind::Media,
+        Some("http") => TaskKind::Http,
+        _ if looks_like_media(&url) => TaskKind::Media,
+        _ => TaskKind::Http,
+    };
+
+    let options = NewTaskOptions {
+        filename: payload.filename,
+        referer: payload.referer,
+        user_agent: payload.user_agent,
+        ..Default::default()
+    };
+
+    match engine.add(kind, &url, options).await {
+        Ok(task) => {
+            let task_id = task.id.clone();
+            let body = serde_json::json!({ "ok": true, "id": task_id, "task": task });
+            write_http_response(&mut stream, 200, "OK", &body.to_string()).await;
+        }
+        Err(err) => {
+            let body = serde_json::json!({ "ok": false, "error": err.to_string() });
+            write_http_response(&mut stream, 400, "Bad Request", &body.to_string()).await;
+        }
+    }
+}
+
+fn start_capture_server(engine: Arc<Engine>) {
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", CAPTURE_PORT)).await {
+            Ok(listener) => listener,
+            Err(_) => return,
+        };
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let engine = engine.clone();
+                    tauri::async_runtime::spawn(async move {
+                        handle_capture_conn(stream, engine).await;
+                    });
+                }
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }
+    });
 }
 
 fn show_main(app: &AppHandle) {
@@ -315,15 +603,21 @@ pub fn run() {
             let _ = std::fs::create_dir_all(&data_dir);
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            let engine = Engine::new(data_dir.join("tasks.json"), tx);
+            // Engine::new spawns its 500 ms progress ticker, so it must run
+            // inside the Tokio runtime context.
+            let engine = tauri::async_runtime::block_on(async move {
+                Engine::new(data_dir.join("tasks.json"), tx)
+            });
             let clipboard_enabled = Arc::new(AtomicBool::new(
                 engine.options().clipboard_watch,
             ));
 
+            let capture_engine = engine.clone();
             app.manage(AppState {
                 engine,
                 clipboard_enabled: clipboard_enabled.clone(),
             });
+            start_capture_server(capture_engine);
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -367,7 +661,14 @@ pub fn run() {
             pick_file,
             open_path,
             open_file,
+            open_extension_folder,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running FluxDL");
+        .build(tauri::generate_context!())
+        .expect("error while building FluxDL")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                let engine = app.state::<AppState>().engine.clone();
+                tauri::async_runtime::block_on(engine.save());
+            }
+        });
 }

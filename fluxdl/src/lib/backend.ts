@@ -114,6 +114,12 @@ export const backend = {
     return isTauri ? call("open_file", { path }) : mockBackend.openFile();
   },
 
+  openExtensionFolder(): Promise<void> {
+    return isTauri
+      ? call("open_extension_folder")
+      : Promise.reject(new Error("浏览器预览模式下不可用"));
+  },
+
   /** Subscribes to engine + clipboard events. Returns an unsubscribe fn. */
   async onEvent(callback: (event: EngineEvent) => void): Promise<() => void> {
     if (!isTauri) {

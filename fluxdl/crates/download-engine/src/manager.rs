@@ -514,13 +514,15 @@ impl Engine {
     }
 
     pub async fn pause_all(&self) {
-        for entry in self.tasks.read().values().cloned().collect::<Vec<_>>() {
+        let entries = { self.tasks.read().values().cloned().collect::<Vec<_>>() };
+        for entry in entries {
             self.pause(&entry.id).await;
         }
     }
 
     pub async fn resume_all(self: &Arc<Self>) {
-        for entry in self.tasks.read().values().cloned().collect::<Vec<_>>() {
+        let entries = { self.tasks.read().values().cloned().collect::<Vec<_>>() };
+        for entry in entries {
             let status = entry.view.lock().await.status;
             if status == TaskStatus::Paused {
                 self.spawn_runner(entry.id.clone()).await;

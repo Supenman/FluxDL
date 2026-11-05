@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="head">
+        <div class="logo">F</div>
+        <div class="titles">
+          <h1>FluxDL 链接捕获</h1>
+          <p id="status-text">正在检测桌面端…</p>
+        </div>
+        <span id="status-dot" class="dot pending"></span>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <div class="copy">
+            <span>自动接管浏览器下载</span>
+            <small>浏览器开始下载时直接交给 FluxDL</small>
+          </div>
+          <label class="switch">
+            <input id="auto-capture" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="hint" id="hint">
+        在网页链接上右键，选择“用 FluxDL 下载此链接”，即可把任务发送到桌面端。
+      </section>
+
+      <footer class="foot">
+        <span>本地服务 127.0.0.1:35917</span>
+        <button id="recheck" class="link">重新检测</button>
+      </footer>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,379 @@
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  X,
+  Link2,
+  Clipboard,
+  FolderOpen,
+  ChevronDown,
+  Sparkles,
+  Film,
+  FileDown,
+  AlertTriangle,
+  Loader2,
+} from "lucide-react";
+import { useStore } from "../store";
+import { backend } from "../lib/backend";
+import { cx, extractUrls, isMediaUrl } from "../lib/format";
+import type { TaskKind } from "../lib/types";
+
+type Mode = "auto" | "file" | "media";
+
+const FORMATS = [
+  { value: "bv*+ba/b", label: "最佳画质（自动合并）" },
+  { value: "bv*[height<=1080]+ba/b", label: "1080p 及以下" },
+  { value: "bv*[height<=720]+ba/b", label: "720p 及以下" },
+  { value: "ba/b", label: "仅音频" },
+];
+
+const SPEED_LIMITS = [
+  { value: null, label: "不限速" },
+  { value: 1024 * 1024, label: "1 MB/s" },
+  { value: 2 * 1024 * 1024, label: "2 MB/s" },
+  { value: 5 * 1024 * 1024, label: "5 MB/s" },
+  { value: 10 * 1024 * 1024, label: "10 MB/s" },
+];
+
+export function NewTaskModal() {
+  const open = useStore((s) => s.newTaskOpen);
+  const seed = useStore((s) => s.newTaskSeed);
+  const settings = useStore((s) => s.settings);
+  const setNewTaskOpen = useStore((s) => s.setNewTaskOpen);
+  const pushToast = useStore((s) => s.pushToast);
+  const select = useStore((s) => s.select);
+
+  const [text, setText] = useState("");
+  const [mode, setMode] = useState<Mode>("auto");
+  const [saveDir, setSaveDir] = useState(settings.saveDir);
+  const [connections, setConnections] = useState(settings.connections);
+  const [limit, setLimit] = useState<number | null>(null);
+  const [format, setFormat] = useState("bv*+ba/b");
+  const [advanced, setAdvanced] = useState(false);
+  const [referer, setReferer] = useState("");
+  const [proxy, setProxy] = useState("");
+  const [userAgent, setUserAgent] = useState("");
+  const [errors, setErrors] = useState<string[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setText(seed);
+    setMode("auto");
+    setSaveDir(settings.saveDir);
+    setConnections(settings.connections);
+    setLimit(null);
+    setFormat("bv*+ba/b");
+    setAdvanced(false);
+    setReferer("");
+    setProxy("");
+    setUserAgent("");
+    setErrors([]);
+    window.setTimeout(() => textareaRef.current?.focus(), 60);
+    // Only reset when the modal opens, not when settings change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, seed]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submitting) setNewTaskOpen(false);
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !submitting) {
+        void submit();
+      }
+    };
+    const listener = (event: KeyboardEvent) => onKey(event);
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, submitting, text, mode, saveDir, connections, limit, format, referer, proxy, userAgent]);
+
+  const urls = useMemo(() => extractUrls(text), [text]);
+
+  const resolved = useMemo(() => {
+    if (mode === "file") return urls.map((url) => ({ url, kind: "http" as TaskKind }));
+    if (mode === "media") return urls.map((url) => ({ url, kind: "media" as TaskKind }));
+    return urls.map((url) => ({
+      url,
+      kind: (isMediaUrl(url) ? "media" : "http") as TaskKind,
+    }));
+  }, [urls, mode]);
+
+  const mediaCount = resolved.filter((item) => item.kind === "media").length;
+  const fileCount = resolved.length - mediaCount;
+
+  if (!open) return null;
+
+  const paste = async () => {
+    try {
+      const clipboard = await navigator.clipboard.readText();
+      if (clipboard.trim()) {
+        setText((prev) => (prev.trim() ? `${prev.trim()}\n${clipboard.trim()}` : clipboard.trim()));
+      }
+    } catch {
+      pushToast("无法读取剪贴板，请直接按 Ctrl+V 粘贴", "error");
+    }
+  };
+
+  const pickFolder = async () => {
+    const picked = await backend.pickFolder(saveDir);
+    if (picked) setSaveDir(picked);
+  };
+
+  async function submit() {
+    if (submitting || urls.length === 0) return;
+    setSubmitting(true);
+    setErrors([]);
+    const groups: Array<{ kind: TaskKind; urls: string[] }> = [];
+    for (const item of resolved) {
+      const group = groups.find((g) => g.kind === item.kind);
+      if (group) group.urls.push(item.url);
+      else groups.push({ kind: item.kind, urls: [item.url] });
+    }
+
+    let added = 0;
+    const allErrors: string[] = [];
+    let firstId: string | null = null;
+    try {
+      for (const group of groups) {
+        const result = await backend.addTasks(group.urls, group.kind, {
+          saveDir,
+          connections: group.kind === "media" ? 1 : connections,
+          speedLimit: limit,
+          referer: referer.trim() || null,
+          proxy: proxy.trim() || null,
+          userAgent: userAgent.trim() || null,
+          format: group.kind === "media" ? format : null,
+        });
+        added += result.tasks.length;
+        if (!firstId && result.tasks[0]) firstId = result.tasks[0].id;
+        allErrors.push(...result.errors);
+      }
+      if (added > 0) {
+        pushToast(`已添加 ${added} 个下载任务`, "success");
+        setNewTaskOpen(false);
+        if (added === 1 && firstId) select(firstId);
+      } else {
+        setErrors(allErrors.length ? allErrors : ["没有可下载的链接"]);
+      }
+    } catch (error) {
+      setErrors([String(error)]);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !submitting) setNewTaskOpen(false);
+      }}
+    >
+      <div className="modal new-task-modal" role="dialog" aria-modal="true" aria-label="新建下载">
+        <header className="modal-head">
+          <div className="modal-title">
+            <div className="modal-icon">
+              <Link2 size={17} />
+            </div>
+            <div>
+              <h2>新建下载</h2>
+              <p>支持批量链接、站点视频与整段文本粘贴</p>
+            </div>
+          </div>
+          <button
+            className="icon-button"
+            onClick={() => !submitting && setNewTaskOpen(false)}
+            aria-label="关闭"
+          >
+            <X size={17} />
+          </button>
+        </header>
+
+        <div className="modal-body">
+          <div className="mode-switch">
+            {(
+              [
+                { id: "auto", label: "自动识别", icon: Sparkles },
+                { id: "file", label: "普通文件", icon: FileDown },
+                { id: "media", label: "视频链接", icon: Film },
+              ] as const
+            ).map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                className={cx("mode-button", mode === id && "active")}
+                onClick={() => setMode(id)}
+              >
+                <Icon size={14} />
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="url-field">
+            <textarea
+              ref={textareaRef}
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder={"每行一个链接，例如：\nhttps://example.com/archive.zip\nhttps://www.youtube.com/watch?v=…\n\n也可以直接粘贴一整段含链接的文字"}
+              spellCheck={false}
+              rows={5}
+            />
+            <button className="paste-button" onClick={paste} title="从剪贴板粘贴">
+              <Clipboard size={13} />
+              粘贴
+            </button>
+          </div>
+
+          <div className="url-summary">
+            <span className={cx("summary-main", urls.length === 0 && "muted")}>
+              <Link2 size={12} />
+              {urls.length === 0 ? "等待粘贴链接" : `已识别 ${urls.length} 个链接`}
+            </span>
+            {fileCount > 0 && <span className="summary-chip">文件 {fileCount}</span>}
+            {mediaCount > 0 && <span className="summary-chip media">视频 {mediaCount}</span>}
+          </div>
+
+          <div className="form-grid">
+            <div className="field span-2">
+              <label>保存到</label>
+              <div className="input-with-button">
+                <input
+                  value={saveDir}
+                  onChange={(event) => setSaveDir(event.target.value)}
+                  spellCheck={false}
+                />
+                <button className="input-button" onClick={pickFolder} title="选择文件夹">
+                  <FolderOpen size={14} />
+                </button>
+              </div>
+            </div>
+
+            {fileCount > 0 && (
+              <>
+                <div className="field">
+                  <label>
+                    下载线程
+                    <span className="field-value">{connections}</span>
+                  </label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={16}
+                    value={connections}
+                    onChange={(event) => setConnections(Number(event.target.value))}
+                    className="slider"
+                    style={{ "--fill": `${((connections - 1) / 15) * 100}%` } as CSSProperties}
+                  />
+                  <span className="field-hint">服务器支持 Range 时自动拆分</span>
+                </div>
+                <div className="field">
+                  <label>任务限速</label>
+                  <div className="select-shell full">
+                    <select
+                      value={limit ?? "0"}
+                      onChange={(event) =>
+                        setLimit(event.target.value === "0" ? null : Number(event.target.value))
+                      }
+                    >
+                      {SPEED_LIMITS.map((option) => (
+                        <option key={String(option.value)} value={option.value ?? "0"}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={13} className="select-caret" />
+                  </div>
+                </div>
+              </>
+            )}
+
+            {mediaCount > 0 && (
+              <div className="field">
+                <label>视频格式</label>
+                <div className="select-shell full">
+                  <select value={format} onChange={(event) => setFormat(event.target.value)}>
+                    {FORMATS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={13} className="select-caret" />
+                </div>
+                <span className="field-hint">需要本机已安装 yt-dlp，合并视频还需要 ffmpeg</span>
+              </div>
+            )}
+          </div>
+
+          <button className="advanced-toggle" onClick={() => setAdvanced((value) => !value)}>
+            <ChevronDown size={14} className={cx("advanced-caret", advanced && "open")} />
+            高级选项
+            <span className="advanced-hint">Referer / 代理 / User-Agent</span>
+          </button>
+
+          {advanced && (
+            <div className="form-grid advanced-grid">
+              <div className="field">
+                <label>Referer</label>
+                <input
+                  value={referer}
+                  onChange={(event) => setReferer(event.target.value)}
+                  placeholder="可选，部分站点防盗链需要"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="field">
+                <label>代理</label>
+                <input
+                  value={proxy}
+                  onChange={(event) => setProxy(event.target.value)}
+                  placeholder="http://127.0.0.1:7890"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="field span-2">
+                <label>User-Agent</label>
+                <input
+                  value={userAgent}
+                  onChange={(event) => setUserAgent(event.target.value)}
+                  placeholder="留空则使用全局默认 UA"
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+          )}
+
+          {errors.length > 0 && (
+            <div className="modal-errors">
+              <AlertTriangle size={14} />
+              <div>
+                {errors.slice(0, 4).map((error) => (
+                  <p key={error}>{error}</p>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <footer className="modal-foot">
+          <span className="modal-foot-hint">
+            提示：<kbd>Ctrl</kbd> + <kbd>Enter</kbd> 快速开始
+          </span>
+          <div className="modal-foot-actions">
+            <button className="ghost-button" onClick={() => setNewTaskOpen(false)} disabled={submitting}>
+              取消
+            </button>
+            <button
+              className="primary-button"
+              onClick={() => void submit()}
+              disabled={urls.length === 0 || submitting}
+            >
+              {submitting ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
+              {urls.length > 0 ? `开始下载（${urls.length}）` : "开始下载"}
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}

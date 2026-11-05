@@ -112,6 +112,13 @@ body {
   gap: 12px;
 }
 
+/* 同一张卡片里的第二个开关（登录态）加一条分隔线 */
+.card .row + .row {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .copy {
   flex: 1;
   min-width: 0;

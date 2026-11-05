@@ -533,6 +533,10 @@ struct CaptureRequest {
     user_agent: Option<String>,
     #[serde(default)]
     kind: Option<String>,
+    /// 扩展采集到的 Netscape cookies.txt 文本（视频站点登录态）。
+    /// 只在本机回环传输，落地成临时文件后由媒体任务用完即删。
+    #[serde(default)]
+    cookies: Option<String>,
 }
 
 struct HttpRequest {
@@ -607,6 +611,41 @@ async fn write_http_response(
     let _ = stream.flush().await;
 }
 
+/// 把扩展送来的 cookies.txt 文本落到应用数据目录，返回临时文件路径。
+/// 只存路径不存内容，cookie 本体绝不进 tasks.json。Unix 下权限 0600。
+fn write_cookie_file(dir: &Path, raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    if bytes.is_empty() || bytes.len() > 128 * 1024 {
+        return None;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = dir.join(format!("cookies-{}-{}.txt", std::process::id(), stamp));
+    std::fs::write(&path, bytes).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Some(path.to_string_lossy().to_string())
+}
+
+/// 启动时清理上次异常退出残留的 cookie 文件，避免凭证长期留在磁盘。
+fn cleanup_stale_cookie_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("cookies-") && name.ends_with(".txt") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 fn looks_like_media(url: &str) -> bool {
     let lowered = url.to_ascii_lowercase();
     const HOSTS: &[&str] = &[
@@ -634,7 +673,7 @@ fn looks_like_media(url: &str) -> bool {
     HOSTS.iter().any(|host| lowered.contains(host))
 }
 
-async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
+async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>, data_dir: PathBuf) {
     let Some(request) = read_http_request(&mut stream).await else {
         return;
     };
@@ -729,11 +768,25 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
         _ => TaskKind::Http,
     };
 
+    // 只有交给 yt-dlp 的媒体任务才落地 cookie 文件；HTTP 任务不需要，
+    // 也不会有删除时机，写了就会变成磁盘上长期残留的凭证。
+    let cookies_file = if kind == TaskKind::Media {
+        payload
+            .cookies
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|raw| write_cookie_file(&data_dir, raw))
+    } else {
+        None
+    };
+
     let options = NewTaskOptions {
         filename: payload.filename,
         prefer_header_filename: true,
         referer: payload.referer,
         user_agent: payload.user_agent,
+        cookies_file,
         ..Default::default()
     };
 
@@ -750,7 +803,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
     }
 }
 
-fn start_capture_server(engine: Arc<Engine>) {
+fn start_capture_server(engine: Arc<Engine>, data_dir: PathBuf) {
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", CAPTURE_PORT)).await {
             Ok(listener) => listener,
@@ -760,8 +813,9 @@ fn start_capture_server(engine: Arc<Engine>) {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     let engine = engine.clone();
+                    let data_dir = data_dir.clone();
                     tauri::async_runtime::spawn(async move {
-                        handle_capture_conn(stream, engine).await;
+                        handle_capture_conn(stream, engine, data_dir).await;
                     });
                 }
                 Err(_) => {
@@ -879,15 +933,18 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let _ = std::fs::create_dir_all(&data_dir);
+            cleanup_stale_cookie_files(&data_dir);
 
             // 内置 yt-dlp / ffmpeg：随包 tools/ 存在时自动指向它，无需用户手动安装。
             let bundled = bundled_tool_paths(app.handle());
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             // Engine::new spawns its 500 ms progress ticker, so it must run
-            // inside the Tokio runtime context.
+            // inside the Tokio runtime context. 单独 clone 一份给 async move，
+            // data_dir 后面还要传给本地捕获服务用于落地 cookie 临时文件。
+            let engine_dir = data_dir.clone();
             let engine = tauri::async_runtime::block_on(async move {
-                let engine = Engine::new(data_dir.join("tasks.json"), tx);
+                let engine = Engine::new(engine_dir.join("tasks.json"), tx);
                 let mut options = engine.options();
                 if apply_bundled_tools(&mut options, &bundled) {
                     engine.set_options(options).await;
@@ -903,7 +960,7 @@ pub fn run() {
                 engine,
                 clipboard_enabled: clipboard_enabled.clone(),
             });
-            start_capture_server(capture_engine);
+            start_capture_server(capture_engine, data_dir.clone());
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

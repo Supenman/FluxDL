@@ -40,11 +40,12 @@
 
 无边框窗口、任务分组、实时速度与进度曲线、命令面板、剪贴板链接监听、设置页、托盘、下载完成打开文件所在目录。
 
-### 浏览器扩展（MV3，v2）
+### 浏览器扩展（MV3，v2.1）
 
 - **自动接管所有 `http(s)` 下载**：不设扩展名白名单、不设类型分组、不设最小体积阈值，只有一个总开关。
 - **IDM 式资源嗅探**：`webRequest.onResponseStarted` 按 `Content-Type` / `Content-Disposition` / URL 后缀识别音视频与文件，按标签页缓存，弹窗可单条或全部发送到桌面端。
 - **视频站点**：`.m4s` / `.m3u8` / `.mpd` 识别为流媒体片段，不刷屏成普通文件；弹窗提示「本页检测到视频」，一键发 `kind: media` 交给桌面端 `yt-dlp` 解析。
+- **视频站点登录态**：发送媒体任务时读取 `youtube.com` / `youtu.be` / `youtube-nocookie.com` / `google.com` 的 cookie，转成 Netscape `cookies.txt` 交给桌面端 `yt-dlp --cookies`，修掉 YouTube 的 `Sign in to confirm you're not a bot`。只走本机回环，用完即删，`tasks.json` 只存临时文件路径、不存 cookie 内容；弹窗可关闭此开关。
 - **右键菜单**：仅「用 FluxDL 下载此链接」「用 FluxDL 下载此媒体」两项。
 
 ---
@@ -57,13 +58,16 @@
 |---|---|---|
 | `FluxDL-0.1.0-Setup.exe` | Windows 10/11 x64 | NSIS 安装版，单用户安装、不需要管理员权限 |
 | `FluxDL-0.1.0-Windows-便携版.zip` | Windows 10/11 x64 | 解压进 `FluxDL/` 文件夹后双击 `fluxdl.exe`，删文件夹即卸载 |
-| `FluxDL-0.1.0-Linux-便携版.tar.gz` | Ubuntu 24.04 x64 | 解压进 `FluxDL/` 后运行 `./fluxdl`；无图形环境用 `xvfb-run -a ./fluxdl` |
 
-三个包都**自带** `browser-extension/` 和对应平台的 `tools/`（yt-dlp + ffmpeg），不用另外安装。
+两个包都**自带** `browser-extension/` 和 `tools/`（Windows 版 yt-dlp + ffmpeg），不用另外安装。
+
+> **官方交付仅 Windows**，不再提供 Linux 成品包。源码仍可跨平台构建，Linux 下的构建说明只作为开发者参考保留。
 
 **装完只做一件事**：Chrome 打开 `chrome://extensions` → 开「开发者模式」 → 「加载已解压的扩展程序」 → 选包里的 `browser-extension` 文件夹（安装版在 `%LOCALAPPDATA%\FluxDL\browser-extension`）。然后随便点个下载链接，FluxDL 窗口冒出任务即通过。
 
-Windows 需要 **WebView2 Runtime**（一般系统自带）；Linux 需要 `libwebkit2gtk-4.1` 与 `libayatana-appindicator3` 运行时库。
+Windows 需要 **WebView2 Runtime**（一般系统自带）。
+
+**装过旧扩展的必须重新加载一次**：v2.1 新增了 `cookies` 权限，Chrome 不会自动给旧扩展升级权限。在 `chrome://extensions` 点扩展的「重新加载」，否则 YouTube 登录状态带不过去。
 
 ---
 
@@ -114,7 +118,7 @@ fluxdl/
 |---|---|
 | 通用 | Rust stable、Node.js 18+、pnpm/npm |
 | Windows | MSVC Build Tools、WebView2 Runtime |
-| Linux | `libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`patchelf`、`pkg-config`、`build-essential` |
+| Linux（仅源码构建参考，官方不发成品包） | `libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`patchelf`、`pkg-config`、`build-essential` |
 
 Linux 一键装依赖：
 
@@ -147,7 +151,7 @@ cd tools && ./fetch-tools.sh && cd ..    # 必须，否则成品包不带视频�
 npm run tauri build                      # Windows 产出 NSIS 安装包
 ```
 
-`tauri.conf.json` 的 `bundle.targets` 目前只有 `nsis`，所以 Linux 没有官方 deb/rpm 产物。Linux 走：
+`tauri.conf.json` 的 `bundle.targets` 目前只有 `nsis`。**官方只发布 Windows 包**，Linux 下如需自行构建可走：
 
 ```bash
 cd FuxDL/fluxdl/src-tauri
@@ -164,7 +168,7 @@ cargo build --release --target x86_64-unknown-linux-gnu
 `fluxdl/browser-extension/manifest.json` 关键权限：
 
 ```json
-"permissions": ["contextMenus", "downloads", "storage", "notifications", "webRequest", "tabs"],
+"permissions": ["contextMenus", "downloads", "storage", "notifications", "webRequest", "tabs", "cookies"],
 "host_permissions": ["<all_urls>", "http://127.0.0.1:35917/*", "http://localhost:35917/*"]
 ```
 
@@ -178,7 +182,7 @@ Chrome 137+ 的**正式版**会静默忽略命令行 `--load-extension`；做扩
 
 ## 内置 yt-dlp / ffmpeg
 
-启动时 `apply_bundled_tools()` 把 `EngineOptions.ytDlpPath` / `ffmpegPath` 指向随包 `tools/` 目录：
+启动时 `apply_bundled_tools()` 把 `EngineOptions.yt_dlp_path` / `ffmpeg_path`（序列化到 `tasks.json` 为 `ytDlpPath` / `ffmpegPath`，serde 用 camelCase）指向随包 `tools/` 目录：
 
 - 用户手动填写且**文件真实存在**的路径优先，不会被覆盖；
 - 默认值、空值、失效路径才由内置二进制顶上；
@@ -205,7 +209,8 @@ Chrome 137+ 的**正式版**会静默忽略命令行 `--load-extension`；做扩
   "url": "https://example.com/file.zip",
   "filename": "file.zip",      // 可选
   "referer": "https://...",    // 可选
-  "kind": "http"               // 可选：http | media；缺省按 URL 自动判断
+  "kind": "http",              // 可选：http | media；缺省按 URL 自动判断
+  "cookies": "# Netscape HTTP Cookie File\n..."  // 可选：仅媒体任务，由扩展自动附带
 }
 ```
 
@@ -216,6 +221,8 @@ Chrome 137+ 的**正式版**会静默忽略命令行 `--load-extension`；做扩
 
 因为令牌写在扩展源码里属于公开值，单靠它挡不住网页；浏览器跨域请求必定带 `Origin` 且 JS 无法伪造，所以用 Host + Origin 兜底。
 
+**登录态**：媒体任务可带 `cookies`（Netscape `cookies.txt` 文本）。桌面端只把它落到 app 数据目录的临时文件（≤ 128 KB，Unix 下权限 0600），再把**路径**写进 `NewTaskOptions.cookies_file` 传给 `yt-dlp --cookies`；任务结束由 Drop guard 删除，暂停时保留，启动时清理残留。cookie 本体不写进 `tasks.json`，也只经本机回环传输。
+
 ---
 
 ## 测试
@@ -223,7 +230,7 @@ Chrome 137+ 的**正式版**会静默忽略命令行 `--load-extension`；做扩
 ```bash
 cd FuxDL/fluxdl
 
-# 引擎：16 单测 + 5 集成 + 9 回归 = 30 项
+# 引擎：19 单测 + 5 集成 + 9 回归 = 33 项
 cargo test -p fluxdl-engine
 cargo clippy --tests
 
@@ -236,11 +243,12 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 
 已完成的验证记录见 [`docs/验证记录.md`](./docs/验证记录.md)，包括：
 
-- 引擎并发 / 续传 / 持久化 / media 输出回归 30 项全绿；
+- 引擎并发 / 续传 / 持久化 / media 输出 / cookie 文件生命周期回归 33 项全绿；
 - 捕获服务真实 TCP 报文端到端 8 项；
-- 扩展核心纯函数 22 项 + 真实 Chrome for Testing / MV3 端到端 **18/18**（资源嗅探、流媒体标记、弹窗渲染、media 任务入队、1 KB 小文件自动接管、浏览器原生下载被取消）；
+- 扩展核心纯函数 27 项（含 `cookies.txt` 格式与采集范围）+ 真实 Chrome for Testing / MV3 端到端 **18/18**（资源嗅探、流媒体标记、弹窗渲染、media 任务入队、1 KB 小文件自动接管、浏览器原生下载被取消）；
+- 登录态链路端到端 **7/7**：扩展附带 cookie → 桌面端落地临时文件 → `yt-dlp` 收到 `--cookies` → 任务完成 → 凭证文件删除 → `tasks.json` 不含 cookie 值 → 关闭开关后不再采集；
 - Ubuntu 桌面端 Xvfb 实跑、真实下载 + `tar tzf` 校验；
-- Linux 便携包解压后全新数据目录启动，自动识别内置工具并完成真实下载。
+- Linux 便携包解压后全新数据目录启动、自动识别内置工具并完成真实下载（历史验证；该包现已停发）。
 
 ---
 
@@ -250,11 +258,11 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 |---|---|---|
 | 本地令牌 | `fluxdl-local-v1` 是写死在扩展里的公开常量，本机任意进程都能添加任务 | 改为运行时随机令牌 + 扩展配对；会动扩展里写死的常量，需同步更新扩展与桌面端 |
 | CSP | `csp: null` | 公开发布前收紧 |
-| 扩展权限 | `host_permissions: <all_urls>`（资源嗅探需要） | 评估是否收窄到具体站点 |
+| 扩展权限 | `host_permissions: <all_urls>` + `cookies`（资源嗅探与登录态需要） | 评估是否收窄到具体站点；cookie 只发本机、用完即删 |
 | 下载目标 | `engine.add()` 只接受 `http` / `https`，响应只落本地文件 | 仍存在本机发起内网探测的可能，多用户机器需注意 |
 | Windows | 依赖 WebView2 Runtime | 系统缺失时提示用户安装 |
-| 视频站点 | 需登录 cookie / 有反爬的站点可能解析失败 | 由 `yt-dlp` 侧配置 cookie，与安装包本身无关 |
-| Linux 打包 | 无官方 deb/rpm，仅便携二进制 | 需要发行包时补 `bundle.targets` |
+| 视频站点 | 扩展自动携带浏览器登录 cookie；未登录 YouTube、PO Token / 出口 IP 风控仍可能拦下 | 先在 Chrome 登录 YouTube、重新加载扩展；仍失败属平台风控 |
+| Linux 交付 | 已停发 Linux 成品包，源码仍可自行构建 | 需要时自行 `cargo build --release` |
 | `dist/` | 前端构建产物，不进 Git | 由 `npm run build` 生成 |
 
 ---
@@ -268,6 +276,7 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [#4](https://github.com/Supenman/FuxDL/pull/4) | 扩展 v2：无范围自动接管、IDM 式资源嗅探、视频站点 media 解析；内置 yt-dlp / ffmpeg 自动探测；修复资源缓存并发覆盖与 `hidden` 样式覆盖 | `41584eda` |
 | [#5](https://github.com/Supenman/FuxDL/pull/5) | 文档：重写根目录 README，归档代码审查、改进方案、P0-3 专项与验证记录 | `a50f7748` |
 | [#6](https://github.com/Supenman/FuxDL/pull/6) | 修复 Windows 中文系统下 yt-dlp 写 stdout 触发 `Errno 22` 崩溃；统一 UTF-8 输出、字节级读取 stdout/stderr、目录差分定位视频产物 | `77e88d2e` |
+| [#7](https://github.com/Supenman/FuxDL/pull/7) | 视频站点自动携带浏览器登录 cookie，修 YouTube `Sign in to confirm you're not a bot`；新增 `cookies` 权限、临时凭证文件用完即删、弹窗开关、bot 报错中文指引；修复 `data_dir` 被 move 的编译错误；交付收敛为仅 Windows | `7d16baec` |
 
 当前 `main` 已包含上述全部改动（文档可能在此之后继续同步，具体提交号以仓库 commit 历史为准）。远程 `main` 与本地构建源码逐文件比对 git blob SHA：**62 个源码文件 + 5 份文档全部一致，0 处差异**。`dist/`（前端构建产物）与 `tools/` 下四个平台二进制按设计不进 Git。
 
@@ -280,5 +289,5 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [`docs/代码审查.md`](./docs/代码审查.md) | 按 P0~P3 分级的第一轮代码审查报告 |
 | [`docs/改进方案.md`](./docs/改进方案.md) | 缺陷根因、修复方案、验证数据与推送记录 |
 | [`docs/P0-3-本地服务安全加固.md`](./docs/P0-3-本地服务安全加固.md) | 漏洞机理、准入设计、端到端验证、残余风险 |
-| [`docs/验证记录.md`](./docs/验证记录.md) | 扩展 v2 与成品包的完整验证结果 |
+| [`docs/验证记录.md`](./docs/验证记录.md) | 扩展 v2.1、登录态链路与成品包的完整验证结果 |
 | [`fluxdl/tools/README.md`](./fluxdl/tools/README.md) | 内置工具来源、体积与获取方式 |

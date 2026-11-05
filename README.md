@@ -33,7 +33,7 @@
 | 任务队列 | 最大并发数、暂停 / 继续 / 删除、终态释放路径占位 |
 | 限速 | 全局限速与单任务限速**串联生效**，基于「下一时刻表」做长期均值控制，不靠 sleep 抖动 |
 | 代理 / UA / Referer | 每个任务可独立设置 |
-| 视频下载 | `TaskKind::Media` 调用 `yt-dlp` 解析清晰度，交给 `ffmpeg` 合并音视频 |
+| 视频下载 | `TaskKind::Media` 调用 `yt-dlp` 解析清晰度，交给 `ffmpeg` 合并音视频；YouTube 报「无可用清晰度」时自动换客户端重试一次 |
 | 完整性防护 | 同路径并发任务各自占位、原子替换 `tasks.json`、`spawn_runner` 置位原子化、删除任务同时清理 part |
 
 ### 桌面端（Tauri 2 + React 18）
@@ -45,6 +45,7 @@
 - **自动接管所有 `http(s)` 下载**：不设扩展名白名单、不设类型分组、不设最小体积阈值，只有一个总开关。
 - **IDM 式资源嗅探**：`webRequest.onResponseStarted` 按 `Content-Type` / `Content-Disposition` / URL 后缀识别音视频与文件，按标签页缓存，弹窗可单条或全部发送到桌面端。
 - **视频站点**：`.m4s` / `.m3u8` / `.mpd` 识别为流媒体片段，不刷屏成普通文件；弹窗提示「本页检测到视频」，一键发 `kind: media` 交给桌面端 `yt-dlp` 解析。
+- **格式不可用自动降级**：只在 `Requested format is not available` 时自动重试一次，换不依赖 PO Token 的 `player_client` 并把格式链放宽到 `bv*+ba/b/worst`；正常下载路径不变。
 - **视频站点登录态**：发送媒体任务时读取 `youtube.com` / `youtu.be` / `youtube-nocookie.com` / `google.com` 的 cookie，转成 Netscape `cookies.txt` 交给桌面端 `yt-dlp --cookies`，修掉 YouTube 的 `Sign in to confirm you're not a bot`。只走本机回环，用完即删，`tasks.json` 只存临时文件路径、不存 cookie 内容；弹窗可关闭此开关。
 - **右键菜单**：仅「用 FluxDL 下载此链接」「用 FluxDL 下载此媒体」两项。
 
@@ -230,7 +231,7 @@ Chrome 137+ 的**正式版**会静默忽略命令行 `--load-extension`；做扩
 ```bash
 cd FuxDL/fluxdl
 
-# 引擎：19 单测 + 5 集成 + 9 回归 = 33 项
+# 引擎：21 单测 + 5 集成 + 9 回归 = 35 项
 cargo test -p fluxdl-engine
 cargo clippy --tests
 
@@ -243,10 +244,11 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 
 已完成的验证记录见 [`docs/验证记录.md`](./docs/验证记录.md)，包括：
 
-- 引擎并发 / 续传 / 持久化 / media 输出 / cookie 文件生命周期回归 33 项全绿；
+- 引擎并发 / 续传 / 持久化 / media 输出 / cookie 文件生命周期 / 格式降级回归 35 项全绿；
 - 捕获服务真实 TCP 报文端到端 8 项；
 - 扩展核心纯函数 27 项（含 `cookies.txt` 格式与采集范围）+ 真实 Chrome for Testing / MV3 端到端 **18/18**（资源嗅探、流媒体标记、弹窗渲染、media 任务入队、1 KB 小文件自动接管、浏览器原生下载被取消）；
 - 登录态链路端到端 **7/7**：扩展附带 cookie → 桌面端落地临时文件 → `yt-dlp` 收到 `--cookies` → 任务完成 → 凭证文件删除 → `tasks.json` 不含 cookie 值 → 关闭开关后不再采集；
+- 格式降级重试端到端 **9/9**：假 yt-dlp 首轮报格式不可用、次轮成功；恰好 2 次调用、参数按预期变化、两轮都带 cookie 且凭证文件未提前删除、产物真实落盘；
 - Ubuntu 桌面端 Xvfb 实跑、真实下载 + `tar tzf` 校验；
 - Linux 便携包解压后全新数据目录启动、自动识别内置工具并完成真实下载（历史验证；该包现已停发）。
 
@@ -261,7 +263,7 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | 扩展权限 | `host_permissions: <all_urls>` + `cookies`（资源嗅探与登录态需要） | 评估是否收窄到具体站点；cookie 只发本机、用完即删 |
 | 下载目标 | `engine.add()` 只接受 `http` / `https`，响应只落本地文件 | 仍存在本机发起内网探测的可能，多用户机器需注意 |
 | Windows | 依赖 WebView2 Runtime | 系统缺失时提示用户安装 |
-| 视频站点 | 扩展自动携带浏览器登录 cookie；未登录 YouTube、PO Token / 出口 IP 风控仍可能拦下 | 先在 Chrome 登录 YouTube、重新加载扩展；仍失败属平台风控 |
+| 视频站点 | 扩展自动携带登录 cookie、格式不可用时自动降级重试；未登录、PO Token / 出口 IP 风控仍可能拦下 | 先在 Chrome 登录 YouTube、重新加载扩展；仍失败换一个公开视频判断是单点还是整体风控 |
 | Linux 交付 | 已停发 Linux 成品包，源码仍可自行构建 | 需要时自行 `cargo build --release` |
 | `dist/` | 前端构建产物，不进 Git | 由 `npm run build` 生成 |
 
@@ -277,6 +279,7 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [#5](https://github.com/Supenman/FuxDL/pull/5) | 文档：重写根目录 README，归档代码审查、改进方案、P0-3 专项与验证记录 | `a50f7748` |
 | [#6](https://github.com/Supenman/FuxDL/pull/6) | 修复 Windows 中文系统下 yt-dlp 写 stdout 触发 `Errno 22` 崩溃；统一 UTF-8 输出、字节级读取 stdout/stderr、目录差分定位视频产物 | `77e88d2e` |
 | [#7](https://github.com/Supenman/FuxDL/pull/7) | 视频站点自动携带浏览器登录 cookie，修 YouTube `Sign in to confirm you're not a bot`；新增 `cookies` 权限、临时凭证文件用完即删、弹窗开关、bot 报错中文指引；修复 `data_dir` 被 move 的编译错误；交付收敛为仅 Windows | `7d16baec` |
+| [#8](https://github.com/Supenman/FuxDL/pull/8) | 视频报 `Requested format is not available` 时自动降级重试：换不依赖 PO Token 的 yt-dlp 客户端、放宽格式链、cookie 跨两轮存活、中文排障指引；正常路径零改动 | `96fc10446` |
 
 当前 `main` 已包含上述全部改动（文档可能在此之后继续同步，具体提交号以仓库 commit 历史为准）。远程 `main` 与本地构建源码逐文件比对 git blob SHA：**62 个源码文件 + 5 份文档全部一致，0 处差异**。`dist/`（前端构建产物）与 `tools/` 下四个平台二进制按设计不进 Git。
 
@@ -289,5 +292,5 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [`docs/代码审查.md`](./docs/代码审查.md) | 按 P0~P3 分级的第一轮代码审查报告 |
 | [`docs/改进方案.md`](./docs/改进方案.md) | 缺陷根因、修复方案、验证数据与推送记录 |
 | [`docs/P0-3-本地服务安全加固.md`](./docs/P0-3-本地服务安全加固.md) | 漏洞机理、准入设计、端到端验证、残余风险 |
-| [`docs/验证记录.md`](./docs/验证记录.md) | 扩展 v2.1、登录态链路与成品包的完整验证结果 |
+| [`docs/验证记录.md`](./docs/验证记录.md) | 扩展 v2.1、登录态链路、格式降级与成品包的完整验证结果 |
 | [`fluxdl/tools/README.md`](./fluxdl/tools/README.md) | 内置工具来源、体积与获取方式 |

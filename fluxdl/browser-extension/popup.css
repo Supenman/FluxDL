@@ -15,9 +15,15 @@
   box-sizing: border-box;
 }
 
+/* 类选择器的 display 会盖掉 UA 的 [hidden]{display:none}，
+   导致「本页检测到视频」卡片和「全部发送」按钮隐藏失效，这里强制兜底。 */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
-  width: 328px;
+  width: 380px;
   background: var(--bg);
   color: var(--text);
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
@@ -288,4 +294,166 @@ body {
 
 .link:hover {
   text-decoration: underline;
+}
+
+/* ---------- 视频站点卡片 ---------- */
+
+.video-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-color: rgba(124, 92, 255, 0.45);
+  background: linear-gradient(180deg, rgba(124, 92, 255, 0.1), var(--surface));
+}
+
+button.primary,
+button.secondary {
+  appearance: none;
+  width: 100%;
+  border: 0;
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+
+button.primary {
+  color: #fff;
+  background: linear-gradient(135deg, #4f8cff, #7c5cff);
+  box-shadow: 0 4px 14px rgba(79, 140, 255, 0.28);
+}
+
+button.secondary {
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-weight: 500;
+}
+
+button.primary:hover,
+button.secondary:hover {
+  filter: brightness(1.12);
+}
+
+button.primary:active,
+button.secondary:active {
+  transform: translateY(1px);
+}
+
+/* ---------- 资源列表 ---------- */
+
+.res-card {
+  padding: 12px 12px 10px;
+}
+
+.res-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.res-head b {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.res-list {
+  max-height: 244px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.res-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.res-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+}
+
+.res-empty {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  padding: 10px 2px;
+}
+
+.res-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  border: 1px solid transparent;
+}
+
+.res-row:hover {
+  border-color: var(--border);
+}
+
+.res-badge {
+  flex: none;
+  min-width: 40px;
+  text-align: center;
+  padding: 3px 5px;
+  border-radius: 6px;
+  font-size: 10px;
+  color: #a9c6ff;
+  background: rgba(79, 140, 255, 0.14);
+}
+
+.res-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.res-name {
+  font-size: 11.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.res-info small {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button.res-btn {
+  appearance: none;
+  flex: none;
+  border: 1px solid rgba(79, 140, 255, 0.45);
+  background: rgba(79, 140, 255, 0.12);
+  color: #a9c6ff;
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+button.res-btn:hover {
+  background: rgba(79, 140, 255, 0.26);
+  color: #fff;
+}
+
+#download-all {
+  margin-top: 9px;
 }

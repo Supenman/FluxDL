@@ -1,0 +1,7 @@
+# 内置工具二进制：体积大，不进 Git，由 tools/fetch-tools.sh 生成或打包流程注入
+tools/yt-dlp
+tools/yt-dlp.exe
+tools/ffmpeg
+tools/ffmpeg.exe
+tools/*.zip
+tools/*.tar.xz

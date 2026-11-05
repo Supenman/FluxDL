@@ -1,10 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "FluxDL 链接捕获",
-  "version": "1.0.0",
-  "description": "把浏览器里的下载链接一键发送到 FluxDL 桌面下载器。",
-  "permissions": ["contextMenus", "downloads", "storage", "notifications"],
+  "name": "FluxDL 资源捕获",
+  "version": "2.0.0",
+  "description": "自动接管浏览器下载，并嗅探页面里的音视频与可下载资源发送到 FluxDL 桌面下载器。",
+  "permissions": [
+    "contextMenus",
+    "downloads",
+    "storage",
+    "notifications",
+    "webRequest",
+    "tabs"
+  ],
   "host_permissions": [
+    "<all_urls>",
     "http://127.0.0.1:35917/*",
     "http://localhost:35917/*"
   ],

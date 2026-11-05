@@ -307,10 +307,32 @@ async fn install_tools(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<InstalledTools, String> {
+    // 内置优先：随包 tools/ 里同时有 yt-dlp 与 ffmpeg 时直接采用，不再联网下载。
+    // setup() 里已经自动做过一次，这里让设置页的「检测/安装」按钮也能得到确定结果。
+    let (bundled_yt, bundled_ff) = bundled_tool_paths(&app);
+    if let (Some(yt), Some(ff)) = (bundled_yt, bundled_ff) {
+        let yt_path = yt.to_string_lossy().to_string();
+        let ff_path = ff.to_string_lossy().to_string();
+        let yt_ok = probe_binary(&yt_path, &["--version"]).await;
+        let ff_ok = probe_binary(&ff_path, &["-version"]).await;
+        if yt_ok && ff_ok {
+            let mut options = state.engine.options();
+            options.yt_dlp_path = yt_path;
+            options.ffmpeg_path = Some(ff_path);
+            state.engine.set_options(options.clone()).await;
+            return Ok(InstalledTools {
+                yt_dlp_path: options.yt_dlp_path,
+                ffmpeg_path: options.ffmpeg_path,
+                yt_dlp_available: true,
+                ffmpeg_available: true,
+            });
+        }
+    }
+
     #[cfg(not(windows))]
     {
         let _ = (app, state);
-        Err("一键安装目前仅支持 Windows".into())
+        Err("未找到内置工具，且当前平台不提供自动下载".into())
     }
 
     #[cfg(windows)]
@@ -422,6 +444,70 @@ fn extension_dir(app: &AppHandle) -> PathBuf {
         }
     }
     PathBuf::from(".")
+}
+
+/// 随包内置的 yt-dlp / ffmpeg 放在 exe 旁的 `tools/` 目录。
+/// 兼容三种布局：安装版的 resource_dir、便携版的 current_exe、开发态的源码目录。
+fn bundled_tools_dir(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("tools"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("tools"));
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools"));
+    }
+    candidates.into_iter().find(|p| p.is_dir())
+}
+
+/// 返回 (yt-dlp, ffmpeg) 两个可执行文件；缺失的那一个为 None。
+fn bundled_tool_paths(app: &AppHandle) -> (Option<PathBuf>, Option<PathBuf>) {
+    let Some(dir) = bundled_tools_dir(app) else {
+        return (None, None);
+    };
+    let (yt_name, ff_name) = if cfg!(windows) {
+        ("yt-dlp.exe", "ffmpeg.exe")
+    } else {
+        ("yt-dlp", "ffmpeg")
+    };
+    let pick = |name: &str| {
+        let p = dir.join(name);
+        if p.is_file() { Some(p) } else { None }
+    };
+    (pick(yt_name), pick(ff_name))
+}
+
+/// 用户在设置里手动指定的、真实存在的路径优先；否则一律用随包工具。
+fn apply_bundled_tools(
+    options: &mut EngineOptions,
+    bundled: &(Option<PathBuf>, Option<PathBuf>),
+) -> bool {
+    let mut changed = false;
+    if let Some(path) = bundled.0.as_ref() {
+        let current = options.yt_dlp_path.trim();
+        let custom_valid = !current.is_empty()
+            && current != "yt-dlp"
+            && current != "yt-dlp.exe"
+            && Path::new(current).is_file();
+        if !custom_valid {
+            options.yt_dlp_path = path.to_string_lossy().to_string();
+            changed = true;
+        }
+    }
+    if let Some(path) = bundled.1.as_ref() {
+        let current = options.ffmpeg_path.as_deref().unwrap_or("").trim();
+        let custom_valid = !current.is_empty() && Path::new(current).is_file();
+        if !custom_valid {
+            options.ffmpeg_path = Some(path.to_string_lossy().to_string());
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[tauri::command]
@@ -794,11 +880,19 @@ pub fn run() {
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let _ = std::fs::create_dir_all(&data_dir);
 
+            // 内置 yt-dlp / ffmpeg：随包 tools/ 存在时自动指向它，无需用户手动安装。
+            let bundled = bundled_tool_paths(app.handle());
+
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             // Engine::new spawns its 500 ms progress ticker, so it must run
             // inside the Tokio runtime context.
             let engine = tauri::async_runtime::block_on(async move {
-                Engine::new(data_dir.join("tasks.json"), tx)
+                let engine = Engine::new(data_dir.join("tasks.json"), tx);
+                let mut options = engine.options();
+                if apply_bundled_tools(&mut options, &bundled) {
+                    engine.set_options(options).await;
+                }
+                engine
             });
             let clipboard_enabled = Arc::new(AtomicBool::new(
                 engine.options().clipboard_watch,

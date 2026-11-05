@@ -268,7 +268,7 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [#4](https://github.com/Supenman/FuxDL/pull/4) | 扩展 v2：无范围自动接管、IDM 式资源嗅探、视频站点 media 解析；内置 yt-dlp / ffmpeg 自动探测；修复资源缓存并发覆盖与 `hidden` 样式覆盖 | `41584eda` |
 | [#5](https://github.com/Supenman/FuxDL/pull/5) | 文档：重写根目录 README，归档代码审查、改进方案、P0-3 专项与验证记录 | `a50f7748` |
 
-当前 `main` 为 `a50f7748`。远程 `main` 与本地构建源码逐文件比对 git blob SHA：**62 个源码文件 + 5 份文档全部一致，0 处差异**。`dist/`（前端构建产物）与 `tools/` 下四个平台二进制按设计不进 Git。
+当前 `main` 已包含上述全部改动（PR #5 之后只追加过文档措辞同步，具体提交号以仓库 commit 历史为准）。远程 `main` 与本地构建源码逐文件比对 git blob SHA：**62 个源码文件 + 5 份文档全部一致，0 处差异**。`dist/`（前端构建产物）与 `tools/` 下四个平台二进制按设计不进 Git。
 
 ---
 

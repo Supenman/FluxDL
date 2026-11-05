@@ -3098,6 +3098,25 @@ kbd {
   border-color: var(--accent-line);
 }
 
+.mini-refresh.install {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.mini-refresh.install:hover {
+  background: var(--accent-soft);
+  filter: brightness(1.12);
+}
+
+.mini-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+  color: var(--text-3);
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+
 .check-ok {
   color: var(--accent);
 }
@@ -3123,6 +3142,26 @@ kbd {
 .tip-card svg {
   color: var(--accent);
   margin-top: 2px;
+}
+
+.tip-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-progress {
+  height: 3px;
+  margin-top: 7px;
+  border-radius: 2px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.tool-progress-bar {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.2s linear;
 }
 
 .tip-card code {

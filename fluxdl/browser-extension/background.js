@@ -3,6 +3,52 @@ const TOKEN = "fluxdl-local-v1";
 const MENU_LINK = "fluxdl-download-link";
 const MENU_PAGE = "fluxdl-download-page";
 
+const DEFAULT_SETTINGS = {
+  autoCapture: true,
+  groups: {
+    archive: true,
+    installer: true,
+    media: true,
+    doc: true,
+    image: false,
+  },
+  minSizeMB: 1,
+};
+
+// 只有命中这些扩展名才会自动接管，其余一律留给浏览器。
+const GROUP_EXTENSIONS = {
+  archive: [
+    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst", "tgz", "txz",
+    "cab", "iso", "dmg", "img",
+  ],
+  installer: ["exe", "msi", "msix", "appx", "apk", "deb", "rpm", "pkg", "dmg"],
+  media: [
+    "mp4", "mkv", "webm", "avi", "mov", "flv", "ts", "m4v", "wmv", "mpg",
+    "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "wma", "ape",
+  ],
+  doc: [
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv",
+    "md", "epub", "mobi", "rtf", "odt", "ods", "odp",
+  ],
+  image: ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif", "tif", "tiff"],
+};
+
+const EXT_TO_GROUP = {};
+for (const [group, list] of Object.entries(GROUP_EXTENSIONS)) {
+  for (const ext of list) EXT_TO_GROUP[ext] = group;
+}
+
+const GENERIC_STEMS = new Set([
+  "download",
+  "downloadfile",
+  "getfile",
+  "get",
+  "file",
+  "index",
+  "unnamed",
+  "attachment",
+]);
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
@@ -27,9 +73,13 @@ chrome.contextMenus.onClicked.addListener((info) => {
   }).catch(() => {});
 });
 
-async function isAutoCaptureEnabled() {
-  const stored = await chrome.storage.sync.get({ autoCapture: true });
-  return Boolean(stored.autoCapture);
+async function loadSettings() {
+  const stored = await chrome.storage.sync.get(DEFAULT_SETTINGS);
+  return {
+    autoCapture: Boolean(stored.autoCapture),
+    groups: { ...DEFAULT_SETTINGS.groups, ...(stored.groups || {}) },
+    minSizeMB: Number(stored.minSizeMB) || 0,
+  };
 }
 
 async function postDownload(payload) {
@@ -107,7 +157,11 @@ function extensionOf(url) {
   }
 }
 
-const SKIP_EXTENSIONS = new Set(["html", "htm", "php", "asp", "aspx", "jsp"]);
+function extensionOfName(name) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return "";
+  return name.slice(dot + 1).toLowerCase().split(/[?#]/)[0].slice(0, 8);
+}
 
 function filenameFromPath(path) {
   if (!path) return "";
@@ -125,23 +179,64 @@ function filenameFromUrl(url) {
   }
 }
 
+// Chrome 遇到同名文件会自动加 “ (1)”，那个后缀不是文件真名。
+function stripDedupSuffix(name) {
+  return name
+    .replace(/\s*\(\d+\)(?=\.[^.]*$)/, "")
+    .replace(/\s*\(\d+\)$/, "")
+    .trim();
+}
+
+// 路径 /download、/get 这类名字没有信息量，交给桌面端按 Content-Disposition 或链接推断。
+function looksGeneric(name) {
+  const dot = name.lastIndexOf(".");
+  const stem = (dot === -1 ? name : name.slice(0, dot)).toLowerCase().trim();
+  return !stem || GENERIC_STEMS.has(stem);
+}
+
+function suggestedFilename(item) {
+  const raw = filenameFromPath(item.filename) || filenameFromUrl(item.url);
+  const cleaned = stripDedupSuffix(raw);
+  return looksGeneric(cleaned) ? "" : cleaned;
+}
+
+function shouldCapture(item, settings) {
+  if (!settings.autoCapture) return false;
+
+  const name = filenameFromPath(item.filename) || filenameFromUrl(item.url);
+  const ext = extensionOfName(name) || extensionOf(item.url);
+  const group = EXT_TO_GROUP[ext];
+  if (!group || !settings.groups[group]) return false;
+
+  const mime = (item.mime || "").toLowerCase();
+  if (mime.startsWith("text/html") || mime.startsWith("application/xhtml")) return false;
+
+  const minBytes = (settings.minSizeMB || 0) * 1024 * 1024;
+  if (minBytes > 0 && item.fileSize > 0 && item.fileSize < minBytes) return false;
+
+  return true;
+}
+
 const inflight = new Set();
 
 chrome.downloads.onCreated.addListener(async (item) => {
   if (!item || inflight.has(item.id)) return;
   const url = item.finalUrl || item.url || "";
   if (!/^https?:/i.test(url)) return;
-  const ext = extensionOf(url);
-  if (SKIP_EXTENSIONS.has(ext)) return;
 
   inflight.add(item.id);
   try {
-    if (!(await isAutoCaptureEnabled())) return;
+    const settings = await loadSettings();
+    if (!shouldCapture(item, settings)) return;
     if (!(await fluxdlIsRunning())) return;
 
-    const filename = filenameFromPath(item.filename) || filenameFromUrl(url);
     const data = await sendToFluxDL(
-      { url, filename, referer: item.referrer },
+      {
+        url,
+        filename: suggestedFilename(item),
+        referer: item.referrer,
+        user_agent: navigator.userAgent,
+      },
       { silent: true },
     );
 

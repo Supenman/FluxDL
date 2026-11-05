@@ -144,13 +144,22 @@ pub async fn run(
 
     let mut save_path = stored_path.clone();
     let mut renamed = false;
-    if !effective_resume && entry.options.filename.is_none() {
+    if !effective_resume {
         if let Some(name) = &probe.filename {
-            let dir = save_path.parent().unwrap_or(Path::new("."));
-            let candidate = util::unique_path(dir, name);
-            if candidate != save_path {
-                save_path = candidate;
-                renamed = true;
+            let current = save_path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            // 服务器给的名字优先，但不要用一个泛化名替换掉有意义的名字。
+            let trusted = (entry.options.filename.is_none() || entry.options.prefer_header_filename)
+                && (!util::looks_generic(name) || util::looks_generic(&current));
+            if trusted {
+                let dir = save_path.parent().unwrap_or(Path::new("."));
+                let candidate = util::unique_path(dir, name);
+                if candidate != save_path {
+                    save_path = candidate;
+                    renamed = true;
+                }
             }
         }
     }

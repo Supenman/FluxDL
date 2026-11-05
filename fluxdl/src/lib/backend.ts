@@ -7,9 +7,11 @@ import type {
   EngineEvent,
   EngineInfo,
   EngineOptions,
+  InstalledTools,
   NewTaskOptions,
   Task,
   TaskKind,
+  ToolProgress,
 } from "./types";
 
 declare global {
@@ -94,6 +96,21 @@ export const backend = {
 
   engineInfo(): Promise<EngineInfo> {
     return isTauri ? call<EngineInfo>("engine_info") : mockBackend.engineInfo();
+  },
+
+  installTools(): Promise<InstalledTools> {
+    return isTauri
+      ? call<InstalledTools>("install_tools")
+      : mockBackend.installTools();
+  },
+
+  async onToolProgress(
+    callback: (progress: ToolProgress) => void,
+  ): Promise<() => void> {
+    if (!isTauri) return () => {};
+    return listen<ToolProgress>("tools:progress", (event) =>
+      callback(event.payload),
+    );
   },
 
   async pickFolder(defaultPath?: string): Promise<string | null> {

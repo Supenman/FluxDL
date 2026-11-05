@@ -168,6 +168,34 @@ async fn downloads_without_range_support() {
 }
 
 #[tokio::test]
+async fn server_filename_wins_over_browser_suggestion() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut payload = vec![0u8; 256 * 1024];
+    rand::thread_rng().fill_bytes(&mut payload);
+    let server = start_server(Arc::new(payload), true).await;
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::new(dir.path().join("tasks.json"), tx);
+    engine.set_options(test_options(dir.path())).await;
+
+    let mut options = NewTaskOptions::default();
+    options.filename = Some("Setup (1).bin".into());
+    options.prefer_header_filename = true;
+    let task = engine
+        .add(TaskKind::Http, &server.url, options)
+        .await
+        .unwrap();
+    let view = wait_until(&engine, &task.id, Duration::from_secs(20), |v| {
+        v.status == TaskStatus::Completed || v.status == TaskStatus::Failed
+    })
+    .await;
+
+    assert_eq!(view.status, TaskStatus::Completed, "{view:?}");
+    assert_eq!(view.filename, "payload.bin");
+    assert!(dir.path().join("payload.bin").exists());
+    assert!(!dir.path().join("Setup (1).bin").exists());
+}
+
+#[tokio::test]
 async fn pause_then_resume_keeps_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let mut payload = vec![0u8; 2 * 1024 * 1024];

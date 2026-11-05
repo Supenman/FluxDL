@@ -20,8 +20,8 @@ import {
 } from "lucide-react";
 import { useStore } from "../store";
 import { backend, isTauri } from "../lib/backend";
-import type { EngineInfo, EngineOptions } from "../lib/types";
-import { cx, formatSpeed } from "../lib/format";
+import type { EngineInfo, EngineOptions, ToolProgress } from "../lib/types";
+import { cx, formatBytes, formatSpeed } from "../lib/format";
 
 const LIMITS = [
   { value: null, label: "不限速" },
@@ -61,6 +61,8 @@ export function SettingsPage() {
   const [info, setInfo] = useState<EngineInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(true);
+  const [installing, setInstalling] = useState(false);
+  const [progress, setProgress] = useState<ToolProgress | null>(null);
   const saveTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -70,6 +72,39 @@ export function SettingsPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let dispose: (() => void) | null = null;
+    let cancelled = false;
+    void backend.onToolProgress((next) => setProgress(next)).then((fn) => {
+      if (cancelled) fn();
+      else dispose = fn;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+
+  const install = async () => {
+    if (installing) return;
+    setInstalling(true);
+    setProgress(null);
+    try {
+      const result = await backend.installTools();
+      update({
+        ytDlpPath: result.ytDlpPath,
+        ffmpegPath: result.ffmpegPath,
+      });
+      await refreshInfo();
+      pushToast("yt-dlp 与 ffmpeg 已安装完成", "info");
+    } catch (error) {
+      pushToast(`安装失败：${error}`, "error");
+    } finally {
+      setInstalling(false);
+      setProgress(null);
+    }
+  };
 
   async function refreshInfo() {
     setChecking(true);
@@ -294,6 +329,19 @@ export function SettingsPage() {
             <h2>视频下载</h2>
             <p>使用 yt-dlp 解析站点视频，ffmpeg 用于合并音视频。</p>
           </div>
+          <button
+            className="mini-refresh install"
+            onClick={() => void install()}
+            disabled={installing || !isTauri}
+            title="自动下载 yt-dlp 与 ffmpeg 到本地工具目录"
+          >
+            {installing ? (
+              <Loader2 size={13} className="spin" />
+            ) : (
+              <Download size={13} />
+            )}
+            {installing ? "安装中" : "一键安装"}
+          </button>
           <button className="mini-refresh" onClick={() => void refreshInfo()} title="重新检测">
             <RefreshCw size={13} className={checking ? "spin" : ""} />
             检测
@@ -364,11 +412,34 @@ export function SettingsPage() {
 
         <div className="tip-card">
           <Sparkles size={15} />
-          <p>
-            推荐在 Windows 上使用 winget 安装：
-            <code>winget install yt-dlp.yt-dlp</code> 与
-            <code>winget install Gyan.FFmpeg</code>，完成后点击右上角“检测”。
-          </p>
+          <div className="tip-body">
+            <p>
+              {installing
+                ? progress
+                  ? progress.phase === "extract"
+                    ? "正在解压 ffmpeg…"
+                    : `正在下载 ${progress.tool}：${formatBytes(
+                        progress.downloaded,
+                      )}${progress.total ? ` / ${formatBytes(progress.total)}` : ""}`
+                  : "正在准备下载…"
+                : "点“一键安装”会从官方源下载 yt-dlp 与 ffmpeg 到 FluxDL 的本地工具目录，不需要 winget；也可以手动填写路径后点“检测”。"}
+            </p>
+            {installing && (
+              <div className="tool-progress">
+                <div
+                  className="tool-progress-bar"
+                  style={{
+                    width: progress?.total
+                      ? `${Math.min(
+                          100,
+                          (progress.downloaded / progress.total) * 100,
+                        )}%`
+                      : "35%",
+                  }}
+                />
+              </div>
+            )}
+          </div>
         </div>
       </section>
 

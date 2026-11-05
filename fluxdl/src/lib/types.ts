@@ -68,6 +68,20 @@ export interface EngineOptions {
   openFolderAfter: boolean;
 }
 
+export interface InstalledTools {
+  ytDlpPath: string;
+  ffmpegPath: string | null;
+  ytDlpAvailable: boolean;
+  ffmpegAvailable: boolean;
+}
+
+export interface ToolProgress {
+  tool: string;
+  phase: string;
+  downloaded: number;
+  total: number;
+}
+
 export interface EngineInfo {
   version: string;
   os: string;

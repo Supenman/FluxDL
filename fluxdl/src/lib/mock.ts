@@ -3,6 +3,7 @@ import type {
   EngineEvent,
   EngineInfo,
   EngineOptions,
+  InstalledTools,
   NewTaskOptions,
   Segment,
   Task,
@@ -396,6 +397,15 @@ export class MockBackend {
       version: "0.1.0-preview",
       os: "windows",
       ytDlpPath: this.options.ytDlpPath,
+      ytDlpAvailable: true,
+      ffmpegAvailable: true,
+    };
+  }
+
+  async installTools(): Promise<InstalledTools> {
+    return {
+      ytDlpPath: this.options.ytDlpPath,
+      ffmpegPath: this.options.ffmpegPath,
       ytDlpAvailable: true,
       ffmpegAvailable: true,
     };

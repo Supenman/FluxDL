@@ -1,7 +1,7 @@
 use fluxdl_engine::{Engine, EngineOptions, EngineInfo, NewTaskOptions, TaskKind, TaskView};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -173,6 +173,186 @@ async fn probe_binary(binary: &str, args: &[&str]) -> bool {
         tokio::time::timeout(std::time::Duration::from_secs(6), cmd.status()).await,
         Ok(Ok(status)) if status.success()
     )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledTools {
+    yt_dlp_path: String,
+    ffmpeg_path: Option<String>,
+    yt_dlp_available: bool,
+    ffmpeg_available: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolProgress {
+    tool: String,
+    phase: String,
+    downloaded: u64,
+    total: u64,
+}
+
+#[cfg(windows)]
+fn emit_tool_progress(app: &AppHandle, tool: &str, phase: &str, downloaded: u64, total: u64) {
+    let _ = app.emit(
+        "tools:progress",
+        ToolProgress {
+            tool: tool.to_string(),
+            phase: phase.to_string(),
+            downloaded,
+            total,
+        },
+    );
+}
+
+#[cfg(windows)]
+fn install_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .user_agent("FluxDL/0.1.0")
+        .connect_timeout(std::time::Duration::from_secs(20));
+    if let Some(proxy) = proxy.filter(|p| !p.trim().is_empty()) {
+        builder = builder.proxy(reqwest::Proxy::all(proxy.trim()).map_err(|e| e.to_string())?);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+async fn download_tool(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    tool: &str,
+    url: &str,
+    dest: &Path,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("连接 {tool} 下载源失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "下载 {tool} 失败：HTTP {}",
+            resp.status().as_u16()
+        ));
+    }
+    let total = resp.content_length().unwrap_or(0);
+    let tmp = dest.with_file_name(format!(
+        "{}.part",
+        dest.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download")
+    ));
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(|e| format!("创建临时文件失败：{e}"))?;
+    let mut downloaded = 0u64;
+    let mut last_emit = std::time::Instant::now();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("下载 {tool} 中断：{e}"))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("写入 {tool} 失败：{e}"))?;
+        downloaded += chunk.len() as u64;
+        if last_emit.elapsed().as_millis() >= 150 {
+            last_emit = std::time::Instant::now();
+            emit_tool_progress(app, tool, "download", downloaded, total);
+        }
+    }
+    drop(file);
+    tokio::fs::rename(&tmp, dest)
+        .await
+        .map_err(|e| format!("保存 {tool} 失败：{e}"))?;
+    emit_tool_progress(app, tool, "done", downloaded, total.max(downloaded));
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn extract_ffmpeg(zip_path: PathBuf, dir: PathBuf) -> Result<PathBuf, String> {
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&zip_path)
+            .map_err(|e| format!("打开 ffmpeg 压缩包失败：{e}"))?;
+        let mut archive =
+            zip::ZipArchive::new(file).map_err(|e| format!("解析压缩包失败：{e}"))?;
+        let mut ffmpeg = None;
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            let base = entry.name().rsplit('/').next().unwrap_or("").to_string();
+            if base != "ffmpeg.exe" && base != "ffprobe.exe" {
+                continue;
+            }
+            let out_path = dir.join(&base);
+            let mut out = std::fs::File::create(&out_path)
+                .map_err(|e| format!("写入 {base} 失败：{e}"))?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|e| format!("解压 {base} 失败：{e}"))?;
+            if base == "ffmpeg.exe" {
+                ffmpeg = Some(out_path);
+            }
+        }
+        ffmpeg.ok_or_else(|| "压缩包里没有 ffmpeg.exe".to_string())
+    })
+    .await
+    .map_err(|e| format!("解压任务失败：{e}"))?
+}
+
+#[tauri::command]
+async fn install_tools(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<InstalledTools, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, state);
+        Err("一键安装目前仅支持 Windows".into())
+    }
+
+    #[cfg(windows)]
+    {
+        const YT_DLP_URL: &str =
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+        const FFMPEG_URL: &str =
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+
+        let dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| format!("无法定位应用数据目录：{e}"))?
+            .join("bin");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| format!("创建工具目录失败：{e}"))?;
+
+        let client = install_client(state.engine.options().proxy.as_deref())?;
+
+        let yt_dlp = dir.join("yt-dlp.exe");
+        download_tool(&app, &client, "yt-dlp", YT_DLP_URL, &yt_dlp).await?;
+
+        let zip_path = dir.join("ffmpeg-temp.zip");
+        download_tool(&app, &client, "ffmpeg", FFMPEG_URL, &zip_path).await?;
+        emit_tool_progress(&app, "ffmpeg", "extract", 0, 0);
+        let ffmpeg = extract_ffmpeg(zip_path.clone(), dir.clone()).await?;
+        tokio::fs::remove_file(&zip_path).await.ok();
+
+        let mut options = state.engine.options();
+        options.yt_dlp_path = yt_dlp.to_string_lossy().to_string();
+        options.ffmpeg_path = Some(ffmpeg.to_string_lossy().to_string());
+        state.engine.set_options(options.clone()).await;
+
+        let yt_dlp_available = probe_binary(&options.yt_dlp_path, &["--version"]).await;
+        let ffmpeg_available =
+            probe_binary(options.ffmpeg_path.as_deref().unwrap_or(""), &["-version"]).await;
+
+        Ok(InstalledTools {
+            yt_dlp_path: options.yt_dlp_path,
+            ffmpeg_path: options.ffmpeg_path,
+            yt_dlp_available,
+            ffmpeg_available,
+        })
+    }
 }
 
 #[tauri::command]
@@ -658,6 +838,7 @@ pub fn run() {
             set_engine_options,
             set_clipboard_watch,
             engine_info,
+            install_tools,
             pick_folder,
             pick_file,
             open_path,

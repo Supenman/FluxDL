@@ -223,7 +223,7 @@ Chrome 137+ 的**正式版**会静默忽略命令行 `--load-extension`；做扩
 ```bash
 cd FuxDL/fluxdl
 
-# 引擎：11 单测 + 5 集成 + 9 回归 = 25 项
+# 引擎：16 单测 + 5 集成 + 9 回归 = 30 项
 cargo test -p fluxdl-engine
 cargo clippy --tests
 
@@ -236,7 +236,7 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 
 已完成的验证记录见 [`docs/验证记录.md`](./docs/验证记录.md)，包括：
 
-- 引擎并发 / 续传 / 持久化回归 25 项全绿；
+- 引擎并发 / 续传 / 持久化 / media 输出回归 30 项全绿；
 - 捕获服务真实 TCP 报文端到端 8 项；
 - 扩展核心纯函数 22 项 + 真实 Chrome for Testing / MV3 端到端 **18/18**（资源嗅探、流媒体标记、弹窗渲染、media 任务入队、1 KB 小文件自动接管、浏览器原生下载被取消）；
 - Ubuntu 桌面端 Xvfb 实跑、真实下载 + `tar tzf` 校验；
@@ -267,8 +267,9 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [#3](https://github.com/Supenman/FuxDL/pull/3) | 本地捕获服务安全加固：新增 `capture_guard.rs`，Host + Origin 准入，移除无条件 `ACAO: *` | `c1bc99b` |
 | [#4](https://github.com/Supenman/FuxDL/pull/4) | 扩展 v2：无范围自动接管、IDM 式资源嗅探、视频站点 media 解析；内置 yt-dlp / ffmpeg 自动探测；修复资源缓存并发覆盖与 `hidden` 样式覆盖 | `41584eda` |
 | [#5](https://github.com/Supenman/FuxDL/pull/5) | 文档：重写根目录 README，归档代码审查、改进方案、P0-3 专项与验证记录 | `a50f7748` |
+| [#6](https://github.com/Supenman/FuxDL/pull/6) | 修复 Windows 中文系统下 yt-dlp 写 stdout 触发 `Errno 22` 崩溃；统一 UTF-8 输出、字节级读取 stdout/stderr、目录差分定位视频产物 | `77e88d2e` |
 
-当前 `main` 已包含上述全部改动（PR #5 之后只追加过文档措辞同步，具体提交号以仓库 commit 历史为准）。远程 `main` 与本地构建源码逐文件比对 git blob SHA：**62 个源码文件 + 5 份文档全部一致，0 处差异**。`dist/`（前端构建产物）与 `tools/` 下四个平台二进制按设计不进 Git。
+当前 `main` 已包含上述全部改动（文档可能在此之后继续同步，具体提交号以仓库 commit 历史为准）。远程 `main` 与本地构建源码逐文件比对 git blob SHA：**62 个源码文件 + 5 份文档全部一致，0 处差异**。`dist/`（前端构建产物）与 `tools/` 下四个平台二进制按设计不进 Git。
 
 ---
 

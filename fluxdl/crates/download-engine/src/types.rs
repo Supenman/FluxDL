@@ -83,6 +83,9 @@ pub struct NewTaskOptions {
     pub proxy: Option<String>,
     pub headers: BTreeMap<String, String>,
     pub format: Option<String>,
+    /// yt-dlp 用的 Netscape cookies.txt 临时文件路径（仅媒体任务）。
+    /// 只存路径不存内容：cookie 是凭证，绝不能写进 tasks.json。
+    pub cookies_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

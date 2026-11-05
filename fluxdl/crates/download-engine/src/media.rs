@@ -56,12 +56,52 @@ fn spawn_line_reader<R>(
     });
 }
 
+/// 用完即删的 cookie 临时文件。任务暂停时保留，方便续跑时继续带登录态。
+struct CookieFileGuard {
+    path: Option<PathBuf>,
+}
+
+impl CookieFileGuard {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self { path }
+    }
+
+    fn keep(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for CookieFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// yt-dlp 的 bot 校验报错，用于决定是否追加本地化指引。
+fn needs_bot_hint(errors: &[String]) -> bool {
+    errors.iter().any(|e| {
+        e.contains("Sign in to confirm you're not a bot")
+            || e.contains("--cookies-from-browser")
+    })
+}
+
 pub async fn run(
     engine: &Arc<Engine>,
     entry: &Arc<TaskEntry>,
     token: CancellationToken,
 ) -> Result<(), EngineError> {
     let options = engine.options();
+    // cookie 只在本次进程内有效；文件不存在（例如重启后）就当没有登录态，
+    // 绝不让失效路径阻塞正常下载。
+    let cookie_path = entry
+        .options
+        .cookies_file
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|p| p.is_file());
+    let mut cookie_guard = CookieFileGuard::new(cookie_path.clone());
     let (save_dir, placeholder) = {
         let view = entry.view.lock().await;
         (
@@ -122,6 +162,11 @@ pub async fn run(
     if let Some(referer) = entry.options.referer.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--referer").arg(referer);
     }
+    // 视频站点的登录态：yt-dlp 报 "Sign in to confirm you're not a bot" 时
+    // 必须带 cookies.txt，否则连格式列表都拿不到。
+    if let Some(path) = cookie_path.as_deref() {
+        cmd.arg("--cookies").arg(path);
+    }
     cmd.arg(&entry.url);
 
     #[cfg(windows)]
@@ -166,6 +211,7 @@ pub async fn run(
         let next = tokio::select! {
             _ = token.cancelled() => {
                 let _ = child.kill().await;
+                cookie_guard.keep();
                 return Err(EngineError::Paused);
             }
             line = rx.recv() => line,
@@ -226,6 +272,7 @@ pub async fn run(
 
     let status = child.wait().await?;
     if token.is_cancelled() {
+        cookie_guard.keep();
         return Err(EngineError::Paused);
     }
     if !status.success() {
@@ -239,10 +286,13 @@ pub async fn run(
             .rev()
             .collect::<Vec<_>>()
             .join(" / ");
+        // yt-dlp 的英文报错对中文用户不够可操作，补一句本地化指引。
+        const BOT_HINT: &str = "（YouTube 要求登录状态：请先在 Chrome 登录 YouTube，确认扩展「视频站点自动带上登录状态」已开启并重新加载扩展；若仍失败，多为 YouTube 的 PO Token 校验）";
+        let hint = if needs_bot_hint(&errors) { BOT_HINT } else { "" };
         return Err(EngineError::message(if tail.is_empty() {
-            format!("yt-dlp 退出码 {:?}", status.code())
+            format!("yt-dlp 退出码 {:?}{hint}", status.code())
         } else {
-            format!("yt-dlp 失败：{tail}")
+            format!("yt-dlp 失败：{tail}{hint}")
         }));
     }
 
@@ -362,7 +412,7 @@ fn find_output(dir: &Path, placeholder: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_new_output, snapshot_files, spawn_line_reader};
+    use super::{needs_bot_hint, find_new_output, snapshot_files, spawn_line_reader, CookieFileGuard};
     use tokio::io::{duplex, AsyncWriteExt};
     use tokio::sync::mpsc;
 
@@ -428,5 +478,38 @@ mod tests {
         std::fs::write(dir.path().join("older.mp4"), b"old").unwrap();
         let before = snapshot_files(dir.path());
         assert!(find_new_output(dir.path(), &before).is_none());
+    }
+
+    #[test]
+    fn cookie_file_is_deleted_when_task_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cookies.txt");
+        std::fs::write(&path, b"credential").unwrap();
+        {
+            let _guard = CookieFileGuard::new(Some(path.clone()));
+            assert!(path.exists());
+        }
+        assert!(!path.exists(), "任务结束后凭证文件必须删掉");
+    }
+
+    #[test]
+    fn cookie_file_is_kept_when_task_is_paused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cookies.txt");
+        std::fs::write(&path, b"credential").unwrap();
+        {
+            let mut guard = CookieFileGuard::new(Some(path.clone()));
+            guard.keep();
+        }
+        assert!(path.exists(), "暂停时保留 cookie 文件以便续跑");
+    }
+
+    #[test]
+    fn bot_hint_only_for_youtube_challenge() {
+        assert!(needs_bot_hint(&[
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot".into()
+        ]));
+        assert!(needs_bot_hint(&["Use --cookies-from-browser".into()]));
+        assert!(!needs_bot_hint(&["ERROR: 404 Not Found".into()]));
     }
 }

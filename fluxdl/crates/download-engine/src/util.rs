@@ -36,14 +36,78 @@ pub fn sanitize_filename(input: &str) -> String {
     }
 }
 
-pub fn filename_from_url(url: &Url) -> Option<String> {
-    let last = url.path_segments()?.last()?.to_string();
-    let decoded = percent_decode_str(&last).decode_utf8_lossy().to_string();
-    if decoded.trim().is_empty() {
-        None
-    } else {
-        Some(sanitize_filename(&decoded))
+const GENERIC_STEMS: &[&str] = &[
+    "download",
+    "downloadfile",
+    "getfile",
+    "get",
+    "file",
+    "index",
+    "unnamed",
+    "attachment",
+];
+
+/// 形如 `download`、`index` 这类没有信息量的名字（通常是接口路径）。
+pub fn looks_generic(filename: &str) -> bool {
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if stem.is_empty() {
+        return true;
     }
+    GENERIC_STEMS.contains(&stem.as_str())
+}
+
+fn filename_from_query(url: &Url) -> Option<String> {
+    for (key, value) in url.query_pairs() {
+        let key = key.to_ascii_lowercase();
+        if !matches!(
+            key.as_str(),
+            "filename" | "file" | "name" | "fn" | "download" | "response-content-disposition"
+        ) {
+            continue;
+        }
+        let raw = value.to_string();
+        let Some(candidate) = (if key == "response-content-disposition" {
+            raw.split("filename=")
+                .nth(1)
+                .map(|s| s.trim_matches('"').to_string())
+        } else {
+            Some(raw.split(['/', '\\']).last().unwrap_or(&raw).to_string())
+        }) else {
+            continue;
+        };
+        let candidate = percent_decode_str(&candidate).decode_utf8_lossy().to_string();
+        if !candidate.trim().is_empty() {
+            return Some(sanitize_filename(&candidate));
+        }
+    }
+    None
+}
+
+pub fn filename_from_url(url: &Url) -> Option<String> {
+    let from_path = url
+        .path_segments()
+        .and_then(|segments| segments.last())
+        .filter(|last| !last.trim().is_empty())
+        .map(|last| {
+            let decoded = percent_decode_str(last).decode_utf8_lossy().to_string();
+            sanitize_filename(&decoded)
+        });
+
+    // 路径只是 /download、/get 这类接口（或没有扩展名）时，改从查询参数里找真实文件名。
+    if let Some(name) = &from_path {
+        let has_extension = Path::new(name).extension().is_some();
+        if has_extension && !looks_generic(name) {
+            return Some(name.clone());
+        }
+    }
+    if let Some(name) = filename_from_query(url) {
+        return Some(name);
+    }
+    from_path
 }
 
 pub fn filename_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -187,6 +251,35 @@ mod tests {
             "attachment; filename=\"report 2024.pdf\"".parse().unwrap(),
         );
         assert_eq!(filename_from_headers(&h).unwrap(), "report 2024.pdf");
+    }
+
+    #[test]
+    fn generic_path_falls_back_to_query() {
+        let url = Url::parse("https://example.com/download?file=Setup%20v2.exe").unwrap();
+        assert_eq!(filename_from_url(&url).unwrap(), "Setup v2.exe");
+    }
+
+    #[test]
+    fn s3_response_disposition_param() {
+        let url = Url::parse(
+            "https://example.com/object?response-content-disposition=attachment%3B%20filename%3D%22demo.zip%22",
+        )
+        .unwrap();
+        assert_eq!(filename_from_url(&url).unwrap(), "demo.zip");
+    }
+
+    #[test]
+    fn normal_path_wins_over_query() {
+        let url = Url::parse("https://example.com/files/demo.zip?name=other.rar").unwrap();
+        assert_eq!(filename_from_url(&url).unwrap(), "demo.zip");
+    }
+
+    #[test]
+    fn detects_generic_names() {
+        assert!(looks_generic("download"));
+        assert!(looks_generic("index.html"));
+        assert!(!looks_generic("report 2024.pdf"));
+        assert!(!looks_generic("movie.mp4"));
     }
 
     #[test]

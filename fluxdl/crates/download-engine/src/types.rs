@@ -74,6 +74,8 @@ pub struct TaskView {
 pub struct NewTaskOptions {
     pub save_dir: Option<String>,
     pub filename: Option<String>,
+    /// 服务器 `Content-Disposition` 里的文件名优先于调用方给的建议名（浏览器捕获用）。
+    pub prefer_header_filename: bool,
     pub connections: Option<u8>,
     pub speed_limit: Option<u64>,
     pub referer: Option<String>,

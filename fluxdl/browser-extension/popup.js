@@ -1,9 +1,23 @@
 const API = "http://127.0.0.1:35917";
 
+const DEFAULT_SETTINGS = {
+  autoCapture: true,
+  groups: {
+    archive: true,
+    installer: true,
+    media: true,
+    doc: true,
+    image: false,
+  },
+  minSizeMB: 1,
+};
+
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 const hint = document.getElementById("hint");
 const autoCapture = document.getElementById("auto-capture");
+const minSize = document.getElementById("min-size");
+const groupInputs = Array.from(document.querySelectorAll("#groups input"));
 const recheck = document.getElementById("recheck");
 
 function setStatus(state) {
@@ -34,12 +48,36 @@ async function checkHealth() {
 }
 
 async function loadPrefs() {
-  const stored = await chrome.storage.sync.get({ autoCapture: true });
+  const stored = await chrome.storage.sync.get(DEFAULT_SETTINGS);
+  const groups = { ...DEFAULT_SETTINGS.groups, ...(stored.groups || {}) };
   autoCapture.checked = Boolean(stored.autoCapture);
+  minSize.value = String(Number(stored.minSizeMB) || 0);
+  for (const input of groupInputs) {
+    input.checked = Boolean(groups[input.value]);
+  }
 }
 
-autoCapture.addEventListener("change", () => {
-  chrome.storage.sync.set({ autoCapture: autoCapture.checked });
+function savePrefs() {
+  const groups = {};
+  for (const input of groupInputs) {
+    groups[input.value] = input.checked;
+  }
+  chrome.storage.sync.set({
+    autoCapture: autoCapture.checked,
+    groups,
+    minSizeMB: Math.max(0, Number(minSize.value) || 0),
+  });
+}
+
+autoCapture.addEventListener("change", savePrefs);
+
+for (const input of groupInputs) {
+  input.addEventListener("change", savePrefs);
+}
+
+minSize.addEventListener("change", () => {
+  if (!minSize.value || Number(minSize.value) < 0) minSize.value = "0";
+  savePrefs();
 });
 
 recheck.addEventListener("click", () => {

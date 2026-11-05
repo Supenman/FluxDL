@@ -454,6 +454,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
 
     let options = NewTaskOptions {
         filename: payload.filename,
+        prefer_header_filename: true,
         referer: payload.referer,
         user_agent: payload.user_agent,
         ..Default::default()

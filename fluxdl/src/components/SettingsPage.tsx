@@ -402,7 +402,7 @@ export function SettingsPage() {
               <Globe size={13} /> 浏览器链接捕获
             </label>
             <p>
-              安装 Chrome / Edge 扩展后，右键“用 FluxDL 下载”或自动接管浏览器下载（本地端口
+              安装 Chrome / Edge 扩展后，右键“用 FluxDL 下载”或自动接管浏览器下载；接管范围可在扩展弹窗里按类型和体积过滤（本地端口
               35917）
             </p>
           </div>

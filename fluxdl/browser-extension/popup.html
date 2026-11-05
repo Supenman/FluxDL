@@ -29,6 +29,30 @@
         </div>
       </section>
 
+      <section class="card">
+        <div class="copy">
+          <span>自动接管范围</span>
+          <small>只接管勾选的类型，其余下载留在浏览器里</small>
+        </div>
+        <div class="checks" id="groups">
+          <label><input type="checkbox" value="archive" />压缩包</label>
+          <label><input type="checkbox" value="installer" />安装包</label>
+          <label><input type="checkbox" value="media" />音视频</label>
+          <label><input type="checkbox" value="doc" />文档</label>
+          <label><input type="checkbox" value="image" />图片</label>
+        </div>
+        <div class="size-row">
+          <div class="copy">
+            <span>跳过小文件</span>
+            <small>体积小于阈值的下载保留在浏览器</small>
+          </div>
+          <div class="size-input">
+            <input id="min-size" type="number" min="0" max="1024" step="1" />
+            <span>MB</span>
+          </div>
+        </div>
+      </section>
+
       <section class="hint" id="hint">
         在网页链接上右键，选择“用 FluxDL 下载此链接”，即可把任务发送到桌面端。
       </section>

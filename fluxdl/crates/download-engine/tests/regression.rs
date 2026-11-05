@@ -411,3 +411,217 @@ async fn p0_1c_completed_task_must_release_reserved_path() {
         "【缺陷复现】完成任务未释放占位，重下同名文件被重命名"
     );
 }
+
+// ------------------------------------------- P1-5：并发 save 写竞争
+
+/// 复现：`save()` 无互斥，多个调用同时写固定的 `tasks.json.tmp` 并抢 rename，
+/// 会出现「保存失败」日志甚至损坏的任务列表。
+#[tokio::test]
+async fn p1_5_concurrent_save_must_not_corrupt_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("tasks.json");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::new(store.clone(), tx);
+    engine.set_options(test_options(dir.path())).await;
+
+    // 造 20 个立即失败的任务（端口 1 无人监听），让持久化内容有一定体积
+    for i in 0..20 {
+        let url = format!("http://127.0.0.1:1/file{i}.bin");
+        engine
+            .add(TaskKind::Http, &url, NewTaskOptions::default())
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // 并发 32 次 save
+    let mut handles = Vec::new();
+    for _ in 0..32 {
+        let e = engine.clone();
+        handles.push(tokio::spawn(async move { e.save().await }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    let mut errors = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let EngineEvent::Log(line) = ev {
+            if line.message.contains("任务列表保存失败") {
+                errors.push(line.message);
+            }
+        }
+    }
+
+    let raw = std::fs::read_to_string(&store).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("【缺陷复现】并发 save 后 tasks.json 已损坏");
+    let n = parsed["tasks"].as_array().map(|a| a.len()).unwrap_or(0);
+
+    eprintln!("[P1-5] 保存失败日志 {} 条，tasks.json 中任务数 {n}", errors.len());
+    assert!(
+        errors.is_empty(),
+        "【缺陷复现】并发 save 出现写竞争：{errors:?}"
+    );
+    assert_eq!(n, 20, "任务数量应与实际一致");
+}
+
+// ------------------------------------------- probe：首次失败即放弃，不重试
+
+/// 前 `fail_first` 个请求返回 500，之后正常。
+async fn start_server_flaky(payload: Arc<Vec<u8>>, fail_first: usize) -> TestServer {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{addr}/payload.bin");
+    let seen = Arc::new(AtomicUsize::new(0));
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let n = seen.fetch_add(1, AtomicOrdering::SeqCst);
+            let payload = payload.clone();
+            tokio::spawn(async move {
+                if n < fail_first {
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await;
+                    return;
+                }
+                let mut head = Vec::new();
+                {
+                    let mut reader = BufReader::new(&mut socket);
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).await.unwrap_or(0) == 0 { return; }
+                        if line == "\r\n" { break; }
+                        head.push(line);
+                    }
+                }
+                let total = payload.len() as u64;
+                let mut range: Option<(u64, u64)> = None;
+                for line in &head {
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("range:") {
+                        let v = v.trim().trim_start_matches("bytes=");
+                        if let Some((a, b)) = v.split_once('-') {
+                            let start = a.parse::<u64>().unwrap_or(0);
+                            let end = if b.is_empty() { total - 1 } else { b.parse::<u64>().unwrap_or(total - 1) };
+                            range = Some((start, end.min(total - 1)));
+                        }
+                    }
+                }
+                let (start, end, status) = match range {
+                    Some((s, e)) if s < total => (s, e, "206 Partial Content"),
+                    _ => (0, total.saturating_sub(1), "200 OK"),
+                };
+                let mut header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n",
+                    end - start + 1
+                );
+                header.push_str(&format!("Content-Range: bytes {start}-{end}/{total}\r\nConnection: close\r\n\r\n"));
+                if socket.write_all(header.as_bytes()).await.is_err() { return; }
+                let mut pos = start as usize;
+                while pos <= end as usize {
+                    let stop = (pos + 32 * 1024).min(end as usize + 1);
+                    if socket.write_all(&payload[pos..stop]).await.is_err() { return; }
+                    pos = stop;
+                }
+                let _ = socket.flush().await;
+            });
+        }
+    });
+    TestServer { url, _handle: handle }
+}
+
+/// 复现：probe 只发一次 `RANGE: bytes=0-0`，遇到临时 5xx 直接把任务判失败。
+/// 期望：与分段下载一致，网络/服务端临时错误应重试后再放弃。
+#[tokio::test]
+async fn p1_probe_should_retry_transient_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = 512 * 1024;
+    let mut payload = vec![0u8; size];
+    rand::thread_rng().fill_bytes(&mut payload);
+    let expected = payload.clone();
+    let server = start_server_flaky(Arc::new(payload), 2).await;
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::new(dir.path().join("tasks.json"), tx);
+    engine.set_options(test_options(dir.path())).await;
+
+    let task = engine
+        .add(TaskKind::Http, &server.url, NewTaskOptions::default())
+        .await
+        .unwrap();
+    let finished = wait_until(&engine, &task.id, Duration::from_secs(40), |v| {
+        v.status == TaskStatus::Completed || v.status == TaskStatus::Failed
+    })
+    .await;
+
+    eprintln!("[probe] 最终状态 = {:?}, error = {:?}", finished.status, finished.error);
+    assert_eq!(
+        finished.status,
+        TaskStatus::Completed,
+        "【缺陷复现】probe 遇到临时错误未重试，任务直接失败"
+    );
+    let bytes = std::fs::read(dir.path().join("payload.bin")).unwrap();
+    assert_eq!(bytes, expected, "重试后下载内容应完整");
+}
+
+// ------------------------------------------- P1-6：并发 resume 的防御性保护
+
+/// 并发 resume 不应破坏暂停语义。
+/// 说明：`spawn_runner` 检查与置位之间的窗口很窄，这个用例是**回归保护**，
+/// 不保证在旧代码上稳定失败；真正的修复验证靠代码审查 + 下面的状态断言。
+#[tokio::test]
+async fn p1_6_concurrent_resume_keeps_pause_effective() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = 4 * 1024 * 1024;
+    let mut payload = vec![0u8; size];
+    rand::thread_rng().fill_bytes(&mut payload);
+    let server = start_server(Arc::new(payload)).await;
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::new(dir.path().join("tasks.json"), tx);
+    engine.set_options(test_options(dir.path())).await;
+
+    let opts = NewTaskOptions {
+        speed_limit: Some(300 * 1024),
+        ..Default::default()
+    };
+    let task = engine.add(TaskKind::Http, &server.url, opts).await.unwrap();
+    wait_until(&engine, &task.id, Duration::from_secs(20), |v| {
+        v.downloaded_bytes > 200 * 1024
+    })
+    .await;
+    engine.pause(&task.id).await;
+    wait_until(&engine, &task.id, Duration::from_secs(5), |v| {
+        v.status == TaskStatus::Paused
+    })
+    .await;
+
+    let mut handles = Vec::new();
+    for _ in 0..16 {
+        let e = engine.clone();
+        let id = task.id.clone();
+        handles.push(tokio::spawn(async move { e.resume(&id).await }));
+    }
+    for h in handles { h.await.unwrap(); }
+
+    wait_until(&engine, &task.id, Duration::from_secs(20), |v| {
+        v.downloaded_bytes > 450 * 1024
+    })
+    .await;
+    engine.pause(&task.id).await;
+    let paused = wait_until(&engine, &task.id, Duration::from_secs(5), |v| {
+        v.status == TaskStatus::Paused
+    })
+    .await;
+    let at_pause = paused.downloaded_bytes;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let after = engine.get_task(&task.id).await.unwrap();
+    eprintln!("[P1-6] 暂停时 {at_pause} 字节，1.2s 后 {} 字节", after.downloaded_bytes);
+    assert_eq!(
+        after.downloaded_bytes, at_pause,
+        "【缺陷复现】暂停后仍在下载，取消令牌被并发 resume 覆盖"
+    );
+}

@@ -39,10 +39,24 @@ pub async fn save(path: &Path, store: &StoreFile) -> std::io::Result<()> {
     }
     let raw = serde_json::to_vec_pretty(store)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let tmp = path.with_extension("json.tmp");
+
+    // tmp 带 pid，避免多个进程实例互相踩同一个临时文件。
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "tasks.json".into());
+    name.push_str(&format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
     tokio::fs::write(&tmp, raw).await?;
-    if path.exists() {
-        tokio::fs::remove_file(path).await.ok();
+
+    // 直接 rename 覆盖，不要再先删目标：删掉后到改名之间若失败（或崩溃），
+    // 任务列表就凭空消失了。Rust 的 rename 在 Windows 上带 MOVEFILE_REPLACE_EXISTING，
+    // 能覆盖已存在的文件。
+    match tokio::fs::rename(&tmp, path).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(err)
+        }
     }
-    tokio::fs::rename(&tmp, path).await
 }

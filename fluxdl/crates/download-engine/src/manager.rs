@@ -69,6 +69,9 @@ pub struct Engine {
     /// 而写入用的是 `{save_path}.fluxdl-part`，在 part 创建前存在竞态窗口，
     /// 多个任务可能拿到同一个路径并交错写同一文件。这里做进程内占位。
     reserved: Mutex<std::collections::HashSet<PathBuf>>,
+    /// P1-5 修复：持久化写入串行化。store::save 用固定 tmp + rename，
+    /// 并发调用会互相踩 tmp，甚至把目标删掉却没改名回来。
+    save_lock: AsyncMutex<()>,
 }
 
 struct SlotGuard {
@@ -130,6 +133,7 @@ impl Engine {
             notify: Notify::new(),
             ticks: AtomicU64::new(0),
             reserved: Mutex::new(std::collections::HashSet::new()),
+            save_lock: AsyncMutex::new(()),
         });
 
         // Hydrate segment lists + rate limiters from the persisted views.
@@ -367,29 +371,37 @@ impl Engine {
 
     async fn spawn_runner(self: &Arc<Self>, id: String) {
         let Some(entry) = self.get(&id) else { return };
-        let already_running = entry
-            .cancel
-            .lock()
-            .await
-            .as_ref()
-            .map(|token| !token.is_cancelled())
-            .unwrap_or(false);
-        if already_running {
-            return;
-        }
         {
-            let mut view = entry.view.lock().await;
+            let view = entry.view.lock().await;
             if view.status == TaskStatus::Completed {
                 return;
             }
+        }
+
+        // P1-6 修复：检查与置位必须在同一临界区。原来是「先读 cancel 判断有没有
+        // 在跑，隔了几个 await，再写新 token」，并发 resume 会各自启动一个 runner，
+        // 后写的 token 覆盖前一个；pause 只取消得到最后一个，旧 runner 继续下载。
+        let token = CancellationToken::new();
+        {
+            let mut cancel = entry.cancel.lock().await;
+            if cancel
+                .as_ref()
+                .map(|t| !t.is_cancelled())
+                .unwrap_or(false)
+            {
+                return;
+            }
+            *cancel = Some(token.clone());
+        }
+
+        {
+            let mut view = entry.view.lock().await;
             view.status = TaskStatus::Queued;
             view.error = None;
         }
         entry.wanted_pause.store(false, Ordering::SeqCst);
         entry.finished.store(false, Ordering::SeqCst);
         entry.sample.lock().at = None;
-        let token = CancellationToken::new();
-        *entry.cancel.lock().await = Some(token.clone());
         self.emit_task(&entry).await;
 
         let engine = self.clone();
@@ -589,6 +601,9 @@ impl Engine {
     }
 
     pub async fn save(&self) {
+        // 必须在收集快照之前就持锁：两个 save 若交错写同一个 tmp，
+        // 后一个 rename 会找不到 tmp，而目标已被前一个删掉——任务列表直接丢失。
+        let _guard = self.save_lock.lock().await;
         let entries: Vec<Arc<TaskEntry>> = self.tasks.read().values().cloned().collect();
         let mut tasks = Vec::with_capacity(entries.len());
         let order = self.order.lock().clone();

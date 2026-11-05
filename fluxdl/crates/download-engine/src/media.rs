@@ -87,12 +87,31 @@ fn needs_bot_hint(errors: &[String]) -> bool {
     })
 }
 
+/// 默认格式选择：优先「最佳视频流 + 最佳音频流」合并，退到整体 best。
+/// 保持原行为不变，只有降级重试时才放宽。
+const DEFAULT_FORMAT: &str = "bv*+ba/b";
+/// 降级重试用的格式链，最后退到最低清晰度，避免一个都选不中。
+const FALLBACK_FORMAT: &str = "bv*+ba/b/worst";
+/// 降级重试时换用的 YouTube 客户端：android_vr / web_safari 等不依赖
+/// PO Token，是 yt-dlp 应对「Requested format is not available」的常用组合。
+/// `--extractor-args` 只对 youtube 提取器生效，B 站等其它站点不受影响。
+const FALLBACK_CLIENTS: &str = "android_vr,web_safari,tv,ios,mweb";
+const FORMAT_HINT: &str = "（YouTube 未返回可下载清晰度：多为 PO Token / 客户端限制，或会员、年龄、地区限制。请先在 Chrome 确认该视频能正常播放且已登录，再点「重试下载」；换一个普通公开视频可判断是单个视频受限还是整体风控）";
+
+/// 判断这次失败是不是「没拿到可用格式」，决定是否值得降级重试。
+fn needs_format_retry(errors: &[String]) -> bool {
+    errors.iter().any(|e| {
+        e.contains("Requested format is not available")
+            || e.contains("No video formats available")
+            || e.contains("--list-formats")
+    })
+}
+
 pub async fn run(
     engine: &Arc<Engine>,
     entry: &Arc<TaskEntry>,
     token: CancellationToken,
 ) -> Result<(), EngineError> {
-    let options = engine.options();
     // cookie 只在本次进程内有效；文件不存在（例如重启后）就当没有登录态，
     // 绝不让失效路径阻塞正常下载。
     let cookie_path = entry
@@ -102,6 +121,24 @@ pub async fn run(
         .map(PathBuf::from)
         .filter(|p| p.is_file());
     let mut cookie_guard = CookieFileGuard::new(cookie_path.clone());
+    // 降级重试可能跑两轮 yt-dlp，凭证文件必须跨两轮存活：guard 提到外层，
+    // 只有真正暂停（取消）才保留，成功或失败都按「用完即删」处理。
+    let cancelled = token.clone();
+    let result = run_inner(engine, entry, &token, cookie_path.as_deref(), false).await;
+    if cancelled.is_cancelled() {
+        cookie_guard.keep();
+    }
+    result
+}
+
+async fn run_inner(
+    engine: &Arc<Engine>,
+    entry: &Arc<TaskEntry>,
+    token: &CancellationToken,
+    cookie_path: Option<&Path>,
+    fallback: bool,
+) -> Result<(), EngineError> {
+    let options = engine.options();
     let (save_dir, placeholder) = {
         let view = entry.view.lock().await;
         (
@@ -139,7 +176,13 @@ pub async fn run(
         .arg("-o")
         .arg("%(title).150B [%(id)s].%(ext)s")
         .arg("-f")
-        .arg(entry.options.format.as_deref().unwrap_or("bv*+ba/b"))
+        .arg(
+            entry.options.format.as_deref().unwrap_or(if fallback {
+                FALLBACK_FORMAT
+            } else {
+                DEFAULT_FORMAT
+            }),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -152,6 +195,12 @@ pub async fn run(
         .env("PYTHONUNBUFFERED", "1")
         .kill_on_drop(true);
 
+    // 降级重试：换一组不依赖 PO Token 的 YouTube 客户端重新拿格式列表。
+    // 只在报错为「格式不可用」时走到这里，正常下载路径完全不受影响。
+    if fallback {
+        cmd.arg("--extractor-args")
+            .arg(format!("youtube:player_client={FALLBACK_CLIENTS}"));
+    }
     if let Some(ffmpeg) = options.ffmpeg_path.as_deref().filter(|s| !s.trim().is_empty()) {
         cmd.arg("--ffmpeg-location").arg(ffmpeg.trim());
         cmd.arg("--merge-output-format").arg("mp4");
@@ -164,7 +213,7 @@ pub async fn run(
     }
     // 视频站点的登录态：yt-dlp 报 "Sign in to confirm you're not a bot" 时
     // 必须带 cookies.txt，否则连格式列表都拿不到。
-    if let Some(path) = cookie_path.as_deref() {
+    if let Some(path) = cookie_path {
         cmd.arg("--cookies").arg(path);
     }
     cmd.arg(&entry.url);
@@ -211,7 +260,6 @@ pub async fn run(
         let next = tokio::select! {
             _ = token.cancelled() => {
                 let _ = child.kill().await;
-                cookie_guard.keep();
                 return Err(EngineError::Paused);
             }
             line = rx.recv() => line,
@@ -272,7 +320,6 @@ pub async fn run(
 
     let status = child.wait().await?;
     if token.is_cancelled() {
-        cookie_guard.keep();
         return Err(EngineError::Paused);
     }
     if !status.success() {
@@ -286,9 +333,24 @@ pub async fn run(
             .rev()
             .collect::<Vec<_>>()
             .join(" / ");
+        // 第一次遇到「没拿到可用格式」时，换客户端 + 放宽格式链自动重试一次。
+        // Box::pin 打断 async fn 的递归 Future 类型，避免 E0733。
+        if !fallback && needs_format_retry(&errors) {
+            engine.emit_log(
+                &entry.id,
+                "未取得可用清晰度，自动换 yt-dlp 客户端并放宽格式后重试一次…",
+            );
+            return Box::pin(run_inner(engine, entry, token, cookie_path, true)).await;
+        }
         // yt-dlp 的英文报错对中文用户不够可操作，补一句本地化指引。
         const BOT_HINT: &str = "（YouTube 要求登录状态：请先在 Chrome 登录 YouTube，确认扩展「视频站点自动带上登录状态」已开启并重新加载扩展；若仍失败，多为 YouTube 的 PO Token 校验）";
-        let hint = if needs_bot_hint(&errors) { BOT_HINT } else { "" };
+        let hint = if needs_bot_hint(&errors) {
+            BOT_HINT
+        } else if needs_format_retry(&errors) {
+            FORMAT_HINT
+        } else {
+            ""
+        };
         return Err(EngineError::message(if tail.is_empty() {
             format!("yt-dlp 退出码 {:?}{hint}", status.code())
         } else {
@@ -412,7 +474,11 @@ fn find_output(dir: &Path, placeholder: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{needs_bot_hint, find_new_output, snapshot_files, spawn_line_reader, CookieFileGuard};
+    use super::{
+        needs_bot_hint, needs_format_retry, find_new_output, snapshot_files,
+        spawn_line_reader, CookieFileGuard, DEFAULT_FORMAT, FALLBACK_FORMAT,
+        FALLBACK_CLIENTS, FORMAT_HINT,
+    };
     use tokio::io::{duplex, AsyncWriteExt};
     use tokio::sync::mpsc;
 
@@ -511,5 +577,30 @@ mod tests {
         ]));
         assert!(needs_bot_hint(&["Use --cookies-from-browser".into()]));
         assert!(!needs_bot_hint(&["ERROR: 404 Not Found".into()]));
+    }
+
+    #[test]
+    fn format_retry_only_for_missing_formats() {
+        assert!(needs_format_retry(&[
+            "ERROR: [youtube] abc: Requested format is not available. Use --list-formats".into()
+        ]));
+        assert!(needs_format_retry(&[
+            "ERROR: No video formats available for the requested format".into()
+        ]));
+        // bot 校验不能误判成格式问题，否则会白白多跑一轮 yt-dlp
+        assert!(!needs_format_retry(&[
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot".into()
+        ]));
+        assert!(!needs_format_retry(&["ERROR: 404 Not Found".into()]));
+    }
+
+    #[test]
+    fn fallback_is_more_permissive_but_default_is_unchanged() {
+        assert_eq!(DEFAULT_FORMAT, "bv*+ba/b", "正常路径必须保持原格式串");
+        assert!(FALLBACK_FORMAT.starts_with(DEFAULT_FORMAT));
+        assert!(FALLBACK_FORMAT.ends_with("/worst"));
+        assert!(FALLBACK_CLIENTS.contains("android_vr"));
+        assert!(FALLBACK_CLIENTS.contains("web_safari"));
+        assert!(FORMAT_HINT.contains("PO Token"));
     }
 }

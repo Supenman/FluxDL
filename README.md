@@ -46,6 +46,7 @@
 - **IDM 式资源嗅探**：`webRequest.onResponseStarted` 按 `Content-Type` / `Content-Disposition` / URL 后缀识别音视频与文件，按标签页缓存，弹窗可单条或全部发送到桌面端。
 - **视频站点**：`.m4s` / `.m3u8` / `.mpd` 识别为流媒体片段，不刷屏成普通文件；弹窗提示「本页检测到视频」，一键发 `kind: media` 交给桌面端 `yt-dlp` 解析。
 - **格式不可用自动降级**：只在 `Requested format is not available` 时自动重试一次，换不依赖 PO Token 的 `player_client` 并把格式链放宽到 `bv*+ba/b/worst`；正常下载路径不变。
+- **yt-dlp 自动更新**：FluxDL 把 yt-dlp 冻结打包，但 YouTube 反爬频繁变动、旧版必崩（典型报错 `The page needs to be reloaded`）。后台会静默检查并就地替换随包内置的 yt-dlp（24h 冷却、失败静默、官方源失败回退镜像）；遇到「页面需重载」报错还会强制更新后重试一次。设置页可关闭。
 - **视频站点登录态**：发送媒体任务时读取 `youtube.com` / `youtu.be` / `youtube-nocookie.com` / `google.com` 的 cookie，转成 Netscape `cookies.txt` 交给桌面端 `yt-dlp --cookies`，修掉 YouTube 的 `Sign in to confirm you're not a bot`。只走本机回环，用完即删，`tasks.json` 只存临时文件路径、不存 cookie 内容；弹窗可关闭此开关。
 - **右键菜单**：仅「用 FluxDL 下载此链接」「用 FluxDL 下载此媒体」两项。
 
@@ -231,7 +232,7 @@ Chrome 137+ 的**正式版**会静默忽略命令行 `--load-extension`；做扩
 ```bash
 cd FuxDL/fluxdl
 
-# 引擎：21 单测 + 5 集成 + 9 回归 = 35 项
+# 引擎：23 单测 + 5 集成 + 9 回归 = 37 项
 cargo test -p fluxdl-engine
 cargo clippy --tests
 
@@ -244,7 +245,7 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 
 已完成的验证记录见 [`docs/验证记录.md`](./docs/验证记录.md)，包括：
 
-- 引擎并发 / 续传 / 持久化 / media 输出 / cookie 文件生命周期 / 格式降级回归 35 项全绿；
+- 引擎并发 / 续传 / 持久化 / media 输出 / cookie 文件生命周期 / 格式降级 / yt-dlp 自动更新回归 37 项全绿；
 - 捕获服务真实 TCP 报文端到端 8 项；
 - 扩展核心纯函数 27 项（含 `cookies.txt` 格式与采集范围）+ 真实 Chrome for Testing / MV3 端到端 **18/18**（资源嗅探、流媒体标记、弹窗渲染、media 任务入队、1 KB 小文件自动接管、浏览器原生下载被取消）；
 - 登录态链路端到端 **7/7**：扩展附带 cookie → 桌面端落地临时文件 → `yt-dlp` 收到 `--cookies` → 任务完成 → 凭证文件删除 → `tasks.json` 不含 cookie 值 → 关闭开关后不再采集；
@@ -280,6 +281,7 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [#6](https://github.com/Supenman/FuxDL/pull/6) | 修复 Windows 中文系统下 yt-dlp 写 stdout 触发 `Errno 22` 崩溃；统一 UTF-8 输出、字节级读取 stdout/stderr、目录差分定位视频产物 | `77e88d2e` |
 | [#7](https://github.com/Supenman/FuxDL/pull/7) | 视频站点自动携带浏览器登录 cookie，修 YouTube `Sign in to confirm you're not a bot`；新增 `cookies` 权限、临时凭证文件用完即删、弹窗开关、bot 报错中文指引；修复 `data_dir` 被 move 的编译错误；交付收敛为仅 Windows | `7d16baec` |
 | [#8](https://github.com/Supenman/FuxDL/pull/8) | 视频报 `Requested format is not available` 时自动降级重试：换不依赖 PO Token 的 yt-dlp 客户端、放宽格式链、cookie 跨两轮存活、中文排障指引；正常路径零改动 | `96fc10446` |
+| [#9](https://github.com/Supenman/FuxDL/pull/9) | yt-dlp 自动更新 + 处理 YouTube「页面需重载」报错：新增 `ytdlp.rs` 后台静默更新随包内置 yt-dlp（24h 冷却、并发互斥、失败静默、镜像回退）；`media.rs` 识别该报错后强制更新并重试；`EngineOptions.autoUpdateYtDlp` 开关（默认开），设置页可关 | `4efc490f` |
 
 当前 `main` 已包含上述全部改动（文档可能在此之后继续同步，具体提交号以仓库 commit 历史为准）。远程 `main` 与本地构建源码逐文件比对 git blob SHA：**62 个源码文件 + 5 份文档全部一致，0 处差异**。`dist/`（前端构建产物）与 `tools/` 下四个平台二进制按设计不进 Git。
 

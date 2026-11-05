@@ -10,6 +10,9 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
+mod capture_guard;
+use capture_guard::CAPTURE_PORT;
+
 struct AppState {
     engine: Arc<Engine>,
     clipboard_enabled: Arc<AtomicBool>,
@@ -430,7 +433,6 @@ fn open_extension_folder(app: AppHandle) -> Result<(), String> {
     opener::open(&dir).map_err(|e| e.to_string())
 }
 
-const CAPTURE_PORT: u16 = 35917;
 const CAPTURE_TOKEN: &str = "fluxdl-local-v1";
 
 #[derive(Deserialize)]
@@ -507,18 +509,14 @@ async fn read_http_request(stream: &mut TcpStream) -> Option<HttpRequest> {
     })
 }
 
-async fn write_http_response(stream: &mut TcpStream, status: u16, reason: &str, body: &str) {
-    let payload = format!(
-        "HTTP/1.1 {status} {reason}\r\n\
-         Content-Type: application/json; charset=utf-8\r\n\
-         Content-Length: {len}\r\n\
-         Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Headers: content-type, x-fluxdl-token\r\n\
-         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Cache-Control: no-store\r\n\
-         Connection: close\r\n\r\n{body}",
-        len = body.len(),
-    );
+async fn write_http_response(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    body: &str,
+    allow_origin: Option<&str>,
+) {
+    let payload = capture_guard::build_response(status, reason, body, allow_origin);
     let _ = stream.write_all(payload.as_bytes()).await;
     let _ = stream.flush().await;
 }
@@ -555,8 +553,19 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
         return;
     };
 
+    // P0-3 修复：任何请求（含 OPTIONS 预检和 /api/health）都必须先过准入检查。
+    // 令牌是写在扩展源码里的公开值，挡不住网页；靠 Host + Origin 才能把
+    // 「任意网页静默添加下载任务」这条路封死。
+    if let Err(reason) = capture_guard::check(&request.headers) {
+        let body = serde_json::json!({ "ok": false, "error": reason }).to_string();
+        write_http_response(&mut stream, 403, "Forbidden", &body, None).await;
+        return;
+    }
+    // 只回显扩展自身的 Origin，不返回 `*`，否则等于给网页发通行证。
+    let allow_origin = capture_guard::extension_origin(&request.headers);
+
     if request.method == "OPTIONS" {
-        write_http_response(&mut stream, 204, "No Content", "").await;
+        write_http_response(&mut stream, 204, "No Content", "", allow_origin).await;
         return;
     }
 
@@ -575,7 +584,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
             "version": fluxdl_engine::ENGINE_VERSION,
             "port": CAPTURE_PORT,
         });
-        write_http_response(&mut stream, 200, "OK", &body.to_string()).await;
+        write_http_response(&mut stream, 200, "OK", &body.to_string(), allow_origin).await;
         return;
     }
 
@@ -590,6 +599,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
             401,
             "Unauthorized",
             r#"{"ok":false,"error":"扩展令牌无效"}"#,
+            allow_origin,
         )
         .await;
         return;
@@ -601,6 +611,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
             404,
             "Not Found",
             r#"{"ok":false,"error":"接口不存在"}"#,
+            allow_origin,
         )
         .await;
         return;
@@ -613,7 +624,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
                 "ok": false,
                 "error": format!("请求格式不正确：{err}"),
             });
-            write_http_response(&mut stream, 400, "Bad Request", &body.to_string()).await;
+            write_http_response(&mut stream, 400, "Bad Request", &body.to_string(), allow_origin).await;
             return;
         }
     };
@@ -621,7 +632,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
     let url = payload.url.trim().to_string();
     if url.is_empty() {
         let body = serde_json::json!({ "ok": false, "error": "链接不能为空" });
-        write_http_response(&mut stream, 400, "Bad Request", &body.to_string()).await;
+        write_http_response(&mut stream, 400, "Bad Request", &body.to_string(), allow_origin).await;
         return;
     }
 
@@ -644,11 +655,11 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
         Ok(task) => {
             let task_id = task.id.clone();
             let body = serde_json::json!({ "ok": true, "id": task_id, "task": task });
-            write_http_response(&mut stream, 200, "OK", &body.to_string()).await;
+            write_http_response(&mut stream, 200, "OK", &body.to_string(), allow_origin).await;
         }
         Err(err) => {
             let body = serde_json::json!({ "ok": false, "error": err.to_string() });
-            write_http_response(&mut stream, 400, "Bad Request", &body.to_string()).await;
+            write_http_response(&mut stream, 400, "Bad Request", &body.to_string(), allow_origin).await;
         }
     }
 }

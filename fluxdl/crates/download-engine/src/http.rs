@@ -1,5 +1,5 @@
-use crate::manager::{Engine, EngineError, TaskEntry};
 use crate::limit::RateLimiter;
+use crate::manager::{Engine, EngineError, TaskEntry};
 use crate::types::*;
 use crate::util;
 use futures_util::StreamExt;
@@ -137,7 +137,7 @@ pub async fn run(
         total = stored_total;
     }
     let resumable = probe.ranges && total > 0;
-    let effective_resume = resumable
+    let mut effective_resume = resumable
         && stored_total == total
         && prev_bytes > 0
         && !prev_segments.is_empty();
@@ -161,6 +161,19 @@ pub async fn run(
                     renamed = true;
                 }
             }
+        }
+    }
+
+    // P0-2 修复：续传必须以磁盘上的 part 为准，且必须在「规划分段」之前判定。
+    // 若 part 不存在、长度与远端总长不符，或目标已被改名，则不能跳过任何分段，
+    // 否则 set_len 会把空文件补成完整长度，产生「长度正确但内容是 0」的损坏文件。
+    let part_path = PathBuf::from(format!("{}.fluxdl-part", save_path.to_string_lossy()));
+    if effective_resume {
+        let part_len = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+        if renamed || total == 0 || part_len != total {
+            effective_resume = false;
+            entry.downloaded.store(0, Ordering::Relaxed);
+            entry.segments.lock().clear();
         }
     }
 
@@ -196,7 +209,6 @@ pub async fn run(
 
     util::ensure_dir(save_path.parent().unwrap_or(Path::new(".")))?;
 
-    let part_path = PathBuf::from(format!("{}.fluxdl-part", save_path.to_string_lossy()));
     // A fresh attempt (or a changed remote file) must not inherit stale bytes.
     if renamed || !effective_resume {
         let old_part = PathBuf::from(format!("{}.fluxdl-part", stored_path.to_string_lossy()));

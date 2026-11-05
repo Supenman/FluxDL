@@ -144,9 +144,27 @@ pub fn total_from_content_range(headers: &HeaderMap) -> Option<u64> {
 }
 
 pub fn unique_path(dir: &Path, filename: &str) -> PathBuf {
-    let mut candidate = dir.join(filename);
-    if !candidate.exists() {
-        return candidate;
+    unique_path_reserved(dir, filename, &std::collections::HashSet::new())
+}
+
+/// 与 `unique_path` 相同，但额外避开「已被其它任务占用」的路径。
+/// 判定同时考虑最终文件和 `{name}.fluxdl-part`，因为进行中的任务是写在 part 里的。
+pub fn unique_path_reserved(
+    dir: &Path,
+    filename: &str,
+    reserved: &std::collections::HashSet<PathBuf>,
+) -> PathBuf {
+    let taken = |p: &Path| -> bool {
+        if p.exists() {
+            return true;
+        }
+        // 进行中的任务只写了 part，最终文件还不存在，但路径已被占用。
+        PathBuf::from(format!("{}.fluxdl-part", p.to_string_lossy())).exists()
+    };
+
+    let first = dir.join(filename);
+    if !taken(&first) && !reserved.contains(&first) {
+        return first;
     }
     let path = Path::new(filename);
     let stem = path
@@ -157,10 +175,10 @@ pub fn unique_path(dir: &Path, filename: &str) -> PathBuf {
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
+    let mut candidate = first;
     for i in 1..1000 {
-        let name = format!("{stem} ({i}){ext}");
-        candidate = dir.join(name);
-        if !candidate.exists() {
+        candidate = dir.join(format!("{stem} ({i}){ext}"));
+        if !taken(&candidate) && !reserved.contains(&candidate) {
             return candidate;
         }
     }

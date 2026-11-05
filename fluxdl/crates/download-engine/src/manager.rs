@@ -65,6 +65,13 @@ pub struct Engine {
     active: Mutex<usize>,
     notify: Notify,
     ticks: AtomicU64,
+    /// P0-1 修复：已分配给任务的目标路径。unique_path 只判断最终文件是否存在，
+    /// 而写入用的是 `{save_path}.fluxdl-part`，在 part 创建前存在竞态窗口，
+    /// 多个任务可能拿到同一个路径并交错写同一文件。这里做进程内占位。
+    reserved: Mutex<std::collections::HashSet<PathBuf>>,
+    /// P1-5 修复：持久化写入串行化。store::save 用固定 tmp + rename，
+    /// 并发调用会互相踩 tmp，甚至把目标删掉却没改名回来。
+    save_lock: AsyncMutex<()>,
 }
 
 struct SlotGuard {
@@ -125,11 +132,14 @@ impl Engine {
             active: Mutex::new(0),
             notify: Notify::new(),
             ticks: AtomicU64::new(0),
+            reserved: Mutex::new(std::collections::HashSet::new()),
+            save_lock: AsyncMutex::new(()),
         });
 
         // Hydrate segment lists + rate limiters from the persisted views.
         {
             let map = engine.tasks.read();
+            let mut reserved = engine.reserved.lock();
             for entry in map.values() {
                 let view = entry.view.try_lock();
                 if let Ok(view) = view {
@@ -138,6 +148,9 @@ impl Engine {
                     entry
                         .downloaded
                         .store(view.downloaded_bytes, Ordering::Relaxed);
+                    // P0-1 修复（重启路径）：恢复的任务其目标路径同样要占位。
+                    // 否则重启后 part 尚未创建时，新任务可能拿到同一个 save_path。
+                    reserved.insert(PathBuf::from(&view.save_path));
                 }
             }
         }
@@ -258,7 +271,13 @@ impl Engine {
         if kind == TaskKind::Http {
             util::ensure_dir(&dir)?;
         }
-        let save_path = util::unique_path(&dir, &filename);
+        // P0-1 修复：分配路径时在同一把锁内占位，避免并发 add 撞到同一个目标。
+        let save_path = {
+            let mut reserved = self.reserved.lock();
+            let candidate = util::unique_path_reserved(&dir, &filename, &reserved);
+            reserved.insert(candidate.clone());
+            candidate
+        };
         let connections = options
             .connections
             .unwrap_or(engine_options.connections)
@@ -352,29 +371,37 @@ impl Engine {
 
     async fn spawn_runner(self: &Arc<Self>, id: String) {
         let Some(entry) = self.get(&id) else { return };
-        let already_running = entry
-            .cancel
-            .lock()
-            .await
-            .as_ref()
-            .map(|token| !token.is_cancelled())
-            .unwrap_or(false);
-        if already_running {
-            return;
-        }
         {
-            let mut view = entry.view.lock().await;
+            let view = entry.view.lock().await;
             if view.status == TaskStatus::Completed {
                 return;
             }
+        }
+
+        // P1-6 修复：检查与置位必须在同一临界区。原来是「先读 cancel 判断有没有
+        // 在跑，隔了几个 await，再写新 token」，并发 resume 会各自启动一个 runner，
+        // 后写的 token 覆盖前一个；pause 只取消得到最后一个，旧 runner 继续下载。
+        let token = CancellationToken::new();
+        {
+            let mut cancel = entry.cancel.lock().await;
+            if cancel
+                .as_ref()
+                .map(|t| !t.is_cancelled())
+                .unwrap_or(false)
+            {
+                return;
+            }
+            *cancel = Some(token.clone());
+        }
+
+        {
+            let mut view = entry.view.lock().await;
             view.status = TaskStatus::Queued;
             view.error = None;
         }
         entry.wanted_pause.store(false, Ordering::SeqCst);
         entry.finished.store(false, Ordering::SeqCst);
         entry.sample.lock().at = None;
-        let token = CancellationToken::new();
-        *entry.cancel.lock().await = Some(token.clone());
         self.emit_task(&entry).await;
 
         let engine = self.clone();
@@ -434,6 +461,8 @@ impl Engine {
                     view.error = Some(err.to_string());
                     view.speed_bps = 0;
                     view.eta_seconds = None;
+                    // P0-1 修复：失败任务释放路径占位（part 若仍存在，taken() 依然能挡住）。
+                    self.release_reserved(&view.save_path);
                     drop(view);
                     self.emit_log(&entry.id, format!("失败：{err}"));
                     self.emit_task(&entry).await;
@@ -444,9 +473,21 @@ impl Engine {
         }
         view.downloaded_bytes = entry.downloaded.load(Ordering::Relaxed);
         view.segments = entry.segments.lock().clone();
+        // P0-1 修复：完成的任务释放占位，让用户删掉文件后还能重新用回原名。
+        // 注意暂停状态不释放——暂停的任务仍持有 part，需要继续占着这个路径。
+        let completed = view.status == TaskStatus::Completed;
+        let save_path = view.save_path.clone();
         drop(view);
+        if completed {
+            self.release_reserved(&save_path);
+        }
         self.emit_task(&entry).await;
         self.save().await;
+    }
+
+    /// 释放 `add` 时为任务占用的目标路径。用同步锁，不跨 await。
+    fn release_reserved(&self, save_path: &str) {
+        self.reserved.lock().remove(&PathBuf::from(save_path));
     }
 
     pub async fn pause(&self, id: &str) {
@@ -502,12 +543,21 @@ impl Engine {
         }
         if delete_file {
             let path = entry.view.lock().await.save_path.clone();
+            self.reserved.lock().remove(&PathBuf::from(&path));
             tokio::spawn(async move {
-                let p = PathBuf::from(path);
+                let p = PathBuf::from(&path);
+                // P1-4 修复：未完成任务的真实数据在 .fluxdl-part 里，必须一并清理。
+                let part = PathBuf::from(format!("{path}.fluxdl-part"));
                 if p.exists() {
-                    let _ = tokio::fs::remove_file(p).await;
+                    let _ = tokio::fs::remove_file(&p).await;
+                }
+                if part.exists() {
+                    let _ = tokio::fs::remove_file(&part).await;
                 }
             });
+        } else {
+            let path = entry.view.lock().await.save_path.clone();
+            self.reserved.lock().remove(&PathBuf::from(&path));
         }
         self.emit(EngineEvent::Removed(id.to_string()));
         self.save().await;
@@ -551,6 +601,9 @@ impl Engine {
     }
 
     pub async fn save(&self) {
+        // 必须在收集快照之前就持锁：两个 save 若交错写同一个 tmp，
+        // 后一个 rename 会找不到 tmp，而目标已被前一个删掉——任务列表直接丢失。
+        let _guard = self.save_lock.lock().await;
         let entries: Vec<Arc<TaskEntry>> = self.tasks.read().values().cloned().collect();
         let mut tasks = Vec::with_capacity(entries.len());
         let order = self.order.lock().clone();

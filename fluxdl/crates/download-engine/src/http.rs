@@ -1,5 +1,5 @@
-use crate::manager::{Engine, EngineError, TaskEntry};
 use crate::limit::RateLimiter;
+use crate::manager::{Engine, EngineError, TaskEntry};
 use crate::types::*;
 use crate::util;
 use futures_util::StreamExt;
@@ -60,59 +60,86 @@ async fn probe(
     entry: &TaskEntry,
     token: &CancellationToken,
 ) -> Result<Probe, EngineError> {
-    let req = apply_headers(client.get(&entry.url), entry).header(RANGE, "bytes=0-0");
-    let resp = tokio::select! {
-        _ = token.cancelled() => return Err(EngineError::Paused),
-        r = tokio::time::timeout(Duration::from_secs(25), req.send()) => {
-            match r {
-                Err(_) => return Err(EngineError::message("连接超时，请检查网络或代理")),
-                Ok(Err(e)) => return Err(EngineError::Http(e)),
-                Ok(Ok(resp)) => resp,
+    // 原来 probe 只发一次，网络抖动或临时 5xx 就把整个任务判失败，
+    // 而分段下载本身有重试。这里补齐探测阶段的临时错误重试，规则与
+    // segment_loop 一致：网络错误/超时/5xx 重试，4xx 等确定性错误直接返回。
+    let mut last_error: Option<EngineError> = None;
+    for attempt in 0..=RETRIES {
+        if token.is_cancelled() {
+            return Err(EngineError::Paused);
+        }
+        if attempt > 0 {
+            tokio::select! {
+                _ = token.cancelled() => return Err(EngineError::Paused),
+                _ = tokio::time::sleep(Duration::from_millis(500 * (1u64 << attempt))) => {}
             }
         }
-    };
+        let req = apply_headers(client.get(&entry.url), entry).header(RANGE, "bytes=0-0");
+        let resp = tokio::select! {
+            _ = token.cancelled() => return Err(EngineError::Paused),
+            r = tokio::time::timeout(Duration::from_secs(25), req.send()) => match r {
+                Err(_) => {
+                    last_error = Some(EngineError::message("连接超时，请检查网络或代理"));
+                    continue;
+                }
+                Ok(Err(e)) => {
+                    last_error = Some(EngineError::Http(e));
+                    continue;
+                }
+                Ok(Ok(resp)) => resp,
+            }
+        };
 
-    let status = resp.status();
-    if !status.is_success() && status != StatusCode::RANGE_NOT_SATISFIABLE {
-        return Err(EngineError::message(format!(
-            "服务器返回 HTTP {}，无法下载",
-            status.as_u16()
-        )));
-    }
-    if status == StatusCode::RANGE_NOT_SATISFIABLE {
-        return Err(EngineError::message(
-            "服务器拒绝 Range 请求（文件可能为空或链接已失效）",
-        ));
-    }
+        let status = resp.status();
+        if status.is_server_error() {
+            last_error = Some(EngineError::message(format!(
+                "服务器返回 HTTP {}，无法下载",
+                status.as_u16()
+            )));
+            continue;
+        }
+        if !status.is_success() && status != StatusCode::RANGE_NOT_SATISFIABLE {
+            return Err(EngineError::message(format!(
+                "服务器返回 HTTP {}，无法下载",
+                status.as_u16()
+            )));
+        }
+        if status == StatusCode::RANGE_NOT_SATISFIABLE {
+            return Err(EngineError::message(
+                "服务器拒绝 Range 请求（文件可能为空或链接已失效）",
+            ));
+        }
 
-    let headers = resp.headers().clone();
-    drop(resp);
+        let headers = resp.headers().clone();
+        drop(resp);
 
-    let total = util::total_from_content_range(&headers)
-        .or_else(|| {
-            headers
-                .get(CONTENT_LENGTH)
+        let total = util::total_from_content_range(&headers)
+            .or_else(|| {
+                headers
+                    .get(CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+            })
+            .unwrap_or(0);
+
+        let ranges = status == StatusCode::PARTIAL_CONTENT
+            && headers
+                .get(ACCEPT_RANGES)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-        })
-        .unwrap_or(0);
+                .map(|v| v.to_ascii_lowercase().contains("bytes"))
+                .unwrap_or(true);
 
-    let ranges = status == StatusCode::PARTIAL_CONTENT
-        && headers
-            .get(ACCEPT_RANGES)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.to_ascii_lowercase().contains("bytes"))
-            .unwrap_or(true);
-
-    Ok(Probe {
-        total,
-        ranges,
-        filename: util::filename_from_headers(&headers),
-        mime: headers
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string()),
-    })
+        return Ok(Probe {
+            total,
+            ranges,
+            filename: util::filename_from_headers(&headers),
+            mime: headers
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string()),
+        });
+    }
+    Err(last_error.unwrap_or_else(|| EngineError::message("探测失败")))
 }
 
 pub async fn run(
@@ -137,7 +164,7 @@ pub async fn run(
         total = stored_total;
     }
     let resumable = probe.ranges && total > 0;
-    let effective_resume = resumable
+    let mut effective_resume = resumable
         && stored_total == total
         && prev_bytes > 0
         && !prev_segments.is_empty();
@@ -161,6 +188,19 @@ pub async fn run(
                     renamed = true;
                 }
             }
+        }
+    }
+
+    // P0-2 修复：续传必须以磁盘上的 part 为准，且必须在「规划分段」之前判定。
+    // 若 part 不存在、长度与远端总长不符，或目标已被改名，则不能跳过任何分段，
+    // 否则 set_len 会把空文件补成完整长度，产生「长度正确但内容是 0」的损坏文件。
+    let part_path = PathBuf::from(format!("{}.fluxdl-part", save_path.to_string_lossy()));
+    if effective_resume {
+        let part_len = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+        if renamed || total == 0 || part_len != total {
+            effective_resume = false;
+            entry.downloaded.store(0, Ordering::Relaxed);
+            entry.segments.lock().clear();
         }
     }
 
@@ -196,7 +236,6 @@ pub async fn run(
 
     util::ensure_dir(save_path.parent().unwrap_or(Path::new(".")))?;
 
-    let part_path = PathBuf::from(format!("{}.fluxdl-part", save_path.to_string_lossy()));
     // A fresh attempt (or a changed remote file) must not inherit stale bytes.
     if renamed || !effective_resume {
         let old_part = PathBuf::from(format!("{}.fluxdl-part", stored_path.to_string_lossy()));

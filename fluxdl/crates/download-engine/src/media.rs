@@ -1,18 +1,43 @@
+//! 视频 / 音频任务：把整条链接交给 yt-dlp 子进程处理。
+//!
+//! 0.3.0 起的策略（方案 A：只服务国内站点）
+//! ----------------------------------------
+//! * **一次直下**：不再针对 YouTube 的 bot 挑战做「换客户端 → 更新 yt-dlp → 再重试」
+//!   的多轮递归。旧实现失败时会连着跑三轮 yt-dlp，UI 上表现为「下载中 0 B / 未知」
+//!   长时间空转，用户以为卡死。现在失败就是失败，报错即止，原因一眼可见。
+//! * **不落凭证**：不再接收 / 写盘 cookies.txt，磁盘上不会留下任何登录态。
+//! * **并发分片**：`--concurrent-fragments 4`，DASH / HLS 的音视频分片并发拉取，
+//!   这是对 B 站、抖音这类分片流最直接的提速手段。
+//! * **B 站客户端**：`--extractor-args bilibili:player_client=tv,app` 绕开 web 端最严
+//!   的单连接限速（web 端匿名下载常年只有 ~120 KB/s）。
+
 use crate::manager::{Engine, EngineError, TaskEntry};
 use crate::types::*;
 use crate::util;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::SystemTime;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 const PROGRESS_TEMPLATE: &str = "download:FLUXDL|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.filename)s";
+
+/// 默认格式选择：优先「最佳视频流 + 最佳音频流」合并，退到整体 best。
+const DEFAULT_FORMAT: &str = "bv*+ba/b";
+
+/// 分片并发数。国内站点的 DASH / HLS 流普遍支持多分片并发，
+/// 4 路是在「提速明显」与「不触发风控」之间的折中值。
+const CONCURRENT_FRAGMENTS: u8 = 4;
+
+/// 单连接下载只有 ~120 KB/s 出头时，B 站 web 端几乎必然是瓶颈，换 tv/app 客户端。
+const SLOW_SPEED_THRESHOLD: u64 = 300 * 1024;
+/// 判定「慢」之前先观察这么久，避开 TCP 慢启动阶段。
+const SLOW_SPEED_WINDOW: Duration = Duration::from_secs(15);
 
 /// 逐行读取子进程输出，一直读到 EOF 才关闭读端。
 ///
@@ -22,14 +47,11 @@ const PROGRESS_TEMPLATE: &str = "download:FLUXDL|%(progress.downloaded_bytes)s|%
 /// （GBK），进度模板里带中文文件名时就会产出非法 UTF-8 字节。管道读端一关，
 /// yt-dlp 再写 stdout 拿到 Windows CRT 映射出来的 EINVAL(22)，于是报
 /// `Unable to download video: [Errno 22] Invalid argument`，退出时 flush
-/// 又抛一次 `Exception ignored while flushing sys.stdout`。
+/// 又抛一次 `Exception ignoring while flushing sys.stdout`。
 ///
 /// 改为读原始字节 + lossy 解码：编码问题最多让某一行显示成乱码，不会中断下载。
-fn spawn_line_reader<R>(
-    reader: R,
-    tx: mpsc::UnboundedSender<String>,
-    prefix: &'static str,
-) where
+fn spawn_line_reader<R>(reader: R, tx: mpsc::UnboundedSender<String>, prefix: &'static str)
+where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -56,87 +78,31 @@ fn spawn_line_reader<R>(
     });
 }
 
-/// 用完即删的 cookie 临时文件。任务暂停时保留，方便续跑时继续带登录态。
-struct CookieFileGuard {
-    path: Option<PathBuf>,
+/// 链接是否指向 B 站（含短链 b23.tv）。
+///
+/// 必须按「主机名」判断，不能用 `contains`：否则 `https://example.com/b23.tv-x`
+/// 这种把域名写进路径的链接会被误判成 B 站，进而套上一个错误的提取器参数。
+fn is_bilibili(url: &str) -> bool {
+    let host = host_of(url);
+    const HOSTS: &[&str] = &["bilibili.com", "b23.tv", "biliapi.net"];
+    HOSTS
+        .iter()
+        .any(|h| host == *h || host.ends_with(&format!(".{h}")))
 }
 
-impl CookieFileGuard {
-    fn new(path: Option<PathBuf>) -> Self {
-        Self { path }
-    }
-
-    fn keep(&mut self) {
-        self.path = None;
-    }
-}
-
-impl Drop for CookieFileGuard {
-    fn drop(&mut self) {
-        if let Some(path) = self.path.take() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
-/// yt-dlp 的 bot 校验报错，用于决定是否追加本地化指引。
-fn needs_bot_hint(errors: &[String]) -> bool {
-    errors.iter().any(|e| {
-        e.contains("Sign in to confirm you're not a bot")
-            || e.contains("--cookies-from-browser")
-    })
-}
-
-/// 默认格式选择：优先「最佳视频流 + 最佳音频流」合并，退到整体 best。
-/// 保持原行为不变，只有降级重试时才放宽。
-const DEFAULT_FORMAT: &str = "bv*+ba/b";
-/// 降级重试用的格式链，最后退到最低清晰度，避免一个都选不中。
-const FALLBACK_FORMAT: &str = "bv*+ba/b/worst";
-/// 降级重试时换用的 YouTube 客户端：android_vr / web_safari 等不依赖
-/// PO Token，是 yt-dlp 应对「Requested format is not available」的常用组合。
-/// `--extractor-args` 只对 youtube 提取器生效，B 站等其它站点不受影响。
-const FALLBACK_CLIENTS: &str = "android_vr,web_safari,tv,ios,mweb";
-const FORMAT_HINT: &str = "（YouTube 未返回可下载清晰度：多为 PO Token / 客户端限制，或会员、年龄、地区限制。请先在 Chrome 确认该视频能正常播放且已登录，再点「重试下载」；换一个普通公开视频可判断是单个视频受限还是整体风控）";
-
-/// 判断这次失败是不是「没拿到可用格式」，决定是否值得降级重试。
-fn needs_format_retry(errors: &[String]) -> bool {
-    errors.iter().any(|e| {
-        e.contains("Requested format is not available")
-            || e.contains("No video formats available")
-            || e.contains("--list-formats")
-    })
+/// 从 URL 里抽出小写主机名，去掉端口与 userinfo。不是合法 URL 时返回空串。
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let rest = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let rest = rest.rsplit_once('@').map(|(_, r)| r).unwrap_or(rest);
+    let rest = rest.split(':').next().unwrap_or("");
+    rest.to_ascii_lowercase()
 }
 
 pub async fn run(
     engine: &Arc<Engine>,
     entry: &Arc<TaskEntry>,
     token: CancellationToken,
-) -> Result<(), EngineError> {
-    // cookie 只在本次进程内有效；文件不存在（例如重启后）就当没有登录态，
-    // 绝不让失效路径阻塞正常下载。
-    let cookie_path = entry
-        .options
-        .cookies_file
-        .as_deref()
-        .map(PathBuf::from)
-        .filter(|p| p.is_file());
-    let mut cookie_guard = CookieFileGuard::new(cookie_path.clone());
-    // 降级重试可能跑两轮 yt-dlp，凭证文件必须跨两轮存活：guard 提到外层，
-    // 只有真正暂停（取消）才保留，成功或失败都按「用完即删」处理。
-    let cancelled = token.clone();
-    let result = run_inner(engine, entry, &token, cookie_path.as_deref(), false).await;
-    if cancelled.is_cancelled() {
-        cookie_guard.keep();
-    }
-    result
-}
-
-async fn run_inner(
-    engine: &Arc<Engine>,
-    entry: &Arc<TaskEntry>,
-    token: &CancellationToken,
-    cookie_path: Option<&Path>,
-    fallback: bool,
 ) -> Result<(), EngineError> {
     let options = engine.options();
     let (save_dir, placeholder) = {
@@ -167,6 +133,9 @@ async fn run_inner(
         .arg("5")
         .arg("--fragment-retries")
         .arg("10")
+        // 分片流并发：B 站 / 抖音的 DASH 音视频都是分片下发，串行拉取等于自废带宽。
+        .arg("--concurrent-fragments")
+        .arg(CONCURRENT_FRAGMENTS.to_string())
         .arg("--progress-template")
         .arg(PROGRESS_TEMPLATE)
         .arg("--print")
@@ -176,13 +145,7 @@ async fn run_inner(
         .arg("-o")
         .arg("%(title).150B [%(id)s].%(ext)s")
         .arg("-f")
-        .arg(
-            entry.options.format.as_deref().unwrap_or(if fallback {
-                FALLBACK_FORMAT
-            } else {
-                DEFAULT_FORMAT
-            }),
-        )
+        .arg(entry.options.format.as_deref().unwrap_or(DEFAULT_FORMAT))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -195,11 +158,10 @@ async fn run_inner(
         .env("PYTHONUNBUFFERED", "1")
         .kill_on_drop(true);
 
-    // 降级重试：换一组不依赖 PO Token 的 YouTube 客户端重新拿格式列表。
-    // 只在报错为「格式不可用」时走到这里，正常下载路径完全不受影响。
-    if fallback {
-        cmd.arg("--extractor-args")
-            .arg(format!("youtube:player_client={FALLBACK_CLIENTS}"));
+    // B 站：显式指定 tv / app 客户端。web 端匿名单连接被限速到 ~120 KB/s，
+    // 而 tv/app 客户端拿到的下发地址限速宽松得多。
+    if is_bilibili(&entry.url) {
+        cmd.arg("--extractor-args").arg("bilibili:player_client=tv,app");
     }
     if let Some(ffmpeg) = options.ffmpeg_path.as_deref().filter(|s| !s.trim().is_empty()) {
         cmd.arg("--ffmpeg-location").arg(ffmpeg.trim());
@@ -210,11 +172,6 @@ async fn run_inner(
     }
     if let Some(referer) = entry.options.referer.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--referer").arg(referer);
-    }
-    // 视频站点的登录态：yt-dlp 报 "Sign in to confirm you're not a bot" 时
-    // 必须带 cookies.txt，否则连格式列表都拿不到。
-    if let Some(path) = cookie_path {
-        cmd.arg("--cookies").arg(path);
     }
     cmd.arg(&entry.url);
 
@@ -255,6 +212,8 @@ async fn run_inner(
     let mut final_path: Option<PathBuf> = None;
     let mut errors: Vec<String> = Vec::new();
     let mut last_emit = std::time::Instant::now();
+    let started = std::time::Instant::now();
+    let mut speed_hinted = false;
 
     loop {
         let next = tokio::select! {
@@ -279,6 +238,20 @@ async fn run_inner(
                 let speed = parts[3].parse::<f64>().unwrap_or(0.0) as u64;
                 let eta = parts[4].parse::<f64>().ok().map(|v| v.max(0.0) as u64);
                 let file = parts.get(5).map(|s| s.trim()).filter(|s| !s.is_empty());
+
+                // 单连接长期低速时给一次可操作的提示（每个任务只提示一次）。
+                if !speed_hinted
+                    && started.elapsed() > SLOW_SPEED_WINDOW
+                    && speed > 0
+                    && speed < SLOW_SPEED_THRESHOLD
+                {
+                    speed_hinted = true;
+                    engine.emit_log(
+                        &entry.id,
+                        "当前速度偏低：多为站点对单连接限速或本机网络瓶颈，可在设置里配置代理后重试",
+                    );
+                }
+
                 entry.downloaded.store(downloaded, Ordering::Relaxed);
                 let mut view = entry.view.lock().await;
                 view.total_bytes = total;
@@ -333,24 +306,7 @@ async fn run_inner(
             .rev()
             .collect::<Vec<_>>()
             .join(" / ");
-        // 第一次遇到「没拿到可用格式」时，换客户端 + 放宽格式链自动重试一次。
-        // Box::pin 打断 async fn 的递归 Future 类型，避免 E0733。
-        if !fallback && needs_format_retry(&errors) {
-            engine.emit_log(
-                &entry.id,
-                "未取得可用清晰度，自动换 yt-dlp 客户端并放宽格式后重试一次…",
-            );
-            return Box::pin(run_inner(engine, entry, token, cookie_path, true)).await;
-        }
-        // yt-dlp 的英文报错对中文用户不够可操作，补一句本地化指引。
-        const BOT_HINT: &str = "（YouTube 要求登录状态：请先在 Chrome 登录 YouTube，确认扩展「视频站点自动带上登录状态」已开启并重新加载扩展；若仍失败，多为 YouTube 的 PO Token 校验）";
-        let hint = if needs_bot_hint(&errors) {
-            BOT_HINT
-        } else if needs_format_retry(&errors) {
-            FORMAT_HINT
-        } else {
-            ""
-        };
+        let hint = failure_hint(&errors);
         return Err(EngineError::message(if tail.is_empty() {
             format!("yt-dlp 退出码 {:?}{hint}", status.code())
         } else {
@@ -383,7 +339,29 @@ async fn run_inner(
     Ok(())
 }
 
-
+/// 把 yt-dlp 的英文报错翻译成一句中文可操作指引。
+/// 0.3.0 只保留与国内站点相关的两类：不支持该站点 / 需要登录。
+fn failure_hint(errors: &[String]) -> &'static str {
+    let unsupported = errors.iter().any(|e| {
+        e.contains("Unsupported URL")
+            || e.contains("is not a valid URL")
+            || e.contains("No video formats found")
+    });
+    if unsupported {
+        return "（该链接不是受支持的视频页，或站点已改版。FluxDL 目前支持 B 站、抖音、快手、小红书、微博等国内站点；国外站点请使用其直链作为普通下载）";
+    }
+    let need_login = errors.iter().any(|e| {
+        e.contains("login")
+            || e.contains("Sign in")
+            || e.contains("Premium")
+            || e.contains("会员")
+            || e.contains("DRM")
+    });
+    if need_login {
+        return "（该内容需要登录或会员权限，FluxDL 不保存任何账号凭证，请改用普通下载任务或换可用来源）";
+    }
+    ""
+}
 
 /// 记录目录里现有文件的大小 / 修改时间，用于下载后做差分。
 fn snapshot_files(dir: &Path) -> HashMap<PathBuf, (u64, SystemTime)> {
@@ -408,10 +386,7 @@ fn snapshot_files(dir: &Path) -> HashMap<PathBuf, (u64, SystemTime)> {
 /// 这层兜底专门处理「FLUXDONE 路径不可解析」的情况：Windows 中文系统下
 /// `--print after_move` 可能吐 GBK 字节，lossy 解码后路径不存在，旧实现会
 /// 把一次成功下载误判成「未找到输出的视频文件」。
-fn find_new_output(
-    dir: &Path,
-    before: &HashMap<PathBuf, (u64, SystemTime)>,
-) -> Option<PathBuf> {
+fn find_new_output(dir: &Path, before: &HashMap<PathBuf, (u64, SystemTime)>) -> Option<PathBuf> {
     let mut best: Option<(SystemTime, PathBuf)> = None;
     for e in std::fs::read_dir(dir).ok()?.flatten() {
         let path = e.path();
@@ -474,13 +449,8 @@ fn find_output(dir: &Path, placeholder: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        needs_bot_hint, needs_format_retry, find_new_output, snapshot_files,
-        spawn_line_reader, CookieFileGuard, DEFAULT_FORMAT, FALLBACK_FORMAT,
-        FALLBACK_CLIENTS, FORMAT_HINT,
-    };
+    use super::*;
     use tokio::io::{duplex, AsyncWriteExt};
-    use tokio::sync::mpsc;
 
     async fn collect(bytes: &[u8], prefix: &'static str) -> Vec<String> {
         let (mut writer, reader) = duplex(1024);
@@ -547,60 +517,47 @@ mod tests {
     }
 
     #[test]
-    fn cookie_file_is_deleted_when_task_finishes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cookies.txt");
-        std::fs::write(&path, b"credential").unwrap();
-        {
-            let _guard = CookieFileGuard::new(Some(path.clone()));
-            assert!(path.exists());
-        }
-        assert!(!path.exists(), "任务结束后凭证文件必须删掉");
+    fn default_format_prefers_video_plus_audio() {
+        assert_eq!(DEFAULT_FORMAT, "bv*+ba/b");
+        // 0.3.0 起不再有「放宽到 worst」的降级链
+        assert!(!DEFAULT_FORMAT.contains("worst"));
     }
 
     #[test]
-    fn cookie_file_is_kept_when_task_is_paused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cookies.txt");
-        std::fs::write(&path, b"credential").unwrap();
-        {
-            let mut guard = CookieFileGuard::new(Some(path.clone()));
-            guard.keep();
-        }
-        assert!(path.exists(), "暂停时保留 cookie 文件以便续跑");
+    fn concurrent_fragments_is_multiple_but_bounded() {
+        assert!(CONCURRENT_FRAGMENTS >= 2, "并发至少 2 路才有意义");
+        assert!(CONCURRENT_FRAGMENTS <= 8, "过高容易触发站点风控");
     }
 
     #[test]
-    fn bot_hint_only_for_youtube_challenge() {
-        assert!(needs_bot_hint(&[
-            "ERROR: [youtube] abc: Sign in to confirm you're not a bot".into()
-        ]));
-        assert!(needs_bot_hint(&["Use --cookies-from-browser".into()]));
-        assert!(!needs_bot_hint(&["ERROR: 404 Not Found".into()]));
+    fn bilibili_detection_covers_short_link() {
+        assert!(is_bilibili("https://www.bilibili.com/video/BV1xx"));
+        assert!(is_bilibili("https://bilibili.com/video/BV1xx"));
+        assert!(is_bilibili("https://b23.tv/abcd"));
+        assert!(is_bilibili("http://m.bilibili.com/video/BV1xx?p=2"));
+        assert!(!is_bilibili("https://www.douyin.com/video/1"));
+        // 不能把「域名里碰巧含 b23.tv」的其它站点也算进来
+        assert!(!is_bilibili("https://example.com/b23.tv-x"));
+        assert!(!is_bilibili("https://notbilibili.com/x"));
+        // 主机名比较要能穿透 userinfo 与端口
+        assert!(is_bilibili("https://user:pw@b23.tv:443/abcd"));
     }
 
     #[test]
-    fn format_retry_only_for_missing_formats() {
-        assert!(needs_format_retry(&[
-            "ERROR: [youtube] abc: Requested format is not available. Use --list-formats".into()
-        ]));
-        assert!(needs_format_retry(&[
-            "ERROR: No video formats available for the requested format".into()
-        ]));
-        // bot 校验不能误判成格式问题，否则会白白多跑一轮 yt-dlp
-        assert!(!needs_format_retry(&[
-            "ERROR: [youtube] abc: Sign in to confirm you're not a bot".into()
-        ]));
-        assert!(!needs_format_retry(&["ERROR: 404 Not Found".into()]));
+    fn unsupported_url_gets_actionable_hint() {
+        let hint = failure_hint(&["ERROR: Unsupported URL: https://example.com".into()]);
+        assert!(hint.contains("B 站"));
+        assert!(hint.contains("普通下载"));
     }
 
     #[test]
-    fn fallback_is_more_permissive_but_default_is_unchanged() {
-        assert_eq!(DEFAULT_FORMAT, "bv*+ba/b", "正常路径必须保持原格式串");
-        assert!(FALLBACK_FORMAT.starts_with(DEFAULT_FORMAT));
-        assert!(FALLBACK_FORMAT.ends_with("/worst"));
-        assert!(FALLBACK_CLIENTS.contains("android_vr"));
-        assert!(FALLBACK_CLIENTS.contains("web_safari"));
-        assert!(FORMAT_HINT.contains("PO Token"));
+    fn login_error_gets_credential_free_hint() {
+        let hint = failure_hint(&["ERROR: This video requires login".into()]);
+        assert!(hint.contains("不保存任何账号凭证"));
+    }
+
+    #[test]
+    fn unknown_error_has_no_hint() {
+        assert_eq!(failure_hint(&["ERROR: 404 Not Found".into()]), "");
     }
 }

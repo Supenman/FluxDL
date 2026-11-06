@@ -11,6 +11,7 @@ import type {
   Task,
   TaskKind,
   ToolVersionItem,
+  AppVersionList,
   ToolVersionList,
   UpdateCheck,
   UpdateHistoryItem,
@@ -422,8 +423,8 @@ export class MockBackend {
 
   async appVersionInfo(): Promise<AppVersionInfo> {
     return {
-      appVersion: "0.1.0",
-      engineVersion: "0.1.0-preview",
+      appVersion: "0.3.0",
+      engineVersion: "0.3.0-preview",
       platform: "windows-x64",
       installDir: "C:\\Program Files\\FluxDL",
       portable: false,
@@ -432,6 +433,19 @@ export class MockBackend {
 
   async checkAppUpdate(): Promise<UpdateCheck> {
     const history: UpdateHistoryItem[] = [
+      {
+        version: "0.3.0",
+        releasedAt: "2026-11-06T09:00:00Z",
+        channel: "stable",
+        notes: [
+          "新增主程序版本管理：更新后无需重装安装包，旧版本自动留在版本库，随时一键回退",
+          "更新改为「下载进版本库 → 点更新 → 自动重启」，全程 2~3 秒；连续两次启动失败会自动回退",
+          "视频下载改为一次直下：失败立即报错，不再出现「下载中 0B/未知」长时间空转",
+          "视频分片并发 4 路，B 站切换 tv/app 客户端，单连接限速问题显著缓解",
+          "不再读取、传输或落盘任何 cookie，登录凭证不会离开浏览器",
+          "媒体任务只保留国内站点（B 站、抖音、快手、小红书等），国外站点请用直链普通下载",
+        ],
+      },
       {
         version: "0.2.0",
         releasedAt: "2026-11-06T02:00:00Z",
@@ -455,12 +469,12 @@ export class MockBackend {
         version: "0.0.9",
         releasedAt: "2026-11-04T09:30:00Z",
         channel: "stable",
-        notes: ["视频报「没有可用清晰度」时自动降级重试", "视频站点自动携带登录 cookie"],
+        notes: ["视频报「没有可用清晰度」时自动降级重试"],
       },
     ];
     return {
-      current: "0.1.0",
-      latest: "0.2.0",
+      current: "0.2.0",
+      latest: "0.3.0",
       available: true,
       forced: false,
       releasedAt: "2026-11-06T02:00:00Z",
@@ -490,6 +504,29 @@ export class MockBackend {
 
   async applyAppUpdateAndRestart(): Promise<string> {
     return "预览模式不会真的重启；打包版会关闭窗口并在后台完成替换";
+  }
+
+  async appVersionList(): Promise<AppVersionList> {
+    return {
+      active: "0.3.0",
+      previous: "0.2.0",
+      installed: [
+        { version: "0.3.0", active: true, previous: false, size: 9_918_976 },
+        { version: "0.2.0", active: false, previous: true, size: 9_500_000 },
+      ],
+      versionsDir: "C:\\Users\\Gary.Li\\AppData\\Local\\com.fluxdl.desktop\\app-versions",
+      managed: true,
+      keep: 3,
+      warning: null,
+    };
+  }
+
+  async activateAppVersion(version: string): Promise<string> {
+    return `正在切换到 ${version}`;
+  }
+
+  async deleteAppVersion(version: string): Promise<string> {
+    return `已删除 ${version}`;
   }
 
   async toolVersionList(tool: string): Promise<ToolVersionList> {

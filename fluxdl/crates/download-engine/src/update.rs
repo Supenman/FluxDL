@@ -378,6 +378,9 @@ pub enum Recovery {
     Committed,
     /// 判定失败并回滚（附原因）。
     RolledBack(String),
+    /// 替换脚本根本没执行（用户中途取消、断电、被杀软拦截）。
+    /// 此时主文件仍是旧版本，什么都没发生，按普通启动继续即可。
+    Aborted,
     /// 没有待处理的替换。
     Nothing,
 }
@@ -407,6 +410,14 @@ pub fn recover(dir: &Path, target: &Path) -> Recovery {
         return Recovery::Committed;
     }
 
+    // 备份不存在 + 暂存还在 = 脚本压根没跑（取消/断电/被拦截）。
+    // 这不是"回滚"，而是"没发生"，主文件仍是旧版本，直接继续启动。
+    if !backup.is_file() && staged.is_file() {
+        let _ = std::fs::remove_file(&staged);
+        clear_state(dir);
+        return Recovery::Aborted;
+    }
+
     let reason = if !target.is_file() {
         "主程序文件缺失，已用备份恢复"
     } else if backup.is_file() {
@@ -426,33 +437,57 @@ pub fn recover(dir: &Path, target: &Path) -> Recovery {
     Recovery::RolledBack(reason.to_string())
 }
 
-/// Windows 延迟替换脚本：等旧进程退出 → 备份 → 换上新文件 → 拉起新进程 → 自删。
+/// 延迟替换脚本（Windows）。
 ///
-/// 用 `ping` 而不是 `timeout` 做延迟：`timeout` 在没控制台的会话里会直接报错。
-/// 路径一律用绝对路径拼进命令，不依赖 `cd`——脚本由别的进程拉起时工作目录不可信。
-pub fn apply_script(target: &Path, relaunch_args: &[String]) -> String {
-    let exe = target.to_string_lossy().to_string();
-    let staged = format!("{exe}.new");
-    let backup = format!("{exe}.bak");
-    let args = relaunch_args.join(" ");
-    format!(
-        "@echo off\r\n\
-         chcp 65001 >nul\r\n\
-         rem 等旧进程彻底退出，否则文件仍被占用\r\n\
-         ping -n 4 127.0.0.1 >nul\r\n\
-         if exist \"{exe}\" move /y \"{exe}\" \"{backup}\" >nul 2>&1\r\n\
-         move /y \"{staged}\" \"{exe}\" >nul 2>&1\r\n\
-         if not exist \"{exe}\" (\r\n\
-         \x20 rem 替换失败：把备份还原回去，保证还能启动\r\n\
-         \x20 if exist \"{backup}\" move /y \"{backup}\" \"{exe}\" >nul 2>&1\r\n\
-         )\r\n\
-         start \"\" \"{exe}\" {args}\r\n\
-         del \"%~f0\"\r\n",
-        exe = exe,
-        staged = staged,
-        backup = backup,
-        args = args,
-    )
+/// **路径不写进脚本正文**，而是由调用方通过环境变量传入
+/// （`FLUXDL_TARGET` / `FLUXDL_SOURCE` / `FLUXDL_ARGS`）。
+///
+/// 原因是代码页：`.cmd` 是按系统 ANSI 代码页解析的，中文版 Windows 是 GBK，
+/// 而我们写文件用的是 UTF-8 —— 内嵌中文路径（比如用户名是中文）会变成乱码，
+/// 脚本就会去操作一个不存在的文件。环境变量经 `CreateProcessW` 以 UTF-16 传递，
+/// 不经过代码页转换，脚本正文保持纯 ASCII 就彻底没这个问题。
+///
+/// 等文件释放的方式也不是"睡固定秒数"，而是反复尝试改名：Windows 下运行中的
+/// exe 改不动，改得动就说明旧进程已经退出。换完还比对文件大小，
+/// copy 被磁盘满打断就立刻用 `.bak` 还原，不会留下半个 exe。
+pub fn apply_script_wait() -> String {
+    "@echo off\r\n\
+     setlocal enableextensions\r\n\
+     set \"TARGET=%FLUXDL_TARGET%\"\r\n\
+     set \"SOURCE=%FLUXDL_SOURCE%\"\r\n\
+     if \"%TARGET%\"==\"\" exit /b 1\r\n\
+     if \"%SOURCE%\"==\"\" exit /b 1\r\n\
+     if not exist \"%SOURCE%\" exit /b 1\r\n\
+     for %%A in (\"%TARGET%\") do set \"TDIR=%%~dpA\"\r\n\
+     set \"BACKUP=%TARGET%.bak\"\r\n\
+     set \"N=0\"\r\n\
+     :retry\r\n\
+     rem rename works => old process released the exe; otherwise retry (max ~60s)\r\n\
+     move /y \"%TARGET%\" \"%BACKUP%\" >nul 2>&1\r\n\
+     if not exist \"%TARGET%\" goto install\r\n\
+     set /a N+=1\r\n\
+     if %N% GEQ 60 goto force\r\n\
+     ping -n 2 127.0.0.1 >nul\r\n\
+     goto retry\r\n\
+     :force\r\n\
+     rem still locked (maybe hung): try overwrite, keep original if it fails\r\n\
+     copy /y \"%SOURCE%\" \"%TARGET%\" >nul 2>&1\r\n\
+     goto verify\r\n\
+     :install\r\n\
+     copy /y \"%SOURCE%\" \"%TARGET%\" >nul 2>&1\r\n\
+     :verify\r\n\
+     for %%A in (\"%SOURCE%\") do set \"SSIZE=%%~zA\"\r\n\
+     for %%A in (\"%TARGET%\") do set \"TSIZE=%%~zA\"\r\n\
+     if not exist \"%TARGET%\" goto restore\r\n\
+     if not \"%SSIZE%\"==\"%TSIZE%\" goto restore\r\n\
+     goto done\r\n\
+     :restore\r\n\
+     rem swap failed: restore backup so the app can still start\r\n\
+     if exist \"%BACKUP%\" copy /y \"%BACKUP%\" \"%TARGET%\" >nul 2>&1\r\n\
+     :done\r\n\
+     start \"\" /D \"%TDIR%\" \"%TARGET%\" %FLUXDL_ARGS%\r\n\
+     (goto) 2>nul & del \"%~f0\" & exit /b\r\n"
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -822,18 +857,46 @@ mod tests {
     }
 
     #[test]
-    fn apply_script_contains_backup_and_fallback_restore() {
-        let script = apply_script(Path::new(r"C:\Apps\FluxDL\fluxdl.exe"), &[]);
-        assert!(
-            script.contains(r#"move /y "C:\Apps\FluxDL\fluxdl.exe" "C:\Apps\FluxDL\fluxdl.exe.bak""#),
-            "脚本缺少备份步骤：{script:?}"
-        );
-        assert!(script.contains(r#"move /y "C:\Apps\FluxDL\fluxdl.exe.new" "C:\Apps\FluxDL\fluxdl.exe""#));
-        // 替换失败必须把备份还原，否则用户机器上没有可执行文件
-        assert!(script.contains("if not exist"));
-        assert!(script.contains(r#"start "" "C:\Apps\FluxDL\fluxdl.exe""#));
-        // 必须用绝对路径，不能靠工作目录
-        assert!(!script.contains("cd /d"), "不应依赖 cd，工作目录不可信");
+    fn wait_script_retries_until_file_is_free() {
+        let script = apply_script_wait();
+        // 靠“改不改得动名字”判断旧进程是否退出，而不是睡固定秒数
+        assert!(script.contains(":retry"), "必须有重试循环");
+        assert!(script.contains("move /y"), "先备份再替换");
+        assert!(script.contains("if %N% GEQ 60"), "最多重试约 60 秒");
+        // 换完要比大小，防止磁盘满时留下半个 exe
+        assert!(script.contains("SSIZE"), "缺少大小比对");
+        assert!(script.contains(":restore"), "失败要能还原备份");
+        // 路径走环境变量：.cmd 按系统代码页解析，内嵌中文路径会乱码
+        assert!(script.contains("%FLUXDL_TARGET%"), "目标路径应来自环境变量");
+        assert!(script.contains("%FLUXDL_SOURCE%"), "源路径应来自环境变量");
+        assert!(!script.contains("C:\\"), "脚本正文不应内嵌盘符路径");
+        // start 要指定工作目录，否则便携版相对路径会失效
+        assert!(script.contains("/D \"%TDIR%\""), "启动时应指定工作目录");
+    }
+
+    #[test]
+    fn recover_aborts_when_script_never_ran() {
+        let dir = temp_dir("recover-aborted");
+        let target = dir.join("fluxdl.exe");
+        std::fs::write(&target, b"OLD").unwrap();
+        let staged = staged_path(&target);
+        std::fs::write(&staged, b"NEW").unwrap();
+        write_state(
+            &dir,
+            &SwapState {
+                component: "app".into(),
+                to_version: "0.3.0".into(),
+                expect_sha256: sha256_hex(b"NEW"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // 脚本没跑（没有 .bak）：主文件还是旧的，应判定"没发生"而不是"回滚"
+        assert_eq!(recover(&dir, &target), Recovery::Aborted);
+        assert_eq!(std::fs::read(&target).unwrap(), b"OLD");
+        assert!(!staged.exists(), "暂存文件应被清掉");
+        assert!(!state_path(&dir).exists(), "状态应被清掉");
     }
 
     #[test]

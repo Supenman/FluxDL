@@ -22,7 +22,7 @@ import { useStore } from "../store";
 import { backend, isTauri } from "../lib/backend";
 import type { EngineInfo, EngineOptions, ToolProgress } from "../lib/types";
 import { cx, formatBytes, formatSpeed } from "../lib/format";
-import { UpdateSection, ToolVersionPicker } from "./UpdateSection";
+import { UpdateSection, ToolVersionPicker, AppVersionPicker } from "./UpdateSection";
 
 const LIMITS = [
   { value: null, label: "不限速" },
@@ -427,6 +427,8 @@ export function SettingsPage() {
             onChange={(next) => update({ autoUpdateYtDlp: next })}
           />
         </div>
+
+        <AppVersionPicker />
 
         <ToolVersionPicker
           tool="yt-dlp"

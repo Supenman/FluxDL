@@ -172,6 +172,26 @@ export interface ToolVersionItem {
   notes: string | null;
 }
 
+/** 一个已安装的主程序版本（app-versions 目录里的一个 exe）。 */
+export interface AppVersionItem {
+  version: string;
+  active: boolean;
+  previous: boolean;
+  size: number;
+}
+
+/** 主程序版本清单：多版本共存、随时切换、一键回滚。 */
+export interface AppVersionList {
+  active: string;
+  previous: string | null;
+  installed: AppVersionItem[];
+  versionsDir: string;
+  /** 是否由启动器托管；false 时无法切换版本，界面需解释原因。 */
+  managed: boolean;
+  keep: number;
+  warning: string | null;
+}
+
 export interface ToolVersionList {
   tool: string;
   active: string | null;

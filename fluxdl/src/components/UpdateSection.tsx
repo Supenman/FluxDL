@@ -10,6 +10,7 @@ import {
   Package,
   RefreshCw,
   RotateCcw,
+  Trash2,
   ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
@@ -18,6 +19,7 @@ import { backend, isTauri } from "../lib/backend";
 import { formatBytes, cx } from "../lib/format";
 import type {
   AppVersionInfo,
+  AppVersionList,
   ToolVersionItem,
   ToolVersionList,
   UpdateHistoryItem,
@@ -108,7 +110,13 @@ export function UpdateSection() {
     try {
       const result = await backend.downloadAppUpdate();
       setStaged(result);
-      pushToast(`新版本 ${result.version} 已下载并通过校验，重启后生效`, "success");
+      pushToast(`v${result.version} 已下载并通过校验，正在重启完成更新…`, "success");
+      // 一步到位：下载完成立刻应用，用户不需要再点第二次。
+      try {
+        await backend.applyAppUpdateAndRestart();
+      } catch (error) {
+        pushToast(`自动切换未完成（${error}），可点「重启并完成更新」重试`, "error");
+      }
     } catch (error) {
       pushToast(`更新失败：${error}`, "error");
     } finally {
@@ -180,19 +188,19 @@ export function UpdateSection() {
         <div className="update-card ready">
           <div className="update-card-head">
             <span className="update-card-badge">
-              <Check size={13} /> 已下载待重启
+              <Check size={13} /> 已下载，待切换
             </span>
             <strong>v{staged.version}</strong>
             <span className="update-card-size">{formatBytes(staged.size)}</span>
           </div>
           <p>
-            新版本已通过 SHA-256 校验并暂存为 <code>fluxdl.exe.new</code>，重启后由替换脚本
-            备份旧版本并换上；替换失败会自动回滚。
+            新版本已通过 SHA-256 校验并放进版本库 <code>app-versions\&lt;版本&gt;</code>。
+            点下面这个按钮会备份当前版本、换上新的并重启；替换失败会自动还原，不满意也能回退。
           </p>
           <div className="update-card-actions">
             <button className="primary-button small" onClick={() => void restart()}>
               <RotateCcw size={13} />
-              重启并完成更新
+              切换到新版本
             </button>
             <button
               className="ghost-button small"
@@ -469,6 +477,159 @@ export function ToolVersionPicker({
       </div>
       <p className="tool-version-hint">
         {list?.warning ? list.warning : hint}
+      </p>
+    </div>
+  );
+}
+
+/** 语义化版本比较，只用于判断"选中的是不是旧版本"。 */
+function compareVersion(a: string, b: string): number {
+  const split = (v: string) => {
+    const [core, pre] = v.split("-");
+    return { nums: core.split(".").map((n) => Number.parseInt(n, 10) || 0), pre: Boolean(pre) };
+  };
+  const x = split(a);
+  const y = split(b);
+  for (let i = 0; i < Math.max(x.nums.length, y.nums.length); i += 1) {
+    const d = (x.nums[i] ?? 0) - (y.nums[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  if (x.pre === y.pre) return 0;
+  return x.pre ? -1 : 1;
+}
+
+/**
+ * 「主程序版本」——和 yt-dlp / ffmpeg 一样的管理方式：
+ * 多版本共存于 `app-versions\`，选中哪个就切到哪个，全程 2 秒左右。
+ *
+ * 为什么能这么快：真正运行的是 `FluxDL.App-<ver>.exe`，而"当前用哪个"
+ * 只是状态文件里的一行文本。更新只是往目录里多放一个 exe，不覆盖任何
+ * 正在运行的文件，所以不需要管理员权限、不需要重装安装包。
+ */
+export function AppVersionPicker() {
+  const pushToast = useStore((s) => s.pushToast);
+  const [list, setList] = useState<AppVersionList | null>(null);
+  const [selected, setSelected] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const next = await backend.appVersionList();
+      setList(next);
+      setSelected((current) =>
+        current && next.installed.some((v) => v.version === current)
+          ? current
+          : next.active,
+      );
+    } catch (error) {
+      pushToast(`读取主程序版本失败：${error}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const canSwitch = Boolean(selected) && selected !== list?.active && list?.managed;
+  // 选中的比当前旧 → 这是"回退"，语气和按钮都要跟"切换到新版本"区分开。
+  const isRollback =
+    Boolean(selected && list?.active) &&
+    compareVersion(selected, list!.active) < 0;
+
+  const switchTo = async () => {
+    if (!selected || busy) return;
+    if (isRollback && !window.confirm(`回退到 ${selected}？程序会重启，当前 ${list?.active} 仍保留在版本库里，随时可以切回来。`)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await backend.activateAppVersion(selected);
+      pushToast(`正在${isRollback ? "回退" : "切换"}到 ${selected}，程序将自动重启`, "info");
+      // 替换脚本会在本进程退出后动文件，这里不做后续处理。
+    } catch (error) {
+      pushToast(`切换失败：${error}`, "error");
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!selected || busy) return;
+    setBusy(true);
+    try {
+      const message = await backend.deleteAppVersion(selected);
+      pushToast(message, "success");
+      await load();
+    } catch (error) {
+      pushToast(`删除失败：${error}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="tool-version">
+      <div className="tool-version-head">
+        <div className="setting-copy">
+          <label>主程序版本</label>
+          <p>
+            当前 <strong>{list?.active ?? "—"}</strong>
+            {list?.previous ? ` · 上一版本 ${list.previous}` : ""}
+            {` · 本地保留 ${list?.keep ?? 3} 个版本`}
+          </p>
+        </div>
+        <div className="tool-version-actions">
+          <div className="select-shell">
+            <select
+              value={selected}
+              onChange={(event) => setSelected(event.target.value)}
+              disabled={loading || !list?.installed.length}
+            >
+              {!list?.installed.length && <option value="">没有已安装版本</option>}
+              {list?.installed.map((item) => (
+                <option key={item.version} value={item.version}>
+                  {item.version}
+                  {item.active ? "（使用中）" : item.previous ? "（上一版本）" : ""}
+                  {item.size ? ` · ${formatBytes(item.size)}` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            className="ghost-button small"
+            onClick={() => void switchTo()}
+            disabled={!canSwitch || busy || !isTauri}
+            title="切换到此版本并重启，约 2 秒"
+          >
+            {busy ? <Loader2 size={13} className="spin" /> : <RotateCcw size={13} />}
+            {isRollback ? "回退到此版本" : "切换到此版本"}
+          </button>
+          <button
+            className="ghost-button small"
+            onClick={() => void remove()}
+            disabled={!selected || busy || selected === list?.active || !isTauri}
+            title="删除这个已安装版本（至少保留两个）"
+          >
+            <Trash2 size={13} />
+            删除
+          </button>
+          <button
+            className="icon-button"
+            onClick={() => void load()}
+            disabled={loading}
+            title="刷新版本列表"
+          >
+            <RefreshCw size={13} className={loading ? "spin" : ""} />
+          </button>
+        </div>
+      </div>
+      <p className="tool-version-hint">
+        {list?.warning
+          ? list.warning
+          : `版本存放目录：${list?.versionsDir ?? "—"}。切换只改一行状态，不替换正在运行的文件，因此无需重装或管理员权限。`}
       </p>
     </div>
   );

@@ -48,7 +48,14 @@ export function UpdateBanner() {
     try {
       const result = await backend.downloadAppUpdate();
       setStaged(result);
-      pushToast(`新版本 ${result.version} 已下载，重启后生效`, "success");
+      // 一步到位：下完直接切过去，不让用户再点第二次。
+      pushToast(`v${result.version} 已下载并通过校验，正在重启完成更新…`, "success");
+      try {
+        await backend.applyAppUpdateAndRestart();
+      } catch (error) {
+        // 进程正常退出时也可能走到这里（连接被切断），所以不当作失败刷红。
+        pushToast(`自动切换未完成（${error}），可点「立即重启」重试`, "error");
+      }
     } catch (error) {
       pushToast(`更新失败：${error}`, "error");
     } finally {
@@ -80,7 +87,7 @@ export function UpdateBanner() {
         <div className="update-banner-title">
           {staged ? (
             <>
-              新版本 <strong>{version}</strong> 已就绪，重启后生效
+              新版本 <strong>{version}</strong> 已就绪，正在切换…
             </>
           ) : (
             <>
@@ -94,8 +101,8 @@ export function UpdateBanner() {
         </div>
         <div className="update-banner-notes">
           {staged
-            ? "下载已完成并通过校验，重启 FluxDL 即可切换到新版本；不满意可随时回滚。"
-            : notes[0] ?? "点击立即更新，只下载变化的部分，不用重新装整个包。"}
+            ? "已通过校验并放进版本库，点「立即重启」即可切换；不满意可随时回滚到旧版本。"
+            : notes[0] ?? "点一下就行：只下载约 10 MB 的变化部分，下载完自动重启切换，不用重装。"}
         </div>
         {busy && (
           <div className="update-banner-bar">

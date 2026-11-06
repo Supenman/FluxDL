@@ -1,9 +1,13 @@
-//! 应用本体的版本管理：检查更新、下载暂存、重启替换、更新历史。
+//! 应用本体的版本管理：检查更新、下载进版本库、重启替换、更新历史。
 //!
 //! 与「整包重下」的区别：这里只下载 `fluxdl.exe` 这一个文件（十几 MB），
-//! 下完先落成 `fluxdl.exe.new` 并做 sha256 校验，校验不过直接丢掉；
-//! 校验通过才写状态文件，由重启脚本完成「备份 → 换名 → 拉起」，
-//! 任何一步失败都能靠 `fluxdl.exe.bak` 回滚（见 engine 的 `update::recover`）。
+//! 直接从版本库取用，不碰安装包。落地流程是：
+//!
+//! 下载 → 校验 sha256 → 存进 `app-versions\<版本>\fluxdl.exe`
+//!      → 用户点「更新」→ 写 `.new` + 状态 → 延迟脚本「备份 → 替换 → 拉起」
+//!
+//! 任何一步失败都能靠 `fluxdl.exe.bak` 或版本库里的旧版本回滚
+//! （见 engine 的 `update::recover` 与 `crate::appversion::boot_guard`）。
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -286,8 +290,13 @@ pub async fn download_app_update(
         return Err("当前已是最新版本".into());
     }
     let asset = manifest.app_asset()?.clone();
-    let target = std::env::current_exe().map_err(|e| format!("定位当前程序失败：{e}"))?;
-    let staged = update::staged_path(&target);
+    // 一律下到版本库里：<app-versions>\<版本>\fluxdl.exe.download。
+    // 好处是「下载」和「应用」彻底解耦 —— 下完不点更新也不会污染正在跑的文件，
+    // 校验通过后 rename 成正式槽位，随时可切过去或切回来。
+    let dir = crate::appversion::versions_root(&app);
+    let slot = dir.join(&manifest.app.latest);
+    std::fs::create_dir_all(&slot).map_err(|e| format!("创建版本目录失败：{e}"))?;
+    let staged = slot.join("fluxdl.exe.download");
     let _ = std::fs::remove_file(&staged);
 
     let client = http_client(proxy.as_deref())?;
@@ -340,28 +349,15 @@ pub async fn download_app_update(
         return Err(err);
     }
 
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."));
-    update::write_state(
-        &data_dir,
-        &update::SwapState {
-            component: "app".into(),
-            from_version: current,
-            to_version: manifest.app.latest.clone(),
-            target: target.to_string_lossy().to_string(),
-            backup: update::backup_path(&target).to_string_lossy().to_string(),
-            staged: staged.to_string_lossy().to_string(),
-            expect_sha256: asset.sha256.clone().unwrap_or_default(),
-            started_at: update::now_ms(),
-        },
-    )?;
-
+    // 校验通过才登记成版本，并把 pending 指向它；真正的替换发生在用户点「更新」时。
+    let installed = crate::appversion::install_version_file(&app, &staged, &manifest.app.latest)?;
+    // 只保留最近几个版本，避免目录无限膨胀（失败不影响更新本身）。
+    let _ = crate::appversion::prune_versions(&app, crate::appversion::KEEP_VERSIONS);
+    let _ = current;
     Ok(StagedUpdate {
         version: manifest.app.latest,
         size: downloaded,
-        staged_path: staged.to_string_lossy().to_string(),
+        staged_path: installed.to_string_lossy().to_string(),
         needs_restart: true,
     })
 }
@@ -369,32 +365,13 @@ pub async fn download_app_update(
 /// 让暂存的新版本生效：Unix 直接换文件，Windows 交给延迟脚本并退出进程。
 #[tauri::command]
 pub fn apply_app_update_and_restart(app: AppHandle) -> Result<String, String> {
-    let target = std::env::current_exe().map_err(|e| format!("定位当前程序失败：{e}"))?;
-
-    #[cfg(windows)]
-    {
-        let script = std::env::temp_dir().join("fluxdl-update-apply.cmd");
-        std::fs::write(&script, update::apply_script(&target, &[]))
-            .map_err(|e| format!("写入更新脚本失败：{e}"))?;
-        // 用 start 让脚本脱离当前进程，否则我们一退出它也被带走。
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &script.to_string_lossy()])
-            .spawn()
-            .map_err(|e| format!("启动更新脚本失败：{e}"))?;
-        app.exit(0);
-        Ok("正在重启以完成更新".into())
-    }
-
-    #[cfg(not(windows))]
-    {
-        update::swap_in_place(&target)?;
-        let data_dir = app
-            .path()
-            .app_data_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
-        update::clear_state(&data_dir);
-        Ok("已替换为新版本，请手动重启 FluxDL".into())
-    }
+    let version = crate::appversion::pending_version(&app)
+        .ok_or_else(|| "没有待应用的版本，请先下载更新".to_string())?;
+    // 准备 .new、写状态、生成延迟脚本。脚本会等本进程退出后再动文件，
+    // 所以下面必须真的 exit —— 否则替换永远等不到。
+    let message = crate::appversion::apply_from_library(&app, &version)?;
+    app.exit(0);
+    Ok(message)
 }
 
 /// 启动时收尾上次没走完的替换，返回需要提示给用户的结果。
@@ -403,7 +380,8 @@ pub fn recover_on_startup(app: &AppHandle) -> Option<String> {
     let target = std::env::current_exe().ok()?;
     match update::recover(&data_dir, &target) {
         update::Recovery::Nothing => None,
-        update::Recovery::Committed => Some("已应用上次下载的更新".into()),
+        update::Recovery::Committed => None, // 由 boot_guard 的 pending 逻辑统一提示
+        update::Recovery::Aborted => Some("上次更新没有执行完成，仍在使用原版本，请重新点更新。".into()),
         update::Recovery::RolledBack(reason) => Some(format!("更新未完成，已回滚：{reason}")),
     }
 }

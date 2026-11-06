@@ -1,11 +1,10 @@
 const API = "http://127.0.0.1:35917";
-const DEFAULT_SETTINGS = { autoCapture: true, autoCookies: true };
+const DEFAULT_SETTINGS = { autoCapture: true };
 
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 const hint = document.getElementById("hint");
 const autoCapture = document.getElementById("auto-capture");
-const autoCookies = document.getElementById("auto-cookies");
 const recheck = document.getElementById("recheck");
 
 const videoCard = document.getElementById("video-card");
@@ -47,14 +46,10 @@ async function checkHealth() {
 async function loadPrefs() {
   const stored = await chrome.storage.sync.get(DEFAULT_SETTINGS);
   autoCapture.checked = stored.autoCapture !== false;
-  autoCookies.checked = stored.autoCookies !== false;
 }
 
 function savePrefs() {
-  chrome.storage.sync.set({
-    autoCapture: autoCapture.checked,
-    autoCookies: autoCookies.checked,
-  });
+  chrome.storage.sync.set({ autoCapture: autoCapture.checked });
 }
 
 function formatSize(bytes) {
@@ -165,7 +160,6 @@ async function refreshResources() {
 }
 
 autoCapture.addEventListener("change", savePrefs);
-autoCookies.addEventListener("change", savePrefs);
 recheck.addEventListener("click", () => {
   void checkHealth();
   void refreshResources();

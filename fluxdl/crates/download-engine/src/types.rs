@@ -83,9 +83,6 @@ pub struct NewTaskOptions {
     pub proxy: Option<String>,
     pub headers: BTreeMap<String, String>,
     pub format: Option<String>,
-    /// yt-dlp 用的 Netscape cookies.txt 临时文件路径（仅媒体任务）。
-    /// 只存路径不存内容：cookie 是凭证，绝不能写进 tasks.json。
-    pub cookies_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +96,9 @@ pub struct EngineOptions {
     pub user_agent: String,
     pub yt_dlp_path: String,
     pub ffmpeg_path: Option<String>,
+    /// 是否在后台自动更新随包内置的 yt-dlp（视频站点提取器频繁改版，旧版会解析失败）。
+    /// 默认开启；仅对随包内置的 yt-dlp 生效，PATH 里的系统 yt-dlp 不接管。
+    pub auto_update_yt_dlp: bool,
     pub clipboard_watch: bool,
     pub close_to_tray: bool,
     pub open_folder_after: bool,
@@ -118,6 +118,7 @@ impl Default for EngineOptions {
             user_agent: "FluxDL/0.1 (Windows)".into(),
             yt_dlp_path: "yt-dlp".into(),
             ffmpeg_path: None,
+            auto_update_yt_dlp: true,
             clipboard_watch: true,
             close_to_tray: true,
             open_folder_after: false,

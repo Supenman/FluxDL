@@ -11,6 +11,8 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 mod capture_guard;
+mod tools;
+mod version;
 use capture_guard::CAPTURE_PORT;
 
 struct AppState {
@@ -935,8 +937,15 @@ pub fn run() {
             let _ = std::fs::create_dir_all(&data_dir);
             cleanup_stale_cookie_files(&data_dir);
 
-            // 内置 yt-dlp / ffmpeg：随包 tools/ 存在时自动指向它，无需用户手动安装。
-            let bundled = bundled_tool_paths(app.handle());
+            // 内置 yt-dlp / ffmpeg：先复制到用户数据目录（可写），版本管理才有地方落盘；
+            // 复制失败时退回随包路径，保证功能不因此中断。
+            let bundled = tools::ensure_managed_tools(app.handle());
+            // 上次若在替换中途退出，这里判定并自动回滚。
+            let startup_notice = version::recover_on_startup(app.handle());
+            if let Some(msg) = startup_notice.as_deref() {
+                eprintln!("[fluxdl] {msg}");
+            }
+            version::set_startup_notice(startup_notice);
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             // Engine::new spawns its 500 ms progress ticker, so it must run
@@ -960,7 +969,14 @@ pub fn run() {
                 engine,
                 clipboard_enabled: clipboard_enabled.clone(),
             });
-            start_capture_server(capture_engine, data_dir.clone());
+            start_capture_server(capture_engine.clone(), data_dir.clone());
+
+            // 后台静默更新随包内置的 yt-dlp（24h 冷却、失败静默），让新装用户
+            // 尽早用上能跟上 YouTube 的版本，无需等待下一次 FluxDL 整包发布。
+            let updater = capture_engine.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = updater.update_ytdlp(false).await;
+            });
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -1001,6 +1017,16 @@ pub fn run() {
             set_clipboard_watch,
             engine_info,
             install_tools,
+            version::app_version_info,
+            version::check_app_update,
+            version::app_update_history,
+            version::download_app_update,
+            version::apply_app_update_and_restart,
+            version::take_startup_notice,
+            tools::tool_version_list,
+            tools::tool_install_version,
+            tools::tool_activate_version,
+            tools::tool_rollback,
             pick_folder,
             pick_file,
             open_path,

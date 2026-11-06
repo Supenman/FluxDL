@@ -1,13 +1,19 @@
 import type {
   AddResult,
+  AppVersionInfo,
   EngineEvent,
   EngineInfo,
   EngineOptions,
   InstalledTools,
   NewTaskOptions,
   Segment,
+  StagedUpdate,
   Task,
   TaskKind,
+  ToolVersionItem,
+  ToolVersionList,
+  UpdateCheck,
+  UpdateHistoryItem,
 } from "./types";
 import { uid } from "./format";
 
@@ -199,6 +205,7 @@ export class MockBackend {
     userAgent: "FluxDL/0.1 (Windows)",
     ytDlpPath: "yt-dlp",
     ffmpegPath: "ffmpeg",
+    autoUpdateYtDlp: true,
     clipboardWatch: true,
     closeToTray: true,
     openFolderAfter: false,
@@ -409,6 +416,151 @@ export class MockBackend {
       ytDlpAvailable: true,
       ffmpegAvailable: true,
     };
+  }
+
+  // ---- 版本管理（浏览器预览用的假数据，仅验证界面，不触网） ----
+
+  async appVersionInfo(): Promise<AppVersionInfo> {
+    return {
+      appVersion: "0.1.0",
+      engineVersion: "0.1.0-preview",
+      platform: "windows-x64",
+      installDir: "C:\\Program Files\\FluxDL",
+      portable: false,
+    };
+  }
+
+  async checkAppUpdate(): Promise<UpdateCheck> {
+    const history: UpdateHistoryItem[] = [
+      {
+        version: "0.2.0",
+        releasedAt: "2026-11-06T02:00:00Z",
+        channel: "stable",
+        notes: [
+          "设置页新增版本管理：查看版本号、更新历史与一键更新",
+          "yt-dlp / ffmpeg 支持多版本共存、随时切换与一键回滚",
+          "更新失败自动回滚，不会再出现「装完打不开」",
+        ],
+      },
+      {
+        version: "0.1.0",
+        releasedAt: "2026-11-05T12:00:00Z",
+        channel: "stable",
+        notes: [
+          "YouTube 报「页面需重载」时自动更新 yt-dlp 后重试",
+          "新增 yt-dlp 后台自动更新",
+        ],
+      },
+      {
+        version: "0.0.9",
+        releasedAt: "2026-11-04T09:30:00Z",
+        channel: "stable",
+        notes: ["视频报「没有可用清晰度」时自动降级重试", "视频站点自动携带登录 cookie"],
+      },
+    ];
+    return {
+      current: "0.1.0",
+      latest: "0.2.0",
+      available: true,
+      forced: false,
+      releasedAt: "2026-11-06T02:00:00Z",
+      notes: history[0].notes,
+      size: 14_320_000,
+      platform: "windows-x64",
+      source: "预览模式（假数据）",
+      checkedAt: Date.now(),
+      history,
+      error: null,
+    };
+  }
+
+  async appUpdateHistory(): Promise<UpdateHistoryItem[]> {
+    return (await this.checkAppUpdate()).history;
+  }
+
+  async downloadAppUpdate(): Promise<StagedUpdate> {
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    return {
+      version: "0.2.0",
+      size: 14_320_000,
+      stagedPath: "C:\\Program Files\\FluxDL\\fluxdl.exe.new",
+      needsRestart: true,
+    };
+  }
+
+  async applyAppUpdateAndRestart(): Promise<string> {
+    return "预览模式不会真的重启；打包版会关闭窗口并在后台完成替换";
+  }
+
+  async toolVersionList(tool: string): Promise<ToolVersionList> {
+    const isFfmpeg = tool === "ffmpeg";
+    const installed = isFfmpeg
+      ? [
+          { version: "9.0", installed: true, active: true },
+          { version: "8.1", installed: true, active: false },
+        ]
+      : [
+          { version: "2025.11.01", installed: true, active: true },
+          { version: "2025.10.15", installed: true, active: false },
+        ];
+    const available = isFfmpeg
+      ? ["9.0", "8.1"]
+      : ["2025.11.01", "2025.10.31", "2025.10.15"];
+    return {
+      tool,
+      active: installed[0].version,
+      previous: installed[1].version,
+      latest: available[0],
+      updateAvailable: false,
+      installed: installed.map((item) => ({
+        version: item.version,
+        path: `C:\\Users\\Alex\\AppData\\Local\\FluxDL\\tools\\${item.version}`,
+        size: isFfmpeg ? 96_000_000 : 23_575_744,
+        installed: true,
+        active: item.active,
+        releasedAt: null,
+        notes: item.active ? "当前使用中" : null,
+      })),
+      available: available.map((version) => ({
+        version,
+        path: null,
+        size: isFfmpeg ? 73_000_000 : 23_575_744,
+        installed: installed.some((i) => i.version === version),
+        active: installed[0].version === version,
+        releasedAt: null,
+        notes: null,
+      })),
+      warning: null,
+    };
+  }
+
+  async toolInstallVersion(tool: string, version: string): Promise<ToolVersionItem> {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return {
+      version,
+      path: `C:\\Users\\Alex\\AppData\\Local\\FluxDL\\tools\\${version}`,
+      size: 23_575_744,
+      installed: true,
+      active: false,
+      releasedAt: null,
+      notes: `预览模式：不会真的下载 ${tool}`,
+    };
+  }
+
+  async toolActivateVersion(tool: string, version: string): Promise<ToolVersionItem> {
+    return {
+      version,
+      path: `C:\\Users\\Alex\\AppData\\Local\\FluxDL\\tools\\${version}`,
+      size: 23_575_744,
+      installed: true,
+      active: true,
+      releasedAt: null,
+      notes: `预览模式：${tool} 已切换`,
+    };
+  }
+
+  async toolRollback(tool: string): Promise<ToolVersionItem> {
+    return this.toolActivateVersion(tool, "2025.10.15");
   }
 
   async pickFolder(): Promise<string | null> {

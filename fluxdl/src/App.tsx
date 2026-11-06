@@ -14,6 +14,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { SettingsPage } from "./components/SettingsPage";
 import { Toasts } from "./components/Toasts";
 import { ClipboardOffer } from "./components/ClipboardOffer";
+import { UpdateBanner } from "./components/UpdateBanner";
 
 export function App() {
   const view = useStore((s) => s.view);
@@ -68,6 +69,25 @@ export function App() {
       alive = false;
       unsubscribe?.();
     };
+  }, []);
+
+  // 启动检查更新：先取上次替换的结果（成功 / 已回滚），再延迟 4 秒静默查新版本。
+  // 延迟是为了不和首屏任务加载抢带宽，失败也不打扰用户。
+  useEffect(() => {
+    void backend
+      .takeStartupNotice()
+      .then((notice) => {
+        if (notice) useStore.getState().pushToast(notice, "info");
+      })
+      .catch(() => {});
+
+    const timer = window.setTimeout(() => {
+      void backend
+        .checkAppUpdate(false)
+        .then((result) => useStore.getState().setUpdateCheck(result))
+        .catch(() => {});
+    }, 4000);
+    return () => window.clearTimeout(timer);
   }, []);
 
   // Apply theme (including the follow-system option).
@@ -181,6 +201,7 @@ export function App() {
             <SettingsPage />
           ) : (
             <>
+              <UpdateBanner />
               <Toolbar />
               <div className="list-scroll">
                 <TaskList />

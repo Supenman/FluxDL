@@ -1,16 +1,15 @@
 {
   "manifest_version": 3,
   "name": "FluxDL 资源捕获",
-  "version": "2.1.0",
-  "description": "自动接管浏览器下载，嗅探页面音视频资源，并在下载视频站点时自动携带浏览器登录状态发送到 FluxDL 桌面下载器。",
+  "version": "2.2.0",
+  "description": "自动接管浏览器下载，嗅探页面音视频资源，并发送到 FluxDL 桌面下载器。不读取、不传输任何登录凭证。",
   "permissions": [
     "contextMenus",
     "downloads",
     "storage",
     "notifications",
     "webRequest",
-    "tabs",
-    "cookies"
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>",

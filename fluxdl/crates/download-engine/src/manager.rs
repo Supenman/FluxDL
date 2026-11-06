@@ -172,6 +172,13 @@ impl Engine {
         self.options.read().clone()
     }
 
+    /// 自动更新随包内置的 yt-dlp。报错路径里 `force=true` 会绕过 24h 冷却立即检查。
+    /// 返回的结果决定媒体任务是否值得重试一次。
+    pub async fn update_ytdlp(&self, force: bool) -> crate::ytdlp::UpdateResult {
+        let opts = self.options();
+        crate::ytdlp::update_if_stale(&opts.yt_dlp_path, opts.auto_update_yt_dlp, force).await
+    }
+
     pub async fn set_options(self: &Arc<Self>, next: EngineOptions) {
         let global = next.global_speed_limit;
         *self.options.write() = next;

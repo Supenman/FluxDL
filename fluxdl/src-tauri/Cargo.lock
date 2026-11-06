@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "fluxdl"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "chrono",
@@ -1220,13 +1220,14 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
  "zip",
 ]
 
 [[package]]
 name = "fluxdl-engine"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -1236,6 +1237,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",

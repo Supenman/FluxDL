@@ -16,6 +16,7 @@ import type {
   ToolProgress,
   ToolVersionItem,
   ToolVersionList,
+  AppVersionList,
   UpdateCheck,
   UpdateHistoryItem,
   UpdateProgress,
@@ -191,6 +192,24 @@ export const backend = {
     return listen<UpdateProgress>("update:progress", (event) =>
       callback(event.payload),
     );
+  },
+
+  appVersionList(): Promise<AppVersionList> {
+    return isTauri
+      ? call<AppVersionList>("app_version_list")
+      : mockBackend.appVersionList();
+  },
+
+  activateAppVersion(version: string): Promise<string> {
+    return isTauri
+      ? call<string>("activate_app_version", { version })
+      : mockBackend.activateAppVersion(version);
+  },
+
+  deleteAppVersion(version: string): Promise<string> {
+    return isTauri
+      ? call<string>("delete_app_version", { version })
+      : mockBackend.deleteAppVersion(version);
   },
 
   toolVersionList(tool: string): Promise<ToolVersionList> {

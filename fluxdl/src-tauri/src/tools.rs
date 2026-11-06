@@ -617,19 +617,24 @@ mod tests {
 
     #[test]
     fn ytdlp_release_json_extracts_downloadable_versions() {
-        let raw = r#"[
-            {"tag_name":"2025.11.01","draft":false,"prerelease":false,
+        // 资产名随平台不同（Windows 是 yt-dlp.exe，Linux 是 yt-dlp），
+        // 用 exe_name() 生成，避免这套断言只能在 Windows 上跑过。
+        let asset = exe_name(TOOL_YTDLP);
+        let raw = format!(
+            r#"[
+            {{"tag_name":"2025.11.01","draft":false,"prerelease":false,
              "published_at":"2025-11-01T00:00:00Z",
-             "assets":[{"name":"yt-dlp.exe","size":23575744,"browser_download_url":"https://x/a.exe"}]},
-            {"tag_name":"2025.10.31","draft":false,"prerelease":false,
+             "assets":[{{"name":"{asset}","size":23575744,"browser_download_url":"https://x/a.exe"}}]}},
+            {{"tag_name":"2025.10.31","draft":false,"prerelease":false,
              "published_at":"2025-10-31T00:00:00Z",
-             "assets":[{"name":"yt-dlp.exe","size":23500000,"browser_download_url":"https://x/b.exe"}]},
-            {"tag_name":"2025.10.30","draft":true,
-             "assets":[{"name":"yt-dlp.exe","size":1,"browser_download_url":"https://x/c.exe"}]},
-            {"tag_name":"2025.10.29","prerelease":true,
-             "assets":[{"name":"yt-dlp.exe","size":1,"browser_download_url":"https://x/d.exe"}]}
-        ]"#;
-        let list = parse_remote(TOOL_YTDLP, raw);
+             "assets":[{{"name":"{asset}","size":23500000,"browser_download_url":"https://x/b.exe"}}]}},
+            {{"tag_name":"2025.10.30","draft":true,
+             "assets":[{{"name":"{asset}","size":1,"browser_download_url":"https://x/c.exe"}}]}},
+            {{"tag_name":"2025.10.29","prerelease":true,
+             "assets":[{{"name":"{asset}","size":1,"browser_download_url":"https://x/d.exe"}}]}}
+        ]"#
+        );
+        let list = parse_remote(TOOL_YTDLP, &raw);
         assert_eq!(list.len(), 2, "草稿和预发布要过滤掉");
         assert_eq!(list[0].version, "2025.11.01");
         assert_eq!(list[0].size, Some(23_575_744));

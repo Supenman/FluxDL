@@ -10,6 +10,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
+mod appversion;
 mod capture_guard;
 mod tools;
 mod version;
@@ -535,10 +536,6 @@ struct CaptureRequest {
     user_agent: Option<String>,
     #[serde(default)]
     kind: Option<String>,
-    /// 扩展采集到的 Netscape cookies.txt 文本（视频站点登录态）。
-    /// 只在本机回环传输，落地成临时文件后由媒体任务用完即删。
-    #[serde(default)]
-    cookies: Option<String>,
 }
 
 struct HttpRequest {
@@ -613,69 +610,48 @@ async fn write_http_response(
     let _ = stream.flush().await;
 }
 
-/// 把扩展送来的 cookies.txt 文本落到应用数据目录，返回临时文件路径。
-/// 只存路径不存内容，cookie 本体绝不进 tasks.json。Unix 下权限 0600。
-fn write_cookie_file(dir: &Path, raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    if bytes.is_empty() || bytes.len() > 128 * 1024 {
-        return None;
-    }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let path = dir.join(format!("cookies-{}-{}.txt", std::process::id(), stamp));
-    std::fs::write(&path, bytes).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-    Some(path.to_string_lossy().to_string())
-}
-
-/// 启动时清理上次异常退出残留的 cookie 文件，避免凭证长期留在磁盘。
-fn cleanup_stale_cookie_files(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("cookies-") && name.ends_with(".txt") {
-            let _ = std::fs::remove_file(e.path());
-        }
-    }
-}
-
+/// 是否需要交给 yt-dlp 处理（媒体任务）。
+///
+/// 只列国内站点：国外站点（YouTube / Twitter / IG 等）自 0.3.0 起不再做特殊适配，
+/// 它们会走普通 HTTP 下载 —— 抓到的是文件直链就用 8 路并行，拿到的是页面就下到
+/// 一个 HTML，由前端提示「该站点暂不支持」。
+///
+/// 按「主机名」匹配，不能用 `contains`：`https://example.com/bilibili.com-x`
+/// 这类把域名写进路径的链接会被误判，然后白白套一个只有 B 站才认的提取器。
 fn looks_like_media(url: &str) -> bool {
-    let lowered = url.to_ascii_lowercase();
+    let host = host_of(url);
     const HOSTS: &[&str] = &[
-        "youtube.com",
-        "youtu.be",
         "bilibili.com",
         "b23.tv",
-        "twitter.com",
-        "x.com",
-        "instagram.com",
-        "vimeo.com",
-        "tiktok.com",
         "douyin.com",
-        "soundcloud.com",
-        "facebook.com",
-        "twitch.tv",
-        "dailymotion.com",
-        "nicovideo.jp",
+        "iesdouyin.com",
+        "kuaishou.com",
+        "xiaohongshu.com",
+        "xhslink.com",
+        "weibo.com",
         "iqiyi.com",
         "youku.com",
-        "weibo.com",
-        "xiaohongshu.com",
+        "mgtv.com",
+        "v.qq.com",
         "music.163.com",
+        "zhihu.com",
+        "ixigua.com",
+        "acfun.cn",
     ];
-    HOSTS.iter().any(|host| lowered.contains(host))
+    HOSTS
+        .iter()
+        .any(|h| host == *h || host.ends_with(&format!(".{h}")))
 }
 
-async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>, data_dir: PathBuf) {
+/// 抽出小写主机名（去端口、去 userinfo）。不是合法 URL 时返回空串。
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let rest = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let rest = rest.rsplit_once('@').map(|(_, r)| r).unwrap_or(rest);
+    rest.split(':').next().unwrap_or("").to_ascii_lowercase()
+}
+
+async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
     let Some(request) = read_http_request(&mut stream).await else {
         return;
     };
@@ -770,25 +746,11 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>, data_di
         _ => TaskKind::Http,
     };
 
-    // 只有交给 yt-dlp 的媒体任务才落地 cookie 文件；HTTP 任务不需要，
-    // 也不会有删除时机，写了就会变成磁盘上长期残留的凭证。
-    let cookies_file = if kind == TaskKind::Media {
-        payload
-            .cookies
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .and_then(|raw| write_cookie_file(&data_dir, raw))
-    } else {
-        None
-    };
-
     let options = NewTaskOptions {
         filename: payload.filename,
         prefer_header_filename: true,
         referer: payload.referer,
         user_agent: payload.user_agent,
-        cookies_file,
         ..Default::default()
     };
 
@@ -805,7 +767,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>, data_di
     }
 }
 
-fn start_capture_server(engine: Arc<Engine>, data_dir: PathBuf) {
+fn start_capture_server(engine: Arc<Engine>) {
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", CAPTURE_PORT)).await {
             Ok(listener) => listener,
@@ -815,9 +777,8 @@ fn start_capture_server(engine: Arc<Engine>, data_dir: PathBuf) {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     let engine = engine.clone();
-                    let data_dir = data_dir.clone();
                     tauri::async_runtime::spawn(async move {
-                        handle_capture_conn(stream, engine, data_dir).await;
+                        handle_capture_conn(stream, engine).await;
                     });
                 }
                 Err(_) => {
@@ -930,18 +891,22 @@ fn start_clipboard_watcher(app: AppHandle, enabled: Arc<AtomicBool>) {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // 启动自检：这次跑的是不是"刚换上来、还没验证过"的版本？
+            // 是就记一次尝试；连续失败达阈值会自动回退到上一版本，
+            // 回退脚本等本进程退出后才动文件，所以这里可以直接 exit。
+            let boot_notice = appversion::boot_guard(app.handle());
+
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let _ = std::fs::create_dir_all(&data_dir);
-            cleanup_stale_cookie_files(&data_dir);
 
             // 内置 yt-dlp / ffmpeg：先复制到用户数据目录（可写），版本管理才有地方落盘；
             // 复制失败时退回随包路径，保证功能不因此中断。
             let bundled = tools::ensure_managed_tools(app.handle());
             // 上次若在替换中途退出，这里判定并自动回滚。
-            let startup_notice = version::recover_on_startup(app.handle());
+            let startup_notice = boot_notice.or_else(|| version::recover_on_startup(app.handle()));
             if let Some(msg) = startup_notice.as_deref() {
                 eprintln!("[fluxdl] {msg}");
             }
@@ -969,7 +934,7 @@ pub fn run() {
                 engine,
                 clipboard_enabled: clipboard_enabled.clone(),
             });
-            start_capture_server(capture_engine.clone(), data_dir.clone());
+            start_capture_server(capture_engine.clone());
 
             // 后台静默更新随包内置的 yt-dlp（24h 冷却、失败静默），让新装用户
             // 尽早用上能跟上 YouTube 的版本，无需等待下一次 FluxDL 整包发布。
@@ -991,6 +956,11 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
             }
+
+            // 走到这里说明窗口、引擎、捕获服务都起来了，才算"这次启动成功"：
+            // 把 pending 确认为 active，并清零失败计数。启动阶段就崩的进程
+            // 永远走不到这一行，计数会留在磁盘上，供下次启动判定回退。
+            appversion::mark_healthy(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1023,6 +993,9 @@ pub fn run() {
             version::download_app_update,
             version::apply_app_update_and_restart,
             version::take_startup_notice,
+            appversion::app_version_list,
+            appversion::activate_app_version,
+            appversion::delete_app_version,
             tools::tool_version_list,
             tools::tool_install_version,
             tools::tool_activate_version,

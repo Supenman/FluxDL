@@ -2,7 +2,7 @@
 
 一个更快、更顺手的桌面下载工具：多线程 HTTP 下载、断点续传、任务队列、限速、视频解析，配合浏览器扩展自动接管网页下载并嗅探页面资源。
 
-> 当前版本 `0.2.0`。项目主体在 [`fluxdl/`](./fluxdl) 目录，仓库根目录只放说明与文档。
+> 当前版本 `0.3.0`。项目主体在 [`fluxdl/`](./fluxdl) 目录，仓库根目录只放说明与文档。
 
 ---
 
@@ -34,21 +34,20 @@
 | 任务队列 | 最大并发数、暂停 / 继续 / 删除、终态释放路径占位 |
 | 限速 | 全局限速与单任务限速**串联生效**，基于「下一时刻表」做长期均值控制，不靠 sleep 抖动 |
 | 代理 / UA / Referer | 每个任务可独立设置 |
-| 视频下载 | `TaskKind::Media` 调用 `yt-dlp` 解析清晰度，交给 `ffmpeg` 合并音视频；YouTube 报「无可用清晰度」时自动换客户端重试一次 |
+| 视频下载 | `TaskKind::Media` 调用 `yt-dlp` 解析清晰度，交给 `ffmpeg` 合并音视频；分片并发 4 路，B 站切 `tv,app` 客户端绕开 web 端单连接限速；失败一次即报错，不静默重试 |
 | 完整性防护 | 同路径并发任务各自占位、原子替换 `tasks.json`、`spawn_runner` 置位原子化、删除任务同时清理 part |
 
 ### 桌面端（Tauri 2 + React 18）
 
 无边框窗口、任务分组、实时速度与进度曲线、命令面板、剪贴板链接监听、设置页、托盘、下载完成打开文件所在目录。
 
-### 浏览器扩展（MV3，v2.1）
+### 浏览器扩展（MV3，v2.2）
 
 - **自动接管所有 `http(s)` 下载**：不设扩展名白名单、不设类型分组、不设最小体积阈值，只有一个总开关。
 - **IDM 式资源嗅探**：`webRequest.onResponseStarted` 按 `Content-Type` / `Content-Disposition` / URL 后缀识别音视频与文件，按标签页缓存，弹窗可单条或全部发送到桌面端。
 - **视频站点**：`.m4s` / `.m3u8` / `.mpd` 识别为流媒体片段，不刷屏成普通文件；弹窗提示「本页检测到视频」，一键发 `kind: media` 交给桌面端 `yt-dlp` 解析。
-- **格式不可用自动降级**：只在 `Requested format is not available` 时自动重试一次，换不依赖 PO Token 的 `player_client` 并把格式链放宽到 `bv*+ba/b/worst`；正常下载路径不变。
 - **yt-dlp 自动更新**：FluxDL 把 yt-dlp 冻结打包，但 YouTube 反爬频繁变动、旧版必崩（典型报错 `The page needs to be reloaded`）。后台会静默检查并就地替换随包内置的 yt-dlp（24h 冷却、失败静默、官方源失败回退镜像）；遇到「页面需重载」报错还会强制更新后重试一次。设置页可关闭。
-- **视频站点登录态**：发送媒体任务时读取 `youtube.com` / `youtu.be` / `youtube-nocookie.com` / `google.com` 的 cookie，转成 Netscape `cookies.txt` 交给桌面端 `yt-dlp --cookies`，修掉 YouTube 的 `Sign in to confirm you're not a bot`。只走本机回环，用完即删，`tasks.json` 只存临时文件路径、不存 cookie 内容；弹窗可关闭此开关。
+- **不接触登录凭证**：扩展已移除 `cookies` 权限，不读取、不传输任何登录状态；桌面端也没有 cookie 相关参数与临时文件。媒体任务只面向国内站点。
 - **右键菜单**：仅「用 FluxDL 下载此链接」「用 FluxDL 下载此媒体」两项。
 
 ---
@@ -59,8 +58,8 @@
 
 | 包 | 平台 | 说明 |
 |---|---|---|
-| `FluxDL-0.2.0-Setup.exe` | Windows 10/11 x64 | NSIS 安装版，单用户安装、不需要管理员权限 |
-| `FluxDL-0.2.0-Windows-便携版.zip` | Windows 10/11 x64 | 解压进 `FluxDL/` 文件夹后双击 `fluxdl.exe`，删文件夹即卸载 |
+| `FluxDL-0.3.0-Setup.exe` | Windows 10/11 x64 | NSIS 安装版，单用户安装、不需要管理员权限 |
+| `FluxDL-0.3.0-Windows-便携版.zip` | Windows 10/11 x64 | 解压进 `FluxDL/` 文件夹后双击 `fluxdl.exe`，删文件夹即卸载 |
 | `fluxdl.exe` | Windows 10/11 x64 | 单文件（约 9.5 MB），**应用自更新只下载它**，不用重下安装包 |
 
 两个包都**自带** `browser-extension/` 和 `tools/`（Windows 版 yt-dlp + ffmpeg），不用另外安装。
@@ -71,7 +70,7 @@
 
 Windows 需要 **WebView2 Runtime**（一般系统自带）。
 
-**装过旧扩展的必须重新加载一次**：v2.1 新增了 `cookies` 权限，Chrome 不会自动给旧扩展升级权限。在 `chrome://extensions` 点扩展的「重新加载」，否则 YouTube 登录状态带不过去。
+**装过旧扩展的必须重新加载一次**：v2.2 移除了 `cookies` 权限、改了后台脚本，在 `chrome://extensions` 点扩展的「重新加载」，否则仍在跑旧逻辑。
 
 ---
 
@@ -101,11 +100,15 @@ fluxdl/
 │   ├── util.rs        # 文件名清理、段规划、unique_path_reserved
 │   ├── store.rs       # tasks.json 原子写入
 │   ├── limit.rs       # 限速器
-│   ├── media.rs       # yt-dlp / ffmpeg 调用
+│   ├── media.rs       # yt-dlp / ffmpeg 调用（分片并发、国内站点路由）
+│   ├── update.rs      # 更新清单、SHA-256 校验、延迟替换脚本、崩溃恢复
+│   ├── ytdlp.rs       # 随包 yt-dlp 后台静默更新
 │   └── types.rs       # EngineOptions / TaskKind
 ├── crates/download-engine/tests/regression.rs   # 9 个回归用例
 ├── src-tauri/src/
 │   ├── lib.rs         # Tauri 命令、本地捕获服务、内置工具探测
+│   ├── appversion.rs  # 版本库扫描 / 切换 / boot_guard 启动自检 / prune
+│   ├── version.rs     # 检查更新、下载入库、触发替换
 │   └── capture_guard.rs  # 请求准入（Host + Origin），可独立 rustc --test
 ├── browser-extension/  # background.js / manifest.json / popup.*
 ├── tools/             # README.md + fetch-tools.sh（二进制被 .gitignore 排除）
@@ -172,7 +175,7 @@ cargo build --release --target x86_64-unknown-linux-gnu
 `fluxdl/browser-extension/manifest.json` 关键权限：
 
 ```json
-"permissions": ["contextMenus", "downloads", "storage", "notifications", "webRequest", "tabs", "cookies"],
+"permissions": ["contextMenus", "downloads", "storage", "notifications", "webRequest", "tabs"],
 "host_permissions": ["<all_urls>", "http://127.0.0.1:35917/*", "http://localhost:35917/*"]
 ```
 
@@ -186,56 +189,50 @@ Chrome 137+ 的**正式版**会静默忽略命令行 `--load-extension`；做扩
 
 ## 版本管理
 
-设置页「版本与更新」提供完整的更新链路，设计与数据结构见 [`docs/版本管理.md`](./docs/版本管理.md)。
+装一次之后，以后每次发版只要在程序里**点一次「更新」**：不用重下 47 MB 安装包、不用重装、不要管理员权限；装坏了能一键退回上一版，启动就崩的版本启动时自动退回。设计细节与状态机见 [`docs/版本管理.md`](./docs/版本管理.md)。
 
 | 能力 | 说明 |
 |---|---|
 | 查看版本 | 应用版本 / 引擎版本 / 运行平台 / 安装版或便携版 |
-| 检查更新 | 启动 4 秒后静默检查；设置页可强制检查（跳过 6 小时缓存） |
-| 增量更新 | 只下载变化的组件：应用壳约 10 MB 的 `fluxdl.exe`，不重下 45 MB 安装包、也不重下 78 MB 的 ffmpeg |
-| 更新历史 | 版本号 / 发布时间 / 通道 / 逐条说明，折叠时间线展示 |
-| 失败回滚 | 替换前备份 `.bak`，启动时校验 sha256，不符自动回滚 |
+| 一键更新 | 下载约 10 MB 的 `fluxdl.exe` → SHA-256 校验 → 自动替换 → 自动重启，2~3 秒完成，全程一次点击 |
+| 版本库 | 已下载的版本全部留在 `app-versions\<版本>\`，可共存 N 个；设置页可切换、可删除，默认保留 3 个 |
+| 语义化回退 | 切到旧版本时按钮显示「回退到 0.2.0」并二次确认；切到更高版本才叫「更新」 |
+| 启动自检 | 新版本连续两次启动失败自动退回上一版；运行中崩溃不触发回退，避免正常任务被误判 |
+| 失败保护 | 校验不符直接丢弃（fail-closed）；替换脚本没跑成则保持原样，绝不留下半个文件 |
 | 工具版本 | yt-dlp / ffmpeg 多版本共存、随时切换、一键回滚 |
 
-**版本号**遵循语义化版本 `MAJOR.MINOR.PATCH[-prerelease]`：主版本号变化表示不兼容改动，次版本号是新增功能，修订号是问题修复；带 `-beta.1` 的预发布版优先级低于同号正式版，稳定通道不推送。
+**版本号**遵循语义化版本 `MAJOR.MINOR.PATCH[-prerelease]`：主版本号是不兼容改动，次版本号是新增功能，修订号是问题修复；`-beta.1` 优先级低于同号正式版，稳定通道不推送预发布。清单里的版本号是唯一事实来源，程序只比较版本号，不看时间戳。
 
-**更新记录结构**（`update-manifest.json`，应用本体 / 工具 / 历史三合一）：
+**为什么不做二进制差分**：bsdiff / zstd patch 要为每个历史版本准备补丁，杀软对「程序自己改自己」也很敏感。因此改为**组件级增量**——应用只下 `fluxdl.exe`（约 10 MB），工具由 `tools/` 独立管理，扩展体积可忽略。
+
+**更新记录结构**（`update-manifest.json`，应用 / 工具 / 历史三合一）：
 
 ```json
 {
   "schema": 1,
   "app": {
-    "latest": "0.2.0",
+    "latest": "0.3.0",
     "minSupported": null,
-    "releasedAt": "2026-11-06T08:30:00Z",
-    "notes": ["设置页新增版本管理"],
+    "releasedAt": "2026-11-06T02:23:43Z",
+    "notes": ["设置页可一键切回旧版本"],
     "assets": {
-      "windows-x64": { "url": "https://…/v0.2.0/fluxdl.exe", "size": 9964544, "sha256": "a760b1…" }
+      "windows-x64": { "url": "https://…/v0.3.0/fluxdl.exe", "size": 9977856, "sha256": "4eacca68…" }
     }
   },
   "tools": { "yt-dlp": { "latest": "2025.11.01", "versions": [] } },
   "history": [
-    { "version": "0.2.0", "releasedAt": "…", "channel": "stable", "notes": ["…"] }
+    { "version": "0.3.0", "releasedAt": "…", "channel": "stable", "notes": ["…"] }
   ]
 }
 ```
 
-`sha256` 是强制的：清单里缺失则该更新直接拒绝（fail-closed），宁可更不了也不装来源不明的可执行文件。
+`sha256` 是强制的：清单里缺失则该更新直接拒绝，宁可更不了也不装来源不明的可执行文件。
 
-**回滚机制**：下载 → 落成 `fluxdl.exe.new` → sha256 校验 → 写 `update-state.json` → 重启时由脚本备份旧文件并替换 → 下次启动 `recover()` 判定结果。校验不符、脚本没跑、替换到一半断电、主文件缺失，四种情况都能自动回到可用状态。
+**替换怎么落地**：新版本先入库 → 复制成 `<当前 exe>.new` → 写 `update-state.json` → 生成只含 ASCII 的 `.cmd` → 主程序退出，脚本反复尝试改名判断旧进程是否已释放（最多 60 秒）→ 备份 `.bak` → 覆盖 → 比对文件大小 → 拉起新进程。路径全部走环境变量，避开中文系统 GBK 代码页乱码。
 
-**触发时机**：启动 +4 秒静默检查、设置页手动检查、启动时收尾上次未完成的替换。有更新时主界面顶部出现绿色横幅，`×` 仅对当前版本稍后提醒。
+**回滚三道闸**：① 下载后的 SHA-256 校验；② 替换脚本失败时用 `.bak` 还原；③ 启动自检 `attempts ≥ 2` 自动回退到 `previous`，`rolledBackFrom` 防止两版来回弹跳。
 
-**工具版本**：`yt-dlp` 取自其 GitHub Release（过滤 draft / prerelease），`ffmpeg` 取自 BtbN `FFmpeg-Builds` 的 `win64-lgpl-shared` 变体；激活前会实际执行一次并比对版本号，探测失败拒绝切换。
-
-发布清单由 `tools/build-update-manifest.py` 生成（自动算 size + sha256、累积历史）：
-
-```bash
-python3 tools/build-update-manifest.py --version 0.2.0 \
-  --exe dist/fluxdl.exe --notes "…" --tool yt-dlp=2025.11.01 --out update-manifest.json
-```
-
----
+**触发时机**：启动 +4 秒静默检查、设置页手动检查（跳过 6 小时缓存）、启动时收尾上次未完成的替换。有更新时主界面顶部出现绿色横幅，`×` 仅对当前版本稍后提醒。
 
 ## 内置 yt-dlp / ffmpeg
 
@@ -266,8 +263,7 @@ python3 tools/build-update-manifest.py --version 0.2.0 \
   "url": "https://example.com/file.zip",
   "filename": "file.zip",      // 可选
   "referer": "https://...",    // 可选
-  "kind": "http",              // 可选：http | media；缺省按 URL 自动判断
-  "cookies": "# Netscape HTTP Cookie File\n..."  // 可选：仅媒体任务，由扩展自动附带
+  "kind": "http"               // 可选：http | media；缺省按 URL 自动判断
 }
 ```
 
@@ -278,7 +274,7 @@ python3 tools/build-update-manifest.py --version 0.2.0 \
 
 因为令牌写在扩展源码里属于公开值，单靠它挡不住网页；浏览器跨域请求必定带 `Origin` 且 JS 无法伪造，所以用 Host + Origin 兜底。
 
-**登录态**：媒体任务可带 `cookies`（Netscape `cookies.txt` 文本）。桌面端只把它落到 app 数据目录的临时文件（≤ 128 KB，Unix 下权限 0600），再把**路径**写进 `NewTaskOptions.cookies_file` 传给 `yt-dlp --cookies`；任务结束由 Drop guard 删除，暂停时保留，启动时清理残留。cookie 本体不写进 `tasks.json`，也只经本机回环传输。
+**无登录态**：0.3.0 起协议里没有 `cookies` 字段，桌面端也删掉了 `--cookies` 参数与临时凭证文件。外面传了多余字段会被忽略，不会落盘。
 
 ---
 
@@ -287,7 +283,7 @@ python3 tools/build-update-manifest.py --version 0.2.0 \
 ```bash
 cd FuxDL/fluxdl
 
-# 引擎：37 单测 + 5 集成 + 9 回归 + 5 更新回滚 = 56 项
+# 引擎：38 单测 + 5 集成 + 9 回归 + 5 更新回滚 = 57 项
 cargo test -p fluxdl-engine
 cargo clippy --tests
 
@@ -300,11 +296,11 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 
 已完成的验证记录见 [`docs/验证记录.md`](./docs/验证记录.md)，包括：
 
-- 引擎并发 / 续传 / 持久化 / media 输出 / cookie 文件生命周期 / 格式降级 / yt-dlp 自动更新 / 版本管理回归 **56 项全绿**（含 14 项语义化版本与清单解析、5 项更新替换与回滚端到端）；
+- 引擎并发 / 续传 / 持久化 / media 输出 / yt-dlp 自动更新 / 版本库与启动自检 **57 项全绿**（38 单测 + 5 集成 + 9 回归 + 5 更新替换与回滚端到端）；
 - 捕获服务真实 TCP 报文端到端 8 项；
-- 扩展核心纯函数 27 项（含 `cookies.txt` 格式与采集范围）+ 真实 Chrome for Testing / MV3 端到端 **18/18**（资源嗅探、流媒体标记、弹窗渲染、media 任务入队、1 KB 小文件自动接管、浏览器原生下载被取消）；
-- 登录态链路端到端 **7/7**：扩展附带 cookie → 桌面端落地临时文件 → `yt-dlp` 收到 `--cookies` → 任务完成 → 凭证文件删除 → `tasks.json` 不含 cookie 值 → 关闭开关后不再采集；
-- 格式降级重试端到端 **9/9**：假 yt-dlp 首轮报格式不可用、次轮成功；恰好 2 次调用、参数按预期变化、两轮都带 cookie 且凭证文件未提前删除、产物真实落盘；
+- 扩展核心纯函数 27 项 + 真实 Chrome for Testing / MV3 端到端 **18/18**（资源嗅探、流媒体标记、弹窗渲染、media 任务入队、1 KB 小文件自动接管、浏览器原生下载被取消）；
+- 更新与回退链路：版本库扫描只认 `<版本>\fluxdl.exe`、SHA-256 不符即丢弃、`.bak` 还原、`boot_guard` 两次启动失败自动回退、`prune` 保留 3 版；替换脚本用环境变量传路径（中文目录不乱码）；
+- 视频链路：页面 URL → 单次 `yt-dlp` + `--concurrent-fragments 4`，B 站带 `player_client=tv,app`；直链 → 8 路 Range 并行；失败即报错，不再空转；
 - Ubuntu 桌面端 Xvfb 实跑、真实下载 + `tar tzf` 校验；
 - Linux 便携包解压后全新数据目录启动、自动识别内置工具并完成真实下载（历史验证；该包现已停发）。
 
@@ -316,10 +312,10 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 |---|---|---|
 | 本地令牌 | `fluxdl-local-v1` 是写死在扩展里的公开常量，本机任意进程都能添加任务 | 改为运行时随机令牌 + 扩展配对；会动扩展里写死的常量，需同步更新扩展与桌面端 |
 | CSP | `csp: null` | 公开发布前收紧 |
-| 扩展权限 | `host_permissions: <all_urls>` + `cookies`（资源嗅探与登录态需要） | 评估是否收窄到具体站点；cookie 只发本机、用完即删 |
+| 扩展权限 | `host_permissions: <all_urls>`（资源嗅探需要），已无 `cookies` 权限 | 评估是否收窄到具体站点；登录凭证不再经过扩展 |
 | 下载目标 | `engine.add()` 只接受 `http` / `https`，响应只落本地文件 | 仍存在本机发起内网探测的可能，多用户机器需注意 |
 | Windows | 依赖 WebView2 Runtime | 系统缺失时提示用户安装 |
-| 视频站点 | 扩展自动携带登录 cookie、格式不可用时自动降级重试；未登录、PO Token / 出口 IP 风控仍可能拦下 | 先在 Chrome 登录 YouTube、重新加载扩展；仍失败换一个公开视频判断是单点还是整体风控 |
+| 视频站点 | 只保留国内站点（B 站、抖音、快手、优酷、腾讯视频等）的主机名判定；YouTube 等国外站点点进来会走普通 HTTP 下载并明确报错 | 需要国外站点请自备可用网络环境后手工调 `yt-dlp`，不在官方支持范围 |
 | Linux 交付 | 已停发 Linux 成品包，源码仍可自行构建 | 需要时自行 `cargo build --release` |
 | `dist/` | 前端构建产物，不进 Git | 由 `npm run build` 生成 |
 
@@ -338,6 +334,7 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [#8](https://github.com/Supenman/FuxDL/pull/8) | 视频报 `Requested format is not available` 时自动降级重试：换不依赖 PO Token 的 yt-dlp 客户端、放宽格式链、cookie 跨两轮存活、中文排障指引；正常路径零改动 | `96fc10446` |
 | [#9](https://github.com/Supenman/FuxDL/pull/9) | yt-dlp 自动更新 + 处理 YouTube「页面需重载」报错：新增 `ytdlp.rs` 后台静默更新随包内置 yt-dlp（24h 冷却、并发互斥、失败静默、镜像回退）；`media.rs` 识别该报错后强制更新并重试；`EngineOptions.autoUpdateYtDlp` 开关（默认开），设置页可关 | `4efc490f` |
 | [#10](https://github.com/Supenman/FuxDL/pull/10) | 版本管理：新增 `update.rs`（语义化版本、清单解析、sha256 校验、暂存替换与崩溃恢复）、`src-tauri/version.rs`（检查更新 / 下载暂存 / 重启替换 / 历史）、`src-tauri/tools.rs`（yt-dlp 与 ffmpeg 多版本共存、切换、回滚）；设置页「版本与更新」+ 主界面更新横幅；版本号升至 0.2.0 | 见仓库历史 |
+| [#11](https://github.com/Supenman/FuxDL/pull/11) | 0.3.0 更新链路重构：去掉启动器，改为「版本库 + 延迟替换脚本 + 启动自检」；更新一次点击全自动（下载→校验→替换→重启）；新增 `appversion.rs`（版本库扫描、`boot_guard`、`mark_healthy`、`prune`）；设置页可切回旧版本；视频链路移除 cookie 与递归重试，只保留国内站点、分片并发 4 路 | 本条 |
 
 当前 `main` 已包含上述全部改动（文档可能在此之后继续同步，具体提交号以仓库 commit 历史为准）。`dist/`（前端构建产物）与 `tools/` 下的工具二进制按设计不进 Git，二进制统一走 Releases 发布。
 
@@ -350,6 +347,6 @@ rustc --test src-tauri/src/capture_guard.rs -o /tmp/cg && /tmp/cg
 | [`docs/代码审查.md`](./docs/代码审查.md) | 按 P0~P3 分级的第一轮代码审查报告 |
 | [`docs/改进方案.md`](./docs/改进方案.md) | 缺陷根因、修复方案、验证数据与推送记录 |
 | [`docs/P0-3-本地服务安全加固.md`](./docs/P0-3-本地服务安全加固.md) | 漏洞机理、准入设计、端到端验证、残余风险 |
-| [`docs/验证记录.md`](./docs/验证记录.md) | 扩展 v2.1、登录态链路、格式降级与成品包的完整验证结果 |
-| [`docs/版本管理.md`](./docs/版本管理.md) | 版本号规则、增量更新边界、清单数据结构、回滚机制、触发时机 |
+| [`docs/验证记录.md`](./docs/验证记录.md) | 扩展 v2.2、0.3.0 更新与回退链路、成品包的完整验证结果 |
+| [`docs/版本管理.md`](./docs/版本管理.md) | 版本号规则、版本库结构、八步更新流程、启动自检与回退状态机、边界情况 |
 | [`fluxdl/tools/README.md`](./fluxdl/tools/README.md) | 内置工具来源、体积与获取方式 |

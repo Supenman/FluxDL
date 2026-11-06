@@ -22,6 +22,7 @@ import { useStore } from "../store";
 import { backend, isTauri } from "../lib/backend";
 import type { EngineInfo, EngineOptions, ToolProgress } from "../lib/types";
 import { cx, formatBytes, formatSpeed } from "../lib/format";
+import { UpdateSection, ToolVersionPicker } from "./UpdateSection";
 
 const LIMITS = [
   { value: null, label: "不限速" },
@@ -59,6 +60,7 @@ export function SettingsPage() {
   const pushToast = useStore((s) => s.pushToast);
 
   const [info, setInfo] = useState<EngineInfo | null>(null);
+  const [appVersion, setAppVersion] = useState<string>("");
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(true);
   const [installing, setInstalling] = useState(false);
@@ -67,6 +69,11 @@ export function SettingsPage() {
 
   useEffect(() => {
     void refreshInfo();
+    // 版本号以后端 package_info 为准，避免前端写死一份、发版时漏改。
+    void backend
+      .appVersionInfo()
+      .then((v) => setAppVersion(v.appVersion))
+      .catch(() => setAppVersion(""));
     return () => {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
@@ -410,6 +417,28 @@ export function SettingsPage() {
           </div>
         </div>
 
+        <div className="setting-row inline">
+          <div className="setting-copy">
+            <label>自动更新 yt-dlp</label>
+            <p>YouTube 频繁改版，旧版 yt-dlp 必崩；开启后会后台静默更新随包内置的 yt-dlp</p>
+          </div>
+          <Toggle
+            checked={settings.autoUpdateYtDlp ?? true}
+            onChange={(next) => update({ autoUpdateYtDlp: next })}
+          />
+        </div>
+
+        <ToolVersionPicker
+          tool="yt-dlp"
+          title="yt-dlp"
+          hint="可随时切回旧版本：YouTube 改版后新版解析失败时，回滚往往能立刻恢复下载。"
+        />
+        <ToolVersionPicker
+          tool="ffmpeg"
+          title="ffmpeg"
+          hint="只在合并高清音视频时用到；换版本不影响普通 HTTP 下载。"
+        />
+
         <div className="tip-card">
           <Sparkles size={15} />
           <div className="tip-body">
@@ -528,6 +557,8 @@ export function SettingsPage() {
         </div>
       </section>
 
+      <UpdateSection />
+
       <section className="settings-section">
         <div className="section-head">
           <span className="section-icon">
@@ -541,7 +572,7 @@ export function SettingsPage() {
         <div className="about-grid">
           <div className="about-item">
             <span>应用版本</span>
-            <strong>0.1.0</strong>
+            <strong>{appVersion ? `v${appVersion}` : "—"}</strong>
           </div>
           <div className="about-item">
             <span>引擎版本</span>

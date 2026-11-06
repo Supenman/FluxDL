@@ -4,8 +4,10 @@ import type {
   Filter,
   LogLine,
   SortKey,
+  StagedUpdate,
   Task,
   TaskStatus,
+  UpdateCheck,
 } from "./lib/types";
 import { uid } from "./lib/format";
 
@@ -27,6 +29,7 @@ export const defaultEngineOptions: EngineOptions = {
   userAgent: "FluxDL/0.1 (Windows)",
   ytDlpPath: "yt-dlp",
   ffmpegPath: null,
+  autoUpdateYtDlp: true,
   clipboardWatch: true,
   closeToTray: true,
   openFolderAfter: false,
@@ -58,6 +61,12 @@ interface AppStore {
   clipboardOffer: string | null;
   logs: Record<string, LogLine[]>;
   toasts: Toast[];
+  /** 最近一次检查更新的结果；null 表示还没查过。 */
+  updateCheck: UpdateCheck | null;
+  /** 用户点过「稍后」的版本号；再来更高版本会重新提示。 */
+  hiddenUpdateVersion: string | null;
+  /** 已下载待重启的版本。 */
+  stagedUpdate: StagedUpdate | null;
 
   setTasks: (tasks: Task[]) => void;
   upsertTask: (task: Task) => void;
@@ -77,6 +86,9 @@ interface AppStore {
   dismissToast: (id: string) => void;
   appendLog: (line: LogLine) => void;
   clearLogs: (taskId: string) => void;
+  setUpdateCheck: (check: UpdateCheck | null) => void;
+  hideUpdate: (version: string) => void;
+  setStagedUpdate: (staged: StagedUpdate | null) => void;
 }
 
 const statusOrder: Record<TaskStatus, number> = {
@@ -104,6 +116,9 @@ export const useStore = create<AppStore>((set) => ({
   clipboardOffer: null,
   logs: {},
   toasts: [],
+  updateCheck: null,
+  hiddenUpdateVersion: null,
+  stagedUpdate: null,
 
   setTasks: (tasks) => set({ tasks }),
 
@@ -165,6 +180,10 @@ export const useStore = create<AppStore>((set) => ({
 
   dismissToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+
+  setUpdateCheck: (check) => set({ updateCheck: check }),
+  hideUpdate: (version) => set({ hiddenUpdateVersion: version }),
+  setStagedUpdate: (staged) => set({ stagedUpdate: staged }),
 
   appendLog: (line) =>
     set((state) => {

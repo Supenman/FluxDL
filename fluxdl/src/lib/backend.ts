@@ -4,14 +4,21 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mockBackend } from "./mock";
 import type {
   AddResult,
+  AppVersionInfo,
   EngineEvent,
   EngineInfo,
   EngineOptions,
   InstalledTools,
   NewTaskOptions,
+  StagedUpdate,
   Task,
   TaskKind,
   ToolProgress,
+  ToolVersionItem,
+  ToolVersionList,
+  UpdateCheck,
+  UpdateHistoryItem,
+  UpdateProgress,
 } from "./types";
 
 declare global {
@@ -135,6 +142,79 @@ export const backend = {
     return isTauri
       ? call("open_extension_folder")
       : Promise.reject(new Error("浏览器预览模式下不可用"));
+  },
+
+  // ---- 版本管理 ----
+
+  appVersionInfo(): Promise<AppVersionInfo> {
+    return isTauri
+      ? call<AppVersionInfo>("app_version_info")
+      : mockBackend.appVersionInfo();
+  },
+
+  /** force=true 跳过 6 小时缓存。网络失败不抛异常，错误写在 error 字段。 */
+  checkAppUpdate(force = false): Promise<UpdateCheck> {
+    return isTauri
+      ? call<UpdateCheck>("check_app_update", { force })
+      : mockBackend.checkAppUpdate();
+  },
+
+  appUpdateHistory(): Promise<UpdateHistoryItem[]> {
+    return isTauri
+      ? call<UpdateHistoryItem[]>("app_update_history")
+      : mockBackend.appUpdateHistory();
+  },
+
+  downloadAppUpdate(): Promise<StagedUpdate> {
+    return isTauri
+      ? call<StagedUpdate>("download_app_update")
+      : mockBackend.downloadAppUpdate();
+  },
+
+  applyAppUpdateAndRestart(): Promise<string> {
+    return isTauri
+      ? call<string>("apply_app_update_and_restart")
+      : mockBackend.applyAppUpdateAndRestart();
+  },
+
+  /** 启动时的更新结果提示（已应用 / 已回滚），取一次即清空。 */
+  takeStartupNotice(): Promise<string | null> {
+    return isTauri
+      ? call<string | null>("take_startup_notice")
+      : Promise.resolve(null);
+  },
+
+  async onUpdateProgress(
+    callback: (progress: UpdateProgress) => void,
+  ): Promise<() => void> {
+    if (!isTauri) return () => {};
+    return listen<UpdateProgress>("update:progress", (event) =>
+      callback(event.payload),
+    );
+  },
+
+  toolVersionList(tool: string): Promise<ToolVersionList> {
+    return isTauri
+      ? call<ToolVersionList>("tool_version_list", { tool })
+      : mockBackend.toolVersionList(tool);
+  },
+
+  toolInstallVersion(tool: string, version: string): Promise<ToolVersionItem> {
+    return isTauri
+      ? call<ToolVersionItem>("tool_install_version", { tool, version })
+      : mockBackend.toolInstallVersion(tool, version);
+  },
+
+  toolActivateVersion(tool: string, version: string): Promise<ToolVersionItem> {
+    return isTauri
+      ? call<ToolVersionItem>("tool_activate_version", { tool, version })
+      : mockBackend.toolActivateVersion(tool, version);
+  },
+
+  toolRollback(tool: string): Promise<ToolVersionItem> {
+    return isTauri
+      ? call<ToolVersionItem>("tool_rollback", { tool })
+      : mockBackend.toolRollback(tool);
   },
 
   /** Subscribes to engine + clipboard events. Returns an unsubscribe fn. */

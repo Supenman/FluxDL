@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "app": {
+    "latest": "0.2.0",
+    "minSupported": null,
+    "releasedAt": "2026-11-06T00:57:18Z",
+    "notes": [
+      "设置页新增「版本与更新」：查看当前版本、检查更新、更新历史、一键更新",
+      "应用更新只下载约 10 MB 的 fluxdl.exe，不重下 47 MB 安装包；失败自动回滚",
+      "yt-dlp / ffmpeg 支持多版本共存、随时切换、一键回滚",
+      "更新提示横幅、强制更新标记与离线降级提示"
+    ],
+    "assets": {
+      "windows-x64": {
+        "url": "https://github.com/Supenman/FuxDL/releases/download/v0.2.0/fluxdl.exe",
+        "size": 9964544,
+        "sha256": "a760b1b7e082543986f6f91950730120b7424875c1f7e63948f306a9d636611b"
+      }
+    }
+  },
+  "tools": {
+    "yt-dlp": {
+      "versions": [],
+      "latest": "2025.11.01"
+    },
+    "ffmpeg": {
+      "versions": [],
+      "latest": "9.0"
+    }
+  },
+  "history": [
+    {
+      "version": "0.2.0",
+      "releasedAt": "2026-11-06T00:57:18Z",
+      "channel": "stable",
+      "notes": [
+        "设置页新增「版本与更新」：查看当前版本、检查更新、更新历史、一键更新",
+        "应用更新只下载约 10 MB 的 fluxdl.exe，不重下 47 MB 安装包；失败自动回滚",
+        "yt-dlp / ffmpeg 支持多版本共存、随时切换、一键回滚",
+        "更新提示横幅、强制更新标记与离线降级提示"
+      ]
+    },
+    {
+      "version": "0.1.0",
+      "releasedAt": "2026-11-06T02:40:00Z",
+      "channel": "stable",
+      "notes": [
+        "YouTube 报「页面需重载」时自动更新 yt-dlp 后重试一次",
+        "新增 yt-dlp 后台自动更新：24 小时冷却、失败静默、官方源失败回退镜像",
+        "视频「没有可用清晰度」时自动换客户端并放宽格式链重试"
+      ]
+    },
+    {
+      "version": "0.0.9",
+      "releasedAt": "2026-11-06T01:30:00Z",
+      "channel": "stable",
+      "notes": [
+        "视频站点自动携带浏览器登录 cookie，修「Sign in to confirm you're not a bot」",
+        "浏览器扩展升级 v2.1，新增 cookies 权限（旧扩展需手动重新加载）"
+      ]
+    },
+    {
+      "version": "0.0.8",
+      "releasedAt": "2026-11-06T00:20:00Z",
+      "channel": "stable",
+      "notes": [
+        "修 Windows 中文系统 yt-dlp 崩溃（Errno 22 / flushing sys.stdout）",
+        "扩展 v2：自动接管全部下载、页面资源嗅探；删除接管范围设置与「下载当前页面」"
+      ]
+    },
+    {
+      "version": "0.0.7",
+      "releasedAt": "2026-11-05T22:00:00Z",
+      "channel": "stable",
+      "notes": [
+        "修文件完整性缺陷：断点续传补零、并发同名任务共享临时文件",
+        "tasks.json 改为原子写入，避免任务列表整体消失",
+        "本地捕获服务增加 Host / Origin 准入校验"
+      ]
+    }
+  ]
+}

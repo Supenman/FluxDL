@@ -1,13 +1,13 @@
 [package]
 name = "fluxdl-engine"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "FluxDL download engine: multi-connection HTTP, resume, rate limiting, yt-dlp integration"
 
 [dependencies]
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs", "sync", "time", "process", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "deflate", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -18,6 +18,9 @@ url = "2"
 percent-encoding = "2"
 parking_lot = "0.12"
 dirs = "5"
+# 更新包完整性校验：下载的 exe / 工具包必须与发布清单里的 sha256 一致才允许替换，
+# 否则回滚。纯 Rust 实现，无系统依赖。
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"

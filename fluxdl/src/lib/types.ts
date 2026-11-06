@@ -63,6 +63,8 @@ export interface EngineOptions {
   userAgent: string;
   ytDlpPath: string;
   ffmpegPath: string | null;
+  /** 自动更新随包内置的 yt-dlp（YouTube 频繁改版，旧版必崩）。默认开启。 */
+  autoUpdateYtDlp?: boolean;
   clipboardWatch: boolean;
   closeToTray: boolean;
   openFolderAfter: boolean;
@@ -109,3 +111,75 @@ export type EngineEvent =
 
 export type Filter = "all" | "active" | "completed" | "media" | "paused" | "failed";
 export type SortKey = "recent" | "name" | "size" | "progress";
+
+// ---------------------------------------------------------------------------
+// 版本管理
+// ---------------------------------------------------------------------------
+
+export interface AppVersionInfo {
+  appVersion: string;
+  engineVersion: string;
+  platform: string;
+  installDir: string;
+  /** 便携版：exe 同目录就有 tools/ 与 browser-extension/。 */
+  portable: boolean;
+}
+
+export interface UpdateHistoryItem {
+  version: string;
+  releasedAt: string;
+  channel: string | null;
+  notes: string[];
+}
+
+export interface UpdateCheck {
+  current: string;
+  latest: string;
+  available: boolean;
+  /** 当前版本低于清单里的最低支持版本，必须更新。 */
+  forced: boolean;
+  releasedAt: string;
+  notes: string[];
+  size: number | null;
+  platform: string;
+  source: string;
+  checkedAt: number;
+  history: UpdateHistoryItem[];
+  /** 检查失败的原因；此时 available 为 false，但 history 可能来自缓存。 */
+  error: string | null;
+}
+
+export interface UpdateProgress {
+  phase: "download" | "verify" | string;
+  downloaded: number;
+  total: number;
+}
+
+export interface StagedUpdate {
+  version: string;
+  size: number;
+  stagedPath: string;
+  needsRestart: boolean;
+}
+
+export interface ToolVersionItem {
+  version: string;
+  path: string | null;
+  size: number | null;
+  installed: boolean;
+  active: boolean;
+  releasedAt: string | null;
+  notes: string | null;
+}
+
+export interface ToolVersionList {
+  tool: string;
+  active: string | null;
+  previous: string | null;
+  latest: string | null;
+  updateAvailable: boolean;
+  installed: ToolVersionItem[];
+  available: ToolVersionItem[];
+  /** 远端不可达时的提示，界面据此降级为「仅本地版本」。 */
+  warning: string | null;
+}

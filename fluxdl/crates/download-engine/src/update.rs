@@ -654,6 +654,25 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// 发版闸门：仓库根的更新清单（线上 raw / 镜像源读的就是它）必须与
+    /// 应用版本一致。0.3.3 曾出现清单停在 0.3.0，导致 0.3.3 用户「已是最新」、
+    /// 旧版用户反而装到 0.3.0。任一处漏改都会在这里失败。
+    #[test]
+    fn repo_manifest_matches_app_version() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let conf: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("src-tauri/tauri.conf.json")).unwrap(),
+        )
+        .unwrap();
+        let app_version = conf["version"].as_str().expect("tauri.conf.json 缺 version");
+        let raw = std::fs::read_to_string(root.join("update-manifest.json")).unwrap();
+        let manifest = UpdateManifest::parse(&raw).expect("仓库根更新清单无法解析");
+        assert_eq!(
+            manifest.app.latest, app_version,
+            "仓库根 update-manifest.json 的 latest 必须等于 tauri.conf.json 的 version"
+        );
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("fluxdl-upd-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

@@ -132,12 +132,28 @@ export function SettingsPage() {
     }
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {
-      const next = useStore.getState().settings;
+      const state = useStore.getState();
+      // 首屏 getEngineOptions 还没回来时，settings 仍是硬编码默认值；
+      // 此时写回会把用户的真实配置（尤其 aria2Path）覆盖掉。
+      if (!state.settingsLoaded) {
+        pushToast("设置尚未加载完成，请稍后重试", "error");
+        return;
+      }
+      const next = state.settings;
       try {
-        await backend.setEngineOptions(next);
+        const confirmed = await backend.setEngineOptions(next);
+        if (confirmed) useStore.getState().setSettings(confirmed);
         setSaved(true);
       } catch (error) {
         pushToast(`设置保存失败：${error}`, "error");
+        // 回滚到后端实际值，避免界面保留一个没落盘的设置
+        try {
+          const actual = await backend.getEngineOptions();
+          useStore.getState().setSettings(actual);
+        } catch {
+          // 读取也失败时保持现状，错误提示已经给出
+        }
+        setSaved(false);
       }
     }, 450);
   };
@@ -411,6 +427,41 @@ export function SettingsPage() {
                 spellCheck={false}
               />
               <button className="input-button" onClick={pickFfmpeg} title="选择可执行文件">
+                <FolderOpen size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-copy">
+            <label>aria2c 路径（视频加速）</label>
+            <p>
+              {settings.aria2Path ? (
+                <span className="check-ok">已启用多连接下载（16 路）</span>
+              ) : (
+                "留空自动探测；未找到时退回 yt-dlp 单连接下载，速度会慢数倍"
+              )}
+            </p>
+          </div>
+          <div className="setting-control wide">
+            <div className="input-with-button">
+              <input
+                value={settings.aria2Path ?? ""}
+                onChange={(event) =>
+                  update({ aria2Path: event.target.value.trim() || null })
+                }
+                placeholder="留空则自动探测 tools/aria2c.exe"
+                spellCheck={false}
+              />
+              <button
+                className="input-button"
+                onClick={async () => {
+                  const picked = await backend.pickFile(settings.aria2Path ?? "");
+                  if (picked) update({ aria2Path: picked });
+                }}
+                title="选择 aria2c 可执行文件"
+              >
                 <FolderOpen size={14} />
               </button>
             </div>

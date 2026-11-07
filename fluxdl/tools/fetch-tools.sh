@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FluxDL 内置工具获取脚本：按当前平台下载 yt-dlp 与 ffmpeg 到本目录。
+# FluxDL 内置工具获取脚本：按当前平台下载 yt-dlp、ffmpeg 与 aria2c 到本目录。
 # 二进制不进 Git；正式成品包由打包流程带上对应平台的文件。
 set -euo pipefail
 
@@ -8,6 +8,10 @@ cd "$DIR"
 
 YTDLP_BASE="${YTDLP_BASE:-https://ghfast.top/https://github.com/yt-dlp/yt-dlp/releases/latest/download}"
 FFMPEG_WIN_URL="${FFMPEG_WIN_URL:-https://ghfast.top/https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64}"
+# aria2c：视频下载走它的多连接分段拉取（-x16 -s16），绕开 B 站等站点的单连接限速。
+# 版本钉死 1.37.0：更新需同步回归 tests/media_aria2.rs 与真实站点下载。
+ARIA2_VERSION="${ARIA2_VERSION:-1.37.0}"
+ARIA2_WIN_URL="${ARIA2_WIN_URL:-https://ghfast.top/https://github.com/aria2/aria2/releases/download/release-${ARIA2_VERSION}/aria2-${ARIA2_VERSION}-win-64bit-build1.zip}"
 
 fetch() {
   local url="$1" dest="$2"
@@ -19,7 +23,14 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*|Windows_NT)
     fetch "$YTDLP_BASE/yt-dlp.exe" "yt-dlp.exe"
     fetch "$FFMPEG_WIN_URL" "ffmpeg.exe"
-    echo "✓ Windows 工具就绪：yt-dlp.exe / ffmpeg.exe"
+    # aria2c 只提供 zip，解压后取 exe，其它文件（证书、文档）不随包。
+    echo "→ 下载 aria2c.exe（${ARIA2_VERSION}）"
+    tmpzip="$(mktemp -d)/aria2.zip"
+    curl -fL --retry 3 --retry-delay 2 --max-time 300 -o "$tmpzip" "$ARIA2_WIN_URL"
+    unzip -o -j "$tmpzip" '*/aria2c.exe' -d . >/dev/null
+    rm -rf "$(dirname "$tmpzip")"
+    [[ -s aria2c.exe ]] || { echo "! aria2c.exe 解压失败"; exit 1; }
+    echo "✓ Windows 工具就绪：yt-dlp.exe / ffmpeg.exe / aria2c.exe"
     ;;
   Linux)
     fetch "$YTDLP_BASE/yt-dlp" "yt-dlp"

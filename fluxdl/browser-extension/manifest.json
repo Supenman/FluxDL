@@ -19,6 +19,21 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["page-probe.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["probe-bridge.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
   "action": {
     "default_title": "FluxDL",
     "default_popup": "popup.html",

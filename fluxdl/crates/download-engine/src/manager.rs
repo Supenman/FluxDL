@@ -6,7 +6,7 @@ use crate::types::*;
 use crate::util;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -254,6 +254,14 @@ impl Engine {
         if !matches!(url.scheme(), "http" | "https") {
             return Err(EngineError::message("仅支持 http / https 链接"));
         }
+        // 0.3.6：页面 URL 不等于视频文件。对已证实无法整页解析的站点 / 聚合页，
+        // 在建任务时就给出可操作指引，不创建必然失败的媒体任务（真机截图显示
+        // 快手 / 抖音页面链接会被建成失败任务并报 Unsupported URL / Fresh cookies）。
+        if kind == TaskKind::Media {
+            if let Some(hint) = crate::media::media_page_blocker(raw_url.trim()) {
+                return Err(EngineError::message(hint));
+            }
+        }
 
         let engine_options = self.options.read().clone();
         let save_dir = options
@@ -290,6 +298,32 @@ impl Engine {
             .unwrap_or(engine_options.connections)
             .clamp(1, 32);
         let speed_limit = options.speed_limit.filter(|v| *v > 0);
+        // 默认值修正：`NewTaskOptions` 是 `#[derive(Default)]`，bool 字段默认 false，
+        // 而不带 `#[serde(default)]` 的字段在反序列化时同样落到 bool 默认值。
+        // 于是「未显式赋值」和「显式关闭」无法区分。aria2c 走的是外部进程，
+        // 引擎的 `RateLimiter` 管不到它，所以这里按「是否限速」做一次确定性裁决：
+        //   · 全局限速开启 → 一律关闭 aria2c（否则全局限速被绕过）
+        //   · 任务限速开启 → 关闭 aria2c
+        //   · 两者都没有   → 开启 aria2c（多连接提速）
+        let mut options = options;
+        // 调用方显式要求 aria2 时尊重它（回归测试 / 高级入口仍可验证该路径）。
+        let aria2_explicitly_on = options.aria2;
+        // 任务级没显式开 aria2 时，若全局已配置 aria2c 且二进制可探测到、且未限速，
+        // 默认开启 aria2 外部下载器（多连接提速）。此前前端从不传 aria2 开关，
+        // 导致即使配了 aria2c.exe，真实网页 / 桌面入口也永远走原生模式，加速形同虚设。
+        if !options.aria2 {
+            let can_accelerate = speed_limit.is_none()
+                && engine_options.global_speed_limit.filter(|v| *v > 0).is_none()
+                && Self::aria2_available(&engine_options);
+            options.aria2 = can_accelerate;
+        }
+        // 媒体页面一律交回 yt-dlp 原生下载器：DASH / HLS 分片普遍只有 100 KB 级，
+        // 远小于 aria2 的 -k4M 切分阈值，aria2 不会切分、恒用 1 条连接（CN:1），
+        // 还要为每一片多起一个进程。分片之间的并发由 --concurrent-fragments 负责。
+        // 这里只收回「自动开启」的那部分，不覆盖调用方显式开启的选择。
+        if kind == TaskKind::Media && !aria2_explicitly_on {
+            options.aria2 = false;
+        }
         let domain = url.host_str().unwrap_or("").to_string();
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp_millis();
@@ -352,6 +386,28 @@ impl Engine {
         self.save().await;
         self.spawn_runner(id.clone()).await;
         Ok(view)
+    }
+
+    /// 全局是否可用 aria2c：用户显式配置了路径，或便携包 / exe 同级的 `tools/` 下存在
+    /// aria2c 即可。只检查文件存在（与 `media::aria2_candidates` + `aria2::locate` 同口径），
+    /// 不实际运行——真正能不能跑由 `media::run` 里的 `aria2::locate` 兜底。
+    fn aria2_available(options: &EngineOptions) -> bool {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Some(p) = options.aria2_path.as_deref().filter(|s| !s.trim().is_empty()) {
+            if let Some(parent) = Path::new(p).parent() {
+                if !parent.as_os_str().is_empty() {
+                    dirs.push(parent.to_path_buf());
+                }
+            }
+            dirs.push(Path::new(p).to_path_buf());
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                dirs.push(parent.join("tools"));
+                dirs.push(parent.to_path_buf());
+            }
+        }
+        crate::aria2::locate(&dirs).is_some()
     }
 
     async fn acquire_slot(self: &Arc<Self>, token: &CancellationToken) -> Option<SlotGuard> {

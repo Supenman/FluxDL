@@ -28,7 +28,14 @@ export function ClipboardOffer() {
         pushToast("已加入下载队列", "success");
         setOffer(null);
       } else {
-        pushToast(result.errors[0] ?? "添加失败", "error");
+        const message = result.errors[0] ?? "添加失败";
+        // 0.3.6：页面链接被提前拦截时返回的是可操作指引，不是下载失败。
+        // 用 info 呈现，避免用户以为又出现了一个报错任务。
+        const isGuidance =
+          message.includes("请在浏览器扩展") ||
+          message.includes("无法整页解析") ||
+          message.includes("不解析这类页面");
+        pushToast(message, isGuidance ? "info" : "error");
       }
     } catch (error) {
       pushToast(String(error), "error");

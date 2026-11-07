@@ -1,22 +1,22 @@
 {
   "schema": 1,
   "app": {
-    "latest": "0.3.0",
+    "latest": "0.3.6",
     "minSupported": null,
-    "releasedAt": "2026-11-06T02:23:43Z",
+    "releasedAt": "2026-11-07T02:58:57Z",
     "notes": [
-      "新增主程序版本管理：以后更新不再重下安装包，设置页可一键切回旧版本",
-      "更新改为一次点击全自动：下载 → 校验 → 替换 → 自动重启，2~3 秒完成，无需管理员权限",
-      "新增启动自检：新版本连续两次启动失败会自动回退到上一版本",
-      "视频下载一次直下，失败立即报错，不再「下载中 0B/未知」空转",
-      "视频分片并发 4 路，B 站切 tv/app 客户端缓解单连接限速",
-      "不再读取、传输或落盘任何 cookie；媒体任务只保留国内站点"
+      "抖音 / 快手页面链接在新建任务时提前拦截并给出直链指引，不再创建必然失败的媒体任务、不再出现 Unsupported URL / Fresh cookies 报错",
+      "扩展弹窗对整页解析不可用的页面把主按钮改为「下载本页视频（直链）」，自动发送嗅探到的体积最大 video/mp4，无需手动翻资源列表",
+      "扩展与引擎统一抖音判定：带 modal_id 的精选 / 推荐页不再尝试整页解析，改走扩展嗅探直链",
+      "资源列表过滤 PWA manifest / .json / .map 等噪声；带 attachment 或 video/audio 的资源仍保留",
+      "媒体任务独占目录改为 RAII 清理：失败 / 暂停 / 找不到输出不再在下载目录残留 fluxdl-<任务id> 文件夹",
+      "复制页面链接的引导提示以蓝色信息条呈现；新增页面拦截与目录清理的引擎 / 扩展回归测试"
     ],
     "assets": {
       "windows-x64": {
-        "url": "https://github.com/Supenman/FuxDL/releases/download/v0.3.0/fluxdl.exe",
-        "size": 9977856,
-        "sha256": "4eacca68cce07afb6328f666224607edec4bb43c524bafd6a2031944c04caee7"
+        "url": "https://github.com/Supenman/FuxDL/releases/download/v0.3.6/fluxdl.exe",
+        "size": 10049024,
+        "sha256": "cdcdefc42efe728bf58fe9131c3367440c9f395c4df8300dd8d0fd92068b99d6"
       }
     }
   },
@@ -31,6 +31,77 @@
     }
   },
   "history": [
+    {
+      "version": "0.3.6",
+      "releasedAt": "2026-11-07T02:58:57Z",
+      "channel": "stable",
+      "notes": [
+        "抖音 / 快手页面链接在新建任务时提前拦截并给出直链指引，不再创建必然失败的媒体任务、不再出现 Unsupported URL / Fresh cookies 报错",
+        "扩展弹窗对整页解析不可用的页面把主按钮改为「下载本页视频（直链）」，自动发送嗅探到的体积最大 video/mp4，无需手动翻资源列表",
+        "扩展与引擎统一抖音判定：带 modal_id 的精选 / 推荐页不再尝试整页解析，改走扩展嗅探直链",
+        "资源列表过滤 PWA manifest / .json / .map 等噪声；带 attachment 或 video/audio 的资源仍保留",
+        "媒体任务独占目录改为 RAII 清理：失败 / 暂停 / 找不到输出不再在下载目录残留 fluxdl-<任务id> 文件夹",
+        "复制页面链接的引导提示以蓝色信息条呈现；新增页面拦截与目录清理的引擎 / 扩展回归测试"
+      ]
+    },
+    {
+      "version": "0.3.5",
+      "releasedAt": "2026-11-07T02:05:00Z",
+      "channel": "stable",
+      "notes": [
+        "修正抖音 / 快手网页链接整页解析报 Unsupported URL：删除与内置解析器能力不符的「支持站点」名单，改为按站点给出可操作指引",
+        "抖音精选 / 推荐 / 主页带 modal_id 的聚合页自动归一化为 /video/<id> 再交给 yt-dlp，任务来源 URL 保持原样",
+        "CDN 视频直链（如 v2.kuaishou.com/xxx.mp4）自动按普通直链多连接下载，不再误交给 yt-dlp",
+        "扩展弹窗不再把首页 / 发现页 / 精选页 / 快手网页当成「本页视频」，改为显示引导文案并指向资源列表直链",
+        "新增抖音归一化、容器直链、站点分流提示回归测试；Tauri / 前端 / 扩展三处直链判定一致性校验",
+        "如实说明能力边界：内置 yt-dlp 无快手提取器，抖音网页解析需匿名校验 cookie，FluxDL 不读取任何凭证，这类页面请用扩展资源列表里的视频直链"
+      ]
+    },
+    {
+      "version": "0.3.4",
+      "releasedAt": "2026-11-06T23:50:00Z",
+      "channel": "stable",
+      "notes": [
+        "统一媒体站点名单：浏览器扩展与桌面新建两条入口改用同一份 27 站点主机名名单，修复同一链接在插件里被建成 HTTP 直链、只下回 HTML 页面",
+        "媒体任务一律不再交给 aria2：DASH/HLS 分片仅 100KB 级，aria2 的 -k4M 永不切分导致恒 CN:1 单连接，现全部由 yt-dlp --concurrent-fragments 4 做分片间并发（不再只排除 B 站）",
+        "修复扩展 User-Agent 字段名与后端 camelCase 契约不一致（user_agent→userAgent），防盗链站点不再 403；后端保留 alias 兼容旧扩展",
+        "收窄乱码标题检测，不再误杀葡语/俄语/泰文/含 emoji 的合法标题，下载中不再错误显示默认名 video (1)",
+        "修复旧版 tasks.json 缺字段导致升级后任务列表整表消失：结构级 serde default + 逐条解析跳过坏数据",
+        "线上更新清单同步到 0.3.4 并新增发版断言 latest 必须等于 tauri.conf.json version，杜绝版本倒挂",
+        "原生下载模式补日志噪声过滤与节流；媒体任务限速生效（--limit-rate）；设置加载完成前禁止写回默认值；每个媒体任务独占输出目录，避免完成却指向无关旧文件",
+        "修复更新结果提示被启动 toast 抢走导致设置页恒空；便携包/Setup 补入 aria2c.exe，避免 HTTP 直链静默退回单连接"
+      ]
+    },
+    {
+      "version": "0.3.3",
+      "releasedAt": "2026-11-06T18:20:00Z",
+      "channel": "stable",
+      "notes": [
+        "修复 B 站任务恒单连接（CN:1）：分片流交回 yt-dlp 并发，不再被 aria2 的小分片切分阈值拖成 1 连接",
+        "修复 aria2 进度汇总行被当错误日志刷屏",
+        "修复 yt-dlp 输出乱码标题被回填到任务标题"
+      ]
+    },
+    {
+      "version": "0.3.2",
+      "releasedAt": "2026-11-06T17:56:00Z",
+      "channel": "stable",
+      "notes": [
+        "修复「下载完成但未找到输出文件」误报（默认名 video (1) 导致兜底匹配失效）",
+        "工具探测向上查找父目录，修复版本库启动时 aria2c 找不到、回退单连接变慢",
+        "安装包补入 aria2c.exe 并把 tools 复制到数据目录"
+      ]
+    },
+    {
+      "version": "0.3.1",
+      "releasedAt": "2026-11-06T17:35:00Z",
+      "channel": "stable",
+      "notes": [
+        "修复性能回归：移除 --concurrent-fragments 1（分片串行化导致变慢）",
+        "aria2 分片阈值 1M → 4M，减少小分片建连开销",
+        "解析/进度、实时速度、新建下载 referer/BV 号等 0.3.0 修复一并保留"
+      ]
+    },
     {
       "version": "0.3.0",
       "releasedAt": "2026-11-06T02:23:43Z",

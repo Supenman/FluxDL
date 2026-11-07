@@ -2,8 +2,8 @@ use crate::types::{EngineOptions, NewTaskOptions, TaskStatus, TaskView};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct PersistedTask {
     pub view: TaskView,
     pub options: NewTaskOptions,
@@ -20,7 +20,23 @@ pub fn load(path: &Path) -> StoreFile {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return StoreFile::default();
     };
-    let mut store: StoreFile = serde_json::from_str(&raw).unwrap_or_default();
+    // 逐条解析，而不是整表 from_str：旧版本升级后只要有一条任务缺字段或格式损坏，
+    // 整表反序列化就会失败，把所有已完成任务和续传 part 一起丢掉。
+    // 这里按字段拆开读，坏条目单独跳过，其余任务照常恢复。
+    let mut store = StoreFile::default();
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return store;
+    };
+    if let Some(options) = root.get("options") {
+        store.options = serde_json::from_value(options.clone()).ok();
+    }
+    if let Some(tasks) = root.get("tasks").and_then(|v| v.as_array()) {
+        for item in tasks {
+            if let Ok(task) = serde_json::from_value::<PersistedTask>(item.clone()) {
+                store.tasks.push(task);
+            }
+        }
+    }
     // Anything that was mid-flight when the app exited is shown as paused,
     // so we never silently burn bandwidth on startup.
     for task in &mut store.tasks {

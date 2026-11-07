@@ -28,15 +28,26 @@ export function App() {
     let alive = true;
     let unsubscribe: (() => void) | undefined;
 
-    backend.getEngineOptions().then((options) => {
-      if (!alive) return;
-      useStore.getState().setSettings(options);
-      useStore.getState().setSettingsLoaded(true);
-    });
+    backend
+      .getEngineOptions()
+      .then((options) => {
+        if (!alive) return;
+        useStore.getState().setSettings(options);
+        useStore.getState().setSettingsLoaded(true);
+      })
+      .catch((error) => {
+        // 失败时保持 settingsLoaded=false，设置页会拒绝写回硬编码默认值
+        if (alive) useStore.getState().pushToast(`读取设置失败：${error}`, "error");
+      });
 
-    backend.getTasks().then((tasks) => {
-      if (alive) useStore.getState().setTasks(tasks);
-    });
+    backend
+      .getTasks()
+      .then((tasks) => {
+        if (alive) useStore.getState().setTasks(tasks);
+      })
+      .catch((error) => {
+        if (alive) useStore.getState().pushToast(`读取任务列表失败：${error}`, "error");
+      });
 
     backend
       .onEvent((event) => {
@@ -63,6 +74,11 @@ export function App() {
       .then((fn) => {
         if (alive) unsubscribe = fn;
         else fn();
+      })
+      .catch((error) => {
+        if (alive) {
+          useStore.getState().pushToast(`事件订阅失败，界面可能不会实时刷新：${error}`, "error");
+        }
       });
 
     return () => {

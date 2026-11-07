@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskStatus {
     Queued,
     Connecting,
     Downloading,
+    #[default]
     Paused,
     Completed,
     Failed,
@@ -18,9 +19,10 @@ impl TaskStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskKind {
+    #[default]
     Http,
     Media,
 }
@@ -41,8 +43,11 @@ impl SegmentView {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// 旧版 `tasks.json` 可能缺少后加的字段（domain / referer / format …）。
+/// 结构级 `default` 让缺字段回落到零值，配合 `store::load` 的逐条解析，
+/// 一条坏数据不再把整份任务列表带成空表。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct TaskView {
     pub id: String,
     pub kind: TaskKind,
@@ -83,6 +88,12 @@ pub struct NewTaskOptions {
     pub proxy: Option<String>,
     pub headers: BTreeMap<String, String>,
     pub format: Option<String>,
+    /// 本次任务是否允许用 aria2c 作为 yt-dlp 的外部下载器（多连接）。
+    ///
+    /// 单独放在任务级而不是只放全局，是因为限速是**按任务**设置的：任务一旦
+    /// 限速，就必须关掉 aria2c，否则 aria2c 会绕开 `RateLimiter` 把限速架空。
+    /// 默认 true；限速任务在创建时由引擎置为 false。
+    pub aria2: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +107,11 @@ pub struct EngineOptions {
     pub user_agent: String,
     pub yt_dlp_path: String,
     pub ffmpeg_path: Option<String>,
+    /// aria2c 可执行文件的完整路径。留空时按「yt-dlp / ffmpeg 所在目录、随包
+    /// tools/ 目录、exe 同级目录」的顺序自动探测；探测不到就退回 yt-dlp 原生
+    /// 下载器（功能不中断，只是失去多连接提速）。
+    #[serde(default)]
+    pub aria2_path: Option<String>,
     /// 是否在后台自动更新随包内置的 yt-dlp（视频站点提取器频繁改版，旧版会解析失败）。
     /// 默认开启；仅对随包内置的 yt-dlp 生效，PATH 里的系统 yt-dlp 不接管。
     pub auto_update_yt_dlp: bool,
@@ -118,6 +134,7 @@ impl Default for EngineOptions {
             user_agent: "FluxDL/0.1 (Windows)".into(),
             yt_dlp_path: "yt-dlp".into(),
             ffmpeg_path: None,
+            aria2_path: None,
             auto_update_yt_dlp: true,
             clipboard_watch: true,
             close_to_tray: true,

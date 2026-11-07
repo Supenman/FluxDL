@@ -29,13 +29,13 @@
         </div>
       </section>
 
-      <!-- 视频站点：B 站 / YouTube 等把页面交给桌面端 yt-dlp 解析 -->
+      <!-- 视频站点：可整页解析时交给 yt-dlp；不可解析时弹窗改走嗅探到的直链 -->
       <section class="card video-card" id="video-card" hidden>
         <div class="copy">
           <span>本页检测到视频</span>
           <small id="video-tip">由桌面端 yt-dlp 解析清晰度并合并音视频</small>
         </div>
-        <button id="parse-video" class="primary">解析并下载本页视频</button>
+        <button id="parse-video" class="primary">下载本页视频</button>
       </section>
 
       <!-- 嗅探到的可下载资源 -->

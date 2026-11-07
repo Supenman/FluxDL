@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FluxDL",
-  "version": "0.3.0",
+  "version": "0.3.6",
   "identifier": "com.fluxdl.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -31,7 +31,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -41,13 +43,17 @@
     ],
     "resources": {
       "../browser-extension": "browser-extension/",
-      "../tools": "tools/"
+      "../tools": "tools/",
+      "../tools/aria2c.exe": "tools/aria2c.exe"
     },
     "shortDescription": "更顺手的桌面下载器",
     "longDescription": "FluxDL 迅流下载器：多线程 HTTP 下载、断点续传、队列、限速、视频下载与命令面板。",
     "windows": {
       "nsis": {
-        "languages": ["SimpChinese", "English"],
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
         "installMode": "currentUser"
       }
     }

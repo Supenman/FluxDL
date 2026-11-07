@@ -2,7 +2,7 @@
 
 一个更快、更顺手的桌面下载工具：多线程 HTTP 下载、断点续传、任务队列、限速、视频解析，配合浏览器扩展自动接管网页下载并嗅探页面资源。
 
-> 当前版本 `0.3.0`。项目主体在 [`fluxdl/`](./fluxdl) 目录，仓库根目录只放说明与文档。
+> 当前版本 `0.3.6`。项目主体在 [`fluxdl/`](./fluxdl) 目录，仓库根目录只放说明与文档。
 
 ---
 
@@ -58,8 +58,8 @@
 
 | 包 | 平台 | 说明 |
 |---|---|---|
-| `FluxDL-0.3.0-Setup.exe` | Windows 10/11 x64 | NSIS 安装版，单用户安装、不需要管理员权限 |
-| `FluxDL-0.3.0-Windows-便携版.zip` | Windows 10/11 x64 | 解压进 `FluxDL/` 文件夹后双击 `fluxdl.exe`，删文件夹即卸载 |
+| `FluxDL-0.3.6-Setup.exe` | Windows 10/11 x64 | NSIS 安装版，单用户安装、不需要管理员权限 |
+| `FluxDL-0.3.6-Windows-便携版.zip` | Windows 10/11 x64 | 解压进 `FluxDL/` 文件夹后双击 `fluxdl.exe`，删文件夹即卸载 |
 | `fluxdl.exe` | Windows 10/11 x64 | 单文件（约 9.5 MB），**应用自更新只下载它**，不用重下安装包 |
 
 两个包都**自带** `browser-extension/` 和 `tools/`（Windows 版 yt-dlp + ffmpeg），不用另外安装。

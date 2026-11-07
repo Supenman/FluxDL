@@ -15,7 +15,10 @@ const resList = document.getElementById("res-list");
 const clearRes = document.getElementById("clear-res");
 const downloadAll = document.getElementById("download-all");
 
-let current = { tab: null, resources: [], hasStream: false, pageIsVideo: false };
+let current = {
+  tab: null, resources: [], hasStream: false,
+  pageIsVideo: false, pageHint: "", bestVideo: null,
+};
 
 function setStatus(state) {
   statusDot.className = "dot " + state;
@@ -139,12 +142,37 @@ function renderResources() {
 }
 
 function renderVideoCard() {
-  const show = Boolean(current.pageIsVideo || current.hasStream);
+  const advice = current.pageHint || "";
+  const best = current.bestVideo || null;
+  const show = Boolean(current.pageIsVideo || current.hasStream || advice);
   videoCard.hidden = !show;
   if (!show) return;
-  videoTip.textContent = current.hasStream
-    ? "检测到流媒体分片，交给桌面端 yt-dlp 解析并合并音视频"
-    : "视频站点页面，交给桌面端 yt-dlp 解析清晰度并下载";
+  const titleEl = videoCard.querySelector(".copy > span");
+
+  if (!advice) {
+    // 正常视频站点：整页交给桌面端 yt-dlp 解析清晰度并合并音视频。
+    if (titleEl) titleEl.textContent = "本页检测到视频";
+    parseVideo.hidden = false;
+    parseVideo.textContent = "解析并下载本页视频";
+    videoTip.textContent = current.hasStream
+      ? "检测到流媒体分片，交给桌面端 yt-dlp 解析并合并音视频"
+      : "视频站点页面，交给桌面端 yt-dlp 解析清晰度并下载";
+    return;
+  }
+
+  // 0.3.6：整页解析不可用（快手网页 / 抖音 cookie 门槛 / 首页发现页）。
+  // 不再把页面 URL 发成必然失败的 media 任务；嗅探到视频直链时主按钮直接
+  // 按普通下载发送，否则只给可操作指引并隐藏按钮。
+  if (titleEl) titleEl.textContent = "整页解析不可用";
+  if (best) {
+    parseVideo.hidden = false;
+    parseVideo.textContent = `下载本页视频（${formatSize(best.size)} 直链）`;
+    videoTip.textContent =
+      "已嗅探到视频直链，点击即按普通下载发送；若清晰度不对，可在下方「本页资源」里另选。";
+  } else {
+    parseVideo.hidden = true;
+    videoTip.textContent = advice;
+  }
 }
 
 async function refreshResources() {
@@ -154,6 +182,8 @@ async function refreshResources() {
     resources: Array.isArray(data.resources) ? data.resources : [],
     hasStream: Boolean(data.hasStream),
     pageIsVideo: Boolean(data.pageIsVideo),
+    pageHint: data.pageHint || "",
+    bestVideo: data.bestVideo || null,
   };
   renderResources();
   renderVideoCard();
@@ -166,6 +196,19 @@ recheck.addEventListener("click", () => {
 });
 
 parseVideo.addEventListener("click", () => {
+  const advice = current.pageHint || "";
+  if (advice) {
+    // 整页解析不可用：只发送扩展嗅探到的视频直链，绝不发送页面 URL。
+    // 不带 kind，桌面端按 CDN 容器直链短路成 HTTP 普通下载任务。
+    const best = current.bestVideo;
+    if (!best || !/^https?:/i.test(best.url)) return;
+    void sendDownload({
+      url: best.url,
+      filename: best.name,
+      referer: best.referer || (current.tab && current.tab.url) || "",
+    });
+    return;
+  }
   const url = current.tab && current.tab.url;
   if (!url || !/^https?:/i.test(url)) return;
   void sendDownload({ url, kind: "media", referer: url });

@@ -14,6 +14,11 @@ const HEIGHT = 72;
 export function SpeedChart({ taskId, speedBps, active }: SpeedChartProps) {
   const [samples, setSamples] = useState<number[]>([]);
   const lastId = useRef(taskId);
+  // 用 ref 持有最新值，定时采样读取，避免「速度一变化就推点」导致横轴时间不均匀、曲线失真。
+  const speedRef = useRef(speedBps);
+  const activeRef = useRef(active);
+  speedRef.current = speedBps;
+  activeRef.current = active;
 
   useEffect(() => {
     if (lastId.current !== taskId) {
@@ -23,11 +28,15 @@ export function SpeedChart({ taskId, speedBps, active }: SpeedChartProps) {
   }, [taskId]);
 
   useEffect(() => {
-    setSamples((prev) => {
-      const next = [...prev, active ? speedBps : 0];
-      return next.slice(-POINTS);
-    });
-  }, [speedBps, active]);
+    // 固定每 500ms 采样一次当前 speedBps，横轴时间均匀，曲线平滑可读。
+    const id = window.setInterval(() => {
+      setSamples((prev) => {
+        const next = [...prev, activeRef.current ? speedRef.current : 0];
+        return next.slice(-POINTS);
+      });
+    }, 500);
+    return () => window.clearInterval(id);
+  }, []);
 
   const max = Math.max(1, ...samples);
   const n = Math.max(2, samples.length);

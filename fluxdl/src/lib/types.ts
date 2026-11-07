@@ -63,6 +63,12 @@ export interface EngineOptions {
   userAgent: string;
   ytDlpPath: string;
   ffmpegPath: string | null;
+  /**
+   * aria2c 路径：视频任务用它做多连接分段下载（-x16 -s16），绕开站点单连接限速。
+   * 留空表示按「yt-dlp 同目录 → 随包 tools/ → exe 同级」自动探测；
+   * 探测不到会自动退回 yt-dlp 原生下载器，功能不中断。
+   */
+  aria2Path?: string | null;
   /** 自动更新随包内置的 yt-dlp（YouTube 频繁改版，旧版必崩）。默认开启。 */
   autoUpdateYtDlp?: boolean;
   clipboardWatch: boolean;

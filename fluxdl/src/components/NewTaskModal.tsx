@@ -135,11 +135,16 @@ export function NewTaskModal() {
     let firstId: string | null = null;
     try {
       for (const group of groups) {
+        // 视频站点且用户未手填 referer 时，自动用链接本身作为同源 referer，
+        // 提升 B 站 / YouTube / 抖音等站点的解析成功率（与浏览器扩展行为保持一致）。
+        const autoReferer =
+          referer.trim() ||
+          (group.kind === "media" && group.urls[0] ? group.urls[0] : null);
         const result = await backend.addTasks(group.urls, group.kind, {
           saveDir,
           connections: group.kind === "media" ? 1 : connections,
           speedLimit: limit,
-          referer: referer.trim() || null,
+          referer: autoReferer,
           proxy: proxy.trim() || null,
           userAgent: userAgent.trim() || null,
           format: group.kind === "media" ? format : null,

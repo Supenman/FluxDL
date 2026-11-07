@@ -84,33 +84,86 @@ export function shortPath(path: string, max = 52): string {
   return `…\\${tail}`;
 }
 
+/**
+ * 媒体站点名单 —— 必须与 src-tauri/src/lib.rs 的 looks_like_media HOSTS 逐项一致。
+ * 浏览器扩展自动接管时由 Rust 侧判定，桌面新建时由这里判定；两份名单分裂会让
+ * 同一个链接在两条入口被建成不同的任务类型（0.3.3 的实际缺陷）。
+ */
+const MEDIA_HOSTS = [
+  // 国内
+  "bilibili.com",
+  "b23.tv",
+  "douyin.com",
+  "iesdouyin.com",
+  "kuaishou.com",
+  "xiaohongshu.com",
+  "xhslink.com",
+  "weibo.com",
+  "iqiyi.com",
+  "youku.com",
+  "mgtv.com",
+  "v.qq.com",
+  "music.163.com",
+  "zhihu.com",
+  "ixigua.com",
+  "acfun.cn",
+  // 国外
+  "youtube.com",
+  "youtu.be",
+  "vimeo.com",
+  "tiktok.com",
+  "twitter.com",
+  "x.com",
+  "instagram.com",
+  "facebook.com",
+  "twitch.tv",
+  "dailymotion.com",
+  "nicovideo.jp",
+] as const;
+
+/** 完整容器直链（CDN 视频 / 音频整文件）—— 按 HTTP 直链下载，不交给 yt-dlp。
+ *  规则须与 Rust 的 is_direct_media_file、扩展的 isDirectMediaFile 保持一致；
+ *  分片清单 .m3u8 / .mpd / .m4s 不在其中，仍需 yt-dlp 合并。
+ */
+const DIRECT_MEDIA_EXT = /\.(mp4|m4v|mkv|webm|mov|flv|avi|ts|mp3|m4a|aac|flac|wav|ogg|opus)(?:[?#]|$)/i;
+
+export function isDirectMediaFile(url: string): boolean {
+  const path = url.split(/[?#]/)[0];
+  return DIRECT_MEDIA_EXT.test(path);
+}
+
+/** 按主机名精确 / 后缀匹配；includes 会把 apex.com、路径里的 x.com 都误判成媒体。 */
 export function isMediaUrl(url: string): boolean {
-  const lower = url.toLowerCase();
-  return [
-    "youtube.com",
-    "youtu.be",
-    "bilibili.com",
-    "b23.tv",
-    "vimeo.com",
-    "douyin.com",
-    "tiktok.com",
-    "twitter.com",
-    "x.com",
-    "x.com/",
-    "instagram.com",
-    "facebook.com",
-    "twitch.tv",
-    "dailymotion.com",
-    "nicovideo.jp",
-    "weibo.com",
-    "xiaohongshu.com",
-  ].some((domain) => lower.includes(domain));
+  // CDN 直链常带站点后缀（如 v2.kuaishou.com/abc.mp4），命中站点名单会被
+  // 错建成媒体任务交给 yt-dlp 报 Unsupported URL；必须先短路成普通下载。
+  if (isDirectMediaFile(url)) return false;
+  let host: string | null = null;
+  // 用户可能粘贴不带 scheme 的地址（或纯 BV 号补全后的地址）
+  for (const candidate of [url, `https://${url}`]) {
+    try {
+      host = new URL(candidate).hostname.toLowerCase();
+      break;
+    } catch {
+      // 试下一个
+    }
+  }
+  if (!host) return false;
+  return MEDIA_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
 }
 
 export function extractUrls(text: string): string[] {
   const matches = text.match(/https?:\/\/[^\s"'<>]+/gi) ?? [];
   const cleaned = matches.map((u) => u.replace(/[),.;]+$/, ""));
-  return Array.from(new Set(cleaned));
+  const fromHttp = Array.from(new Set(cleaned));
+  // 兼容 B 站「复制 BV 号」场景：纯 `BV1xxxx`（不带 https://）也能被识别。
+  // 仅当文本里没有已含该 BV 号的完整链接时才补全，避免与上面的 http 链接重复。
+  const bvMatches = Array.from(
+    new Set(text.match(/(?:^|[^A-Za-z0-9])BV1[0-9A-Za-z]{9}(?![A-Za-z0-9])/gi) ?? []),
+  ).map((m) => m.replace(/^[^B]+/, ""));
+  const fromBv = bvMatches
+    .filter((bv) => !fromHttp.some((u) => u.includes(bv)))
+    .map((bv) => `https://www.bilibili.com/video/${bv}`);
+  return Array.from(new Set([...fromHttp, ...fromBv]));
 }
 
 export function cx(...parts: Array<string | false | null | undefined>): string {

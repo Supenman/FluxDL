@@ -31,6 +31,15 @@ declare global {
 export const isTauri =
   typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 
+/**
+ * 启动结果提示的一次性缓存。
+ * Rust 侧 `take_startup_notice` 用 `slot.take()`，取一次即清空：App 启动 toast
+ * 和设置页 UpdateSection 都要读，若各自发起 invoke，后挂载的一方必然拿到
+ * null（设置页「更新结果」区永远不会渲染）。这里把首次结果缓存成 Promise，
+ * 全前端共享，与组件挂载时序无关。
+ */
+let startupNoticeOnce: Promise<string | null> | null = null;
+
 function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return invoke<T>(cmd, args);
 }
@@ -178,11 +187,18 @@ export const backend = {
       : mockBackend.applyAppUpdateAndRestart();
   },
 
-  /** 启动时的更新结果提示（已应用 / 已回滚），取一次即清空。 */
+  /**
+   * 启动时的更新结果提示（已应用 / 已回滚）。
+   * 底层命令取一次即清空，因此这里只真正调用一次并缓存结果；App 的启动
+   * toast 与设置页 UpdateSection 复用同一个 Promise，避免后者拿到 null。
+   */
   takeStartupNotice(): Promise<string | null> {
-    return isTauri
-      ? call<string | null>("take_startup_notice")
-      : Promise.resolve(null);
+    if (!startupNoticeOnce) {
+      startupNoticeOnce = isTauri
+        ? call<string | null>("take_startup_notice").catch(() => null)
+        : Promise.resolve(null);
+    }
+    return startupNoticeOnce;
   },
 
   async onUpdateProgress(

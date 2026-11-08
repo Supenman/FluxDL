@@ -71,6 +71,14 @@ export interface EngineOptions {
   aria2Path?: string | null;
   /** 自动更新随包内置的 yt-dlp（YouTube 频繁改版，旧版必崩）。默认开启。 */
   autoUpdateYtDlp?: boolean;
+  /**
+   * 视频站点解析用的浏览器 Cookie 来源（B 档）。抖音等站点网页解析需要浏览器
+   * cookie / 登录态，由 yt-dlp 直接读本机浏览器，扩展与网页探针不接触凭证。
+   * "none" / null = 不读取；"chrome" / "edge" / "firefox" / "brave" 等浏览器名。
+   */
+  mediaCookieBrowser?: string | null;
+  /** 自定义 Netscape cookies.txt 路径，优先级高于 mediaCookieBrowser。 */
+  mediaCookieFile?: string | null;
   clipboardWatch: boolean;
   closeToTray: boolean;
   openFolderAfter: boolean;

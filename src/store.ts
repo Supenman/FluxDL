@@ -33,6 +33,9 @@ export const defaultEngineOptions: EngineOptions = {
   // 引擎随即探测不到 aria2 → 静默回退单连接。默认值必须与 EngineOptions 字段齐备。
   aria2Path: null,
   autoUpdateYtDlp: true,
+  // 缺失时整体 setEngineOptions 会把后端已配置的 Cookie 来源清掉，默认值必须齐备。
+  mediaCookieBrowser: null,
+  mediaCookieFile: null,
   clipboardWatch: true,
   closeToTray: true,
   openFolderAfter: false,

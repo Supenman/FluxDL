@@ -359,9 +359,10 @@ function renderVideoCard() {
     return;
   }
 
-  // 整页解析不可用（快手网页 / 抖音 cookie 门槛 / 首页发现页）。
-  // 不再把页面 URL 发成必然失败的 media 任务；嗅探到视频直链时主按钮直接
-  // 按普通下载发送（显式 kind:"http"），否则只给可操作指引并隐藏按钮。
+  // 整页解析不可用（快手网页 / 抖音聚合页 / 首页发现页）。B 档后抖音详情页
+  // 已可整页解析，不会进这个分支。这里不把页面 URL 发成必然失败的 media 任务；
+  // 嗅探到视频直链时主按钮直接按普通下载发送（显式 kind:"http"），
+  // 否则只给可操作指引并隐藏按钮。
   if (titleEl) titleEl.textContent = "整页解析不可用";
   if (best) {
     parseVideo.hidden = false;

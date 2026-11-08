@@ -254,9 +254,10 @@ impl Engine {
         if !matches!(url.scheme(), "http" | "https") {
             return Err(EngineError::message("仅支持 http / https 链接"));
         }
-        // 0.3.6：页面 URL 不等于视频文件。对已证实无法整页解析的站点 / 聚合页，
-        // 在建任务时就给出可操作指引，不创建必然失败的媒体任务（真机截图显示
-        // 快手 / 抖音页面链接会被建成失败任务并报 Unsupported URL / Fresh cookies）。
+        // 页面 URL 不等于视频文件。对已证实无法整页解析的站点 / 聚合页，
+        // 在建任务时就给出可操作指引，不创建必然失败的媒体任务。B 档（红线解除）
+        // 后抖音详情页 / 短链已放行给 yt-dlp 整页解析（cookie 可在设置里配置），
+        // 这里只剩快手（内置解析器无提取器）与无 id 聚合首页会被拒绝。
         if kind == TaskKind::Media {
             if let Some(hint) = crate::media::media_page_blocker(raw_url.trim()) {
                 return Err(EngineError::message(hint));

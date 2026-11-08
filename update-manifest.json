@@ -13,8 +13,8 @@
     "assets": {
       "windows-x64": {
         "url": "https://github.com/Supenman/FluxDL/releases/download/v0.3.9/fluxdl.exe",
-        "size": 10053632,
-        "sha256": "e3f91ad30fce9664176d3fd6d3571a519d655cda374014edd40a029ef5748768"
+        "size": 10072064,
+        "sha256": "f7242d58d72550de178da5ad8d6558f82ead6246c4e9f29dd21e3701b6e81828"
       }
     }
   },

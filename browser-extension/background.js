@@ -66,24 +66,24 @@ function isUnsupportedPage(url) {
   }
   const host = u.hostname.toLowerCase();
   const path = u.pathname.toLowerCase();
+  // 快手：打包版 yt-dlp 确实没有 Kuaishou / Kwai 提取器，放行只会得到
+  // Unsupported URL 的失败任务；给 cookie 也救不了没有提取器的站点。
   const isKs =
     host === "kuaishou.com" || host.endsWith(".kuaishou.com") ||
     host === "kwai.com" || host.endsWith(".kwai.com");
   if (isKs) return true;
 
-  // 0.3.6：抖音**所有**网页链接都不再尝试整页解析。打包版 yt-dlp 虽带
-  // Douyin 提取器，但 /video/<id> 仍要求浏览器下发的匿名校验 cookie（真机
-  // 截图：Fresh cookies），FluxDL 不读取凭证；0.3.5 的 modal_id 归一化在真机
-  // 上同样失败。引擎侧 media_page_blocker 也统一拒绝，两侧必须一致 —— 否则
-  // 弹窗还会显示「解析并下载」按钮，点了只会得到一条必然失败的提示。
-  const isDouyin =
-    host === "douyin.com" || host.endsWith(".douyin.com") ||
-    host === "iesdouyin.com" || host.endsWith(".iesdouyin.com");
-  if (isDouyin) return true;
+  // B 档（红线解除）：抖音整页解析已可用。yt-dlp 内置 Douyin 提取器自行处理
+  // 匿名校验 cookie / a_bogus / msToken，桌面端可在「设置 → 视频下载 → Cookie
+  // 来源」配置浏览器 cookie。这里不再把抖音一律判成 unsupported，让弹窗主按钮
+  // 与右键菜单能把 /video/<id>、v.douyin.com 短链作为 media 任务发给桌面端。
+  // 引擎侧 media_page_blocker 同步放行抖音（只拦快手与纯首页），两侧一致。
 
   // 明显的聚合页：首页、发现页、推荐页、精选页（无具体视频 id）。
+  // 抖音带 modal_id 的精选页由引擎 normalize_media_url 归一成详情页，不算聚合页。
+  const hasModalId = /[?&]modal_id=\d+/i.test(url);
   const AGGREGATE = /^\/?$|^\/(jingxuan|discover|new-reco|hot|feed|recommend|explore|home|index|user|profile)(\/|$)/i;
-  return AGGREGATE.test(path);
+  return AGGREGATE.test(path) && !hasModalId;
 }
 
 function isVideoPage(url) {
@@ -114,7 +114,8 @@ function pageHint(url) {
       host === "douyin.com" || host.endsWith(".douyin.com") ||
       host === "iesdouyin.com" || host.endsWith(".iesdouyin.com");
     if (isDouyin) {
-      return "抖音网页解析需要浏览器下发的匿名校验 cookie，FluxDL 不读取、传输或保存任何凭证，因此不解析这类页面。请在下方「本页资源」中选择视频直链下载；若列表为空，说明该页面只提供分片流。";
+      // B 档：抖音详情页已支持解析，这里只剩「聚合页（无视频 id）」会走到。
+      return "这是抖音的聚合页（首页 / 精选 / 发现），不是单个视频详情页。请打开要下载的那个视频、复制详情页链接重试；若解析提示需要 cookie，请在桌面端「设置 → 视频下载 → 视频 Cookie 来源」选择已登录抖音的浏览器。也可在下方「本页资源」里选择视频直链。";
     }
     return "这是站点首页 / 发现页 / 精选页，不是单个视频详情页，无法整页解析。请打开要下载的那个视频再试，或在下方「本页资源」中选择视频直链。";
   } catch {
@@ -125,12 +126,12 @@ function pageHint(url) {
 /**
  * 从「本页资源」里挑出最可能是主视频的直链。
  *
- * 0.3.6：抖音 / 快手页面 yt-dlp 整页解析走不通（需要浏览器匿名校验 cookie /
- * 打包版没有快手提取器），但扩展往往已经嗅探到 video/mp4 整文件直链。真机
- * 截图里快手「本页资源」有两条 video/mp4（20.1 MB / 11.4 MB），用户却仍只能
- * 手动点列表，而主按钮还在把页面 URL 发成必然失败的 media 任务。
- * 这里按「视频 mime 或视频容器扩展名 → 体积降序」选一条，让弹窗主按钮直接
- * 按普通下载发送（不带 kind，桌面端会按 CDN 直链短路成 HTTP 任务）。
+ * 用于「整页解析不可用」的页面：快手（打包版 yt-dlp 无提取器）、抖音聚合页、
+ * 站点首页等。B 档后抖音**详情页**已可整页解析（走 kind:"media"），但这些
+ * 页面仍需靠扩展嗅探到的 video/mp4 整文件直链下载。真机截图里快手「本页资源」
+ * 有两条 video/mp4（20.1 MB / 11.4 MB），用户不必手动点列表 —— 主按钮直接按
+ * 「视频 mime 或容器扩展名 → 体积降序」选一条，作为普通下载发送（显式
+ * kind:"http"，桌面端按 CDN 直链走 HTTP 任务，不会误判成 Media）。
  */
 const VIDEO_CONTAINER_EXT = /\.(mp4|m4v|mkv|webm|mov|flv|avi|ts)(?:[?#]|$)/i;
 
@@ -661,13 +662,12 @@ chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId !== MENU_LINK) return;
   const url = info.linkUrl;
   if (!url || !/^https?:/i.test(url)) return;
-  // 0.3.9 收敛：抖音 / 快手等网页解析需要浏览器下发的匿名校验 cookie，FluxDL
-  // 不读取、传输或保存任何凭证，因此这类站点直接提示不支持，不再尝试开页嗅探
-  // （实测后台开页嗅探在抖音短链跳转 / 后台标签节流下几乎拿不到可用直链）。
+  // B 档：抖音整页解析已可用（isVideoPage 返回 true），会走下面的 kind:"media"。
+  // 这里只剩快手（内置解析器无提取器）与站点聚合首页：给出可操作指引即可。
   if (isUnsupportedPage(url)) {
     notify(
-      "暂不支持解析下载",
-      "抖音 / 快手等网页解析需要浏览器下发的匿名校验 cookie，FluxDL 不读取、传输或保存任何凭证，因此暂不支持这些站点的解析下载。可在下方「本页资源」里手动选择视频直链，或改用其它来源。",
+      "该页面无法整页解析",
+      "快手网页链接或站点聚合页无法整页解析。请在浏览器扩展「本页资源」里选择视频直链下载；抖音单个视频请复制它的详情页链接重试，必要时在桌面端设置里配置浏览器 Cookie 来源。",
       true,
     );
     return;
@@ -708,8 +708,8 @@ async function postDownload(payload) {
 async function sendToFluxDL(payload, options = {}) {
   const { silent = false } = options;
   try {
-    // 0.3.0 起不再采集任何 cookie：登录态一律不出浏览器，
-    // 桌面端也不会在磁盘上留下凭证文件。
+    // 扩展侧不采集、不传输任何 cookie：B 档的抖音解析 cookie 由桌面端 yt-dlp
+    // 直接从本机浏览器读取，凭证不经过扩展、不经网络、不落盘登录态文件。
     // CaptureRequest 走 serde rename_all="camelCase"，这里必须是 userAgent；
     // 0.3.3 写成 user_agent 会被静默忽略，防盗链站点因此 403。
     const data = await postDownload({ ...payload, userAgent: navigator.userAgent });
@@ -740,21 +740,24 @@ function notify(title, message, isError) {
 }
 
 /* ------------------------------------------------------------------ *
- * 0.3.9 收敛：抖音 / 快手下载方案
+ * B 档（0.3.9，红线解除）：抖音 / 快手下载方案
  *
  * 原「方案 A（开页嗅探直链）」经真机验证不可行：抖音短链会跳转验证 / 登录、
  * 后台标签被浏览器节流不执行播放脚本、探针常只抓到 m4s 分片而非完整 mp4；
  * 即便抓到直链也多带时效签名 + 防盗链，脱离浏览器上下文即 403。
  *
- * 因此收敛为：抖音 / 快手网页解析需要浏览器下发的匿名校验 cookie，而 FluxDL
- * 不读取、传输或保存任何凭证，这部分明确「暂不支持」（弹窗提示 + 右键菜单
- * 提示），不再投放必然失败的入口。可整页解析的站点（B站等）与 CDN 直链 /
- * 普通文件继续正常下载。
+ * 旧红线（不碰凭证）下，抖音整页解析被写成「暂不支持」：引擎 media_page_blocker
+ * 与扩展 isUnsupportedPage 都硬拒绝，粘贴抖音链接必然失败。用户确认解除红线后
+ * 改为复用 yt-dlp 内置 Douyin 提取器：它自行处理匿名校验 cookie / a_bogus /
+ * msToken，桌面端「设置 → 视频下载 → 视频 Cookie 来源」可配置 yt-dlp 直接读取
+ * 本机浏览器 cookie。于是「粘贴抖音详情页 / 短链 → Media 任务 → 解析 → 下载」
+ * 打通；扩展与网页探针依旧不接触、不传输任何凭证。
  *
- * 「用链接下载」输入框已移除（可解析站点直接在页面点解析、抖快又不支持，
- * 属用不上的入口）。重心放到「本页资源」：扩展嗅探到的都是文件 / 视频直链，
- * 下载时一律显式 kind:"http"，避免无扩展名直链被 looks_like_media 误判成
- * Media 任务再被 media_page_blocker 拒绝。
+ * 快手仍不支持整页解析：随包 yt-dlp 无 Kuaishou / Kwai 提取器，放行只会制造
+ * 必然失败的任务；这类链接继续提示走「本页资源」直链。
+ *
+ * 「本页资源」重心不变：扩展嗅探到的都是文件 / 视频直链，下载时一律显式
+ * kind:"http"，避免无扩展名直链被 looks_like_media 误判成 Media 任务。
  * ------------------------------------------------------------------ */
 
 // 缓存健康检查结果，避免每个下载都探测一次端口。

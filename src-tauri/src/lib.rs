@@ -1265,8 +1265,9 @@ mod contract_tests {
     /// 0.3.5：扩展资源列表 / 自动接管里点选的 CDN 容器直链（如
     /// `v2.kuaishou.com/abc.mp4`）虽带站点后缀，也必须短路成 HTTP 直链任务，
     /// 否则会被建成 Media 交给 yt-dlp 报 Unsupported URL。分片清单不短路。
-    /// 站点网页链接仍按名单判媒体 —— 它们需要 yt-dlp 尽力解析，或由引擎
-    /// failure_hint 给出「不支持快手 / 需要 cookie」的诚实指引。
+    /// 站点网页链接仍按名单判媒体 —— B 档后抖音详情页 / 短链交给 yt-dlp 的
+    /// Douyin 提取器解析（可在设置里配置浏览器 Cookie），快手与聚合首页仍由
+    /// media_page_blocker / failure_hint 给出诚实指引。
     #[test]
     fn direct_container_files_bypass_media_detection() {
         for url in [

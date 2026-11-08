@@ -280,7 +280,7 @@ pub async fn run(
     };
 
     if !resumable {
-        let position = sequential_stream(
+        let (position, digest) = sequential_stream(
             engine,
             entry,
             &client,
@@ -289,7 +289,8 @@ pub async fn run(
             total,
         )
         .await?;
-        finish_file(&part_path, &save_path).await?;
+        // 不可续传的单流同样做写后回读校验，校验通过才落成最终文件。
+        finalize_verified(&entry, &file, &part_path, &save_path, &[digest]).await?;
         let mut view = entry.view.lock().await;
         view.total_bytes = if total > 0 { total } else { position };
         view.downloaded_bytes = position;
@@ -301,11 +302,13 @@ pub async fn run(
         .iter()
         .all(|s| s.done || s.downloaded >= s.length())
     {
+        // 全部为历史续传分段，本次运行没有写盘字节，无需回读校验（旧字节已在各自
+        // 写入那一次校验过）；part 长度在上方 P0-2 处已核对过等于 total。
         finish_file(&part_path, &save_path).await?;
         return Ok(());
     }
 
-    let mut set: JoinSet<Result<(), EngineError>> = JoinSet::new();
+    let mut set: JoinSet<Result<Option<util::SegmentDigest>, EngineError>> = JoinSet::new();
     for seg in segments.iter() {
         if seg.done || seg.downloaded >= seg.length() {
             continue;
@@ -316,8 +319,10 @@ pub async fn run(
         let file = file.clone();
         let token = token.clone();
         let global = engine.global_limit();
+        let engine = engine.clone();
         set.spawn(async move {
             segment_loop(
+                engine,
                 entry,
                 seg,
                 client,
@@ -330,9 +335,11 @@ pub async fn run(
     }
 
     let mut first_error: Option<EngineError> = None;
+    let mut digests: Vec<util::SegmentDigest> = Vec::new();
     while let Some(joined) = set.join_next().await {
         match joined {
-            Ok(Ok(())) => {}
+            Ok(Ok(Some(d))) => digests.push(d),
+            Ok(Ok(None)) => {}
             Ok(Err(err)) => {
                 first_error = Some(err);
                 set.abort_all();
@@ -360,7 +367,9 @@ pub async fn run(
         )));
     }
 
-    finish_file(&part_path, &save_path).await?;
+    // 所有分段写盘完毕后、落成最终文件之前，逐段回读重算 SHA-256 比对。
+    // 任何不一致都拒绝产出最终文件（见 finalize_verified）。
+    finalize_verified(&entry, &file, &part_path, &save_path, &digests).await?;
     let mut view = entry.view.lock().await;
     view.downloaded_bytes = total;
     drop(view);
@@ -368,32 +377,37 @@ pub async fn run(
 }
 
 async fn segment_loop(
+    engine: Arc<Engine>,
     entry: Arc<TaskEntry>,
     seg: SegmentView,
     client: Client,
     file: Arc<std::fs::File>,
     token: CancellationToken,
     global: Arc<RateLimiter>,
-) -> Result<(), EngineError> {
+) -> Result<Option<util::SegmentDigest>, EngineError> {
     let index = seg.index;
     let start = seg.start;
     let end = seg.end;
     let mut pos = start.saturating_add(seg.downloaded);
+    // 本次运行真正写下的字节区间：从续传起点开始（历史字节不纳入本次校验，
+    // 它们在此前的运行里已校验过，或至少从未被本次响应体重新提供）。
+    let digest_start = pos;
+    let mut sink = util::DigestSink::new();
     let mut last_error: Option<EngineError> = None;
+    // 慢连接判定：任务级或全局限速开启时吞吐低是人为的，绝不当成慢线路。
+    let stall_enabled = entry.limiter.limit().is_none() && global.limit().is_none();
+    let mut watch = util::StallWatch::new(0.0);
+    let clock = std::time::Instant::now();
+    // 换线不消耗 RETRIES（错误重试预算）：换线是主动优化，不是失败。
+    let mut attempts_left = RETRIES;
 
-    for attempt in 0..=RETRIES {
+    loop {
         if pos > end {
             mark_segment(&entry, index, end + 1);
-            return Ok(());
+            return Ok(Some(sink.finish(digest_start, pos)));
         }
         if token.is_cancelled() {
             return Err(EngineError::Paused);
-        }
-        if attempt > 0 {
-            tokio::select! {
-                _ = token.cancelled() => return Err(EngineError::Paused),
-                _ = tokio::time::sleep(Duration::from_millis(500 * (1u64 << attempt))) => {}
-            }
         }
 
         let req = apply_headers(client.get(&entry.url), &entry)
@@ -421,7 +435,7 @@ async fn segment_loop(
             if status == StatusCode::RANGE_NOT_SATISFIABLE {
                 // Already at the end (server sees no remaining bytes).
                 mark_segment(&entry, index, end + 1);
-                return Ok(());
+                return Ok(Some(sink.finish(digest_start, pos)));
             }
             let err = EngineError::message(format!("分段请求失败：HTTP {}", status.as_u16()));
             if status.is_client_error() {
@@ -431,49 +445,85 @@ async fn segment_loop(
             continue;
         }
 
+        // 一条连接的 chunk 循环。心跳分支与数据分支在 select 内各自内联处理，
+        // 让「零字节死连接」也能被观测到；分支都只借用自己那一份状态，互不干扰。
         let mut stream = resp.bytes_stream();
         let mut clean_end = false;
+        let mut swapped = false;
+        let mut tick = tokio::time::interval(Duration::from_secs(util::STALL_TICK_SECS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await; // 消费立即触发的第一拍，让计时从现在开始
         loop {
-            let next = tokio::select! {
+            tokio::select! {
                 _ = token.cancelled() => return Err(EngineError::Paused),
-                item = stream.next() => item,
-            };
-            match next {
-                None => {
-                    clean_end = true;
-                    break;
-                }
-                Some(Err(e)) => {
-                    last_error = Some(EngineError::Http(e));
-                    break;
-                }
-                Some(Ok(chunk)) => {
-                    if chunk.is_empty() {
-                        continue;
-                    }
-                    let len = chunk.len() as u64;
-                    entry.limiter.acquire(len).await;
-                    global.acquire(len).await;
-                    if token.is_cancelled() {
-                        return Err(EngineError::Paused);
-                    }
-                    util::write_at(&file, &chunk, pos)?;
-                    pos += len;
-                    entry.downloaded.fetch_add(len, Ordering::Relaxed);
-                    mark_segment(&entry, index, pos - start);
-                    if pos > end {
-                        break;
+                _ = tick.tick() => {
+                    if stall_enabled {
+                        let now = clock.elapsed().as_secs_f64();
+                        let remaining = end.saturating_sub(pos).saturating_add(1);
+                        if watch.observe(now, 0, remaining, true) {
+                            swapped = true;
+                        }
                     }
                 }
+                item = stream.next() => {
+                    match item {
+                        None => clean_end = true,
+                        Some(Err(e)) => last_error = Some(EngineError::Http(e)),
+                        Some(Ok(chunk)) => {
+                            if !chunk.is_empty() {
+                                let len = chunk.len() as u64;
+                                entry.limiter.acquire(len).await;
+                                global.acquire(len).await;
+                                if token.is_cancelled() {
+                                    return Err(EngineError::Paused);
+                                }
+                                util::write_at(&file, &chunk, pos)?;
+                                // 增量摘要与写盘用同一批字节，保证「网络字节 == 落盘字节」可比。
+                                sink.update(&chunk);
+                                pos += len;
+                                entry.downloaded.fetch_add(len, Ordering::Relaxed);
+                                mark_segment(&entry, index, pos - start);
+                                if stall_enabled {
+                                    let now = clock.elapsed().as_secs_f64();
+                                    let remaining = end.saturating_sub(pos).saturating_add(1);
+                                    if watch.observe(now, len, remaining, true) {
+                                        swapped = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if swapped || clean_end || last_error.is_some() || pos > end {
+                break;
             }
         }
 
         if pos > end {
             mark_segment(&entry, index, pos - start);
-            return Ok(());
+            return Ok(Some(sink.finish(digest_start, pos)));
+        }
+        if swapped {
+            // 换线：从已写到的 pos 重新发 Range（换一条连接），重置热身/窗口，
+            // 但不消耗错误重试预算、也不丢弃已写字节。
+            watch.on_reconnect(clock.elapsed().as_secs_f64());
+            engine.emit_log(
+                &entry.id,
+                format!("连接速率过低，正在换线重连（第 {} 次）", watch.swaps()),
+            );
+            continue;
         }
         if clean_end {
             last_error = Some(EngineError::message("分段连接提前结束，正在重试"));
+        }
+        if attempts_left == 0 {
+            break;
+        }
+        attempts_left -= 1;
+        tokio::select! {
+            _ = token.cancelled() => return Err(EngineError::Paused),
+            _ = tokio::time::sleep(Duration::from_millis(500 * (1u64 << (RETRIES - attempts_left)))) => {}
         }
     }
 
@@ -496,10 +546,13 @@ async fn sequential_stream(
     file: &Arc<std::fs::File>,
     token: CancellationToken,
     known_total: u64,
-) -> Result<u64, EngineError> {
+) -> Result<(u64, util::SegmentDigest), EngineError> {
     let mut position = 0u64;
     let mut attempt = 0usize;
     let global = engine.global_limit();
+    // 不可续传的单流同样增量算摘要：写盘字节与网络字节用同一批数据。
+    // 每次 restart 会把文件截断、position 归零，摘要也要一起重来。
+    let mut sink = util::DigestSink::new();
 
     loop {
         if token.is_cancelled() {
@@ -512,14 +565,14 @@ async fn sequential_stream(
                 Err(_) => {
                     if attempt >= RETRIES { return Err(EngineError::message("连接超时")); }
                     attempt += 1;
-                    restart_stream(entry, file, &mut position)?;
+                    restart_stream(entry, file, &mut position, &mut sink)?;
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
                 Ok(Err(e)) => {
                     if attempt >= RETRIES { return Err(EngineError::Http(e)); }
                     attempt += 1;
-                    restart_stream(entry, file, &mut position)?;
+                    restart_stream(entry, file, &mut position, &mut sink)?;
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
@@ -545,17 +598,17 @@ async fn sequential_stream(
                             return Err(EngineError::message("连接提前结束，文件可能不完整"));
                         }
                         attempt += 1;
-                        restart_stream(entry, file, &mut position)?;
+                        restart_stream(entry, file, &mut position, &mut sink)?;
                         break;
                     }
-                    return Ok(position);
+                    return Ok((position, sink.finish(0, position)));
                 }
                 Some(Err(e)) => {
                     if attempt >= RETRIES {
                         return Err(EngineError::Http(e));
                     }
                     attempt += 1;
-                    restart_stream(entry, file, &mut position)?;
+                    restart_stream(entry, file, &mut position, &mut sink)?;
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     break;
                 }
@@ -570,6 +623,7 @@ async fn sequential_stream(
                         return Err(EngineError::Paused);
                     }
                     util::write_at(file, &chunk, position)?;
+                    sink.update(&chunk);
                     position += len;
                     entry.downloaded.store(position, Ordering::Relaxed);
                 }
@@ -582,11 +636,45 @@ fn restart_stream(
     entry: &TaskEntry,
     file: &std::fs::File,
     position: &mut u64,
+    sink: &mut util::DigestSink,
 ) -> Result<(), EngineError> {
     *position = 0;
     entry.downloaded.store(0, Ordering::Relaxed);
     file.set_len(0)?;
+    *sink = util::DigestSink::new();
     Ok(())
+}
+
+/// 写后回读校验：逐段重算 SHA-256 与写盘时的摘要比对。
+///
+/// 校验不通过 = 磁盘上的字节与我们收到的字节不一致（稀疏空洞、越界覆盖、
+/// 写未落盘 …）。此时**绝不**把 .part rename 成最终文件：删掉 part、把进度
+/// 与分段清零，让用户重试时全量重下，杜绝「大小正确却打不开」的损坏成品。
+async fn finalize_verified(
+    entry: &TaskEntry,
+    file: &std::fs::File,
+    part: &Path,
+    final_path: &Path,
+    digests: &[util::SegmentDigest],
+) -> Result<(), EngineError> {
+    let verdict = util::verify_regions(file, digests);
+    let problem = match verdict {
+        Ok(None) => None,
+        Ok(Some(idx)) => Some(format!(
+            "分片 {idx} 写盘校验失败：下载内容与落盘内容不一致"
+        )),
+        Err(e) => Some(format!("写盘回读校验失败：{e}")),
+    };
+    let Some(problem) = problem else {
+        return finish_file(part, final_path).await;
+    };
+    // 丢弃损坏的 part，并清空续传状态，强制下次从 0 开始。
+    tokio::fs::remove_file(part).await.ok();
+    entry.downloaded.store(0, Ordering::Relaxed);
+    entry.segments.lock().clear();
+    Err(EngineError::message(format!(
+        "{problem}，已阻止保存损坏文件，请重试该任务重新下载"
+    )))
 }
 
 async fn finish_file(part: &Path, final_path: &Path) -> Result<(), EngineError> {

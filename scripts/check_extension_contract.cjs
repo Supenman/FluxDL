@@ -181,14 +181,17 @@ async function main() {
     assert.equal(mod.isVideoPage(u), false, `不应把聚合页 / 快手网页当视频页：${u}`);
     assert(mod.pageHint(u).length > 0, `应给出可操作指引：${u}`);
   }
-  // 0.3.6：抖音 modal_id 聚合页与 /video/ 详情页在真机上仍报 Fresh cookies，
-  // 不再给例外；与引擎 media_page_blocker 一致，统一改走嗅探直链。
+  // B 档（红线解除）：抖音详情页、v.douyin.com 短链、带 modal_id 的精选页
+  // 都可整页解析 —— isVideoPage=true、无 pageHint（有 hint 表示整页解析不可用）。
+  // 与引擎 media_page_blocker 放行抖音保持一致。
   for (const u of [
     "https://www.douyin.com/jingxuan?modal_id=7702008165390421263",
     "https://www.douyin.com/video/7702008165390421263",
+    "https://v.douyin.com/iRabcdef/",
+    "https://www.iesdouyin.com/share/video/7702008165390421263",
   ]) {
-    assert.equal(mod.isVideoPage(u), false, `抖音网页不应再当整页解析任务：${u}`);
-    assert(mod.pageHint(u).includes("直链"), `抖音应给出直链引导：${u}`);
+    assert.equal(mod.isVideoPage(u), true, `抖音单视频链接应作为整页解析任务：${u}`);
+    assert.equal(mod.pageHint(u), "", `抖音可整页解析时不应给出不可用指引：${u}`);
   }
   assert.equal(mod.isVideoPage("https://www.bilibili.com/video/BV1GysQ6hEgB"), true);
   assert.equal(mod.pageHint("https://www.bilibili.com/video/BV1GysQ6hEgB"), "");
@@ -356,12 +359,25 @@ async function main() {
   assert(/kind:\s*"http"/.test(menuMedia), "MENU_MEDIA 直链必须显式 kind:\"http\"");
   assert(!/isUnsupportedPage/.test(menuMedia), "MENU_MEDIA 不得再走网页 unsupported 判定");
 
-  // isUnsupportedPage 仍导出，供右键菜单「下载此链接」分流复用
+  // isUnsupportedPage 仍导出，供右键菜单「下载此链接」分流复用。
+  // B 档：抖音详情页 / 短链 / 带 modal_id 精选页不再判成 unsupported；
+  // 快手（无提取器）与无 id 聚合页仍判 unsupported。
   assert.equal(typeof mod.isUnsupportedPage, "function", "缺少导出：isUnsupportedPage");
-  assert.equal(mod.isUnsupportedPage("https://www.douyin.com/video/7702008165390421263"), true);
-  assert.equal(mod.isUnsupportedPage("https://www.kuaishou.com/new-reco"), true);
-  assert.equal(mod.isUnsupportedPage("https://www.bilibili.com/video/BV1xx"), false,
-    "支持整页解析的站点不应被误判为不支持");
+  for (const u of [
+    "https://www.douyin.com/video/7702008165390421263",
+    "https://v.douyin.com/iRabcdef/",
+    "https://www.douyin.com/jingxuan?modal_id=7702008165390421263",
+    "https://www.bilibili.com/video/BV1xx",
+  ]) {
+    assert.equal(mod.isUnsupportedPage(u), false, `抖音/可解析站点不应判为不支持：${u}`);
+  }
+  for (const u of [
+    "https://www.kuaishou.com/new-reco",
+    "https://www.douyin.com/jingxuan",
+    "https://www.bilibili.com/",
+  ]) {
+    assert.equal(mod.isUnsupportedPage(u), true, `快手/聚合首页应判为不支持：${u}`);
+  }
 
   console.log(
     `PASS 扩展契约：payload=userAgent，导出完好，前后端站点名单一致（${tsSet.size} 个域名），直链短路/聚合页/资源噪声/最佳直链/弹窗引导态/移除「用链接下载」/本页资源直链显式 kind:"http"（含右键媒体）全部通过`,

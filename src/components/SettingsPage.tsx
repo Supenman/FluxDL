@@ -468,6 +468,80 @@ export function SettingsPage() {
           </div>
         </div>
 
+        <div className="setting-row">
+          <div className="setting-copy">
+            <label>
+              <Film size={13} /> 视频 Cookie 来源
+            </label>
+            <p>
+              抖音等站点解析需要浏览器 cookie / 登录态。选一个你已登录过该站点的浏览器，
+              yt-dlp 会直接在本机读取，扩展与网页探针不接触凭证、不落盘登录态。
+            </p>
+          </div>
+          <div className="setting-control">
+            <div className="select-shell">
+              <select
+                value={settings.mediaCookieBrowser ?? "none"}
+                onChange={(event) =>
+                  update({
+                    mediaCookieBrowser:
+                      event.target.value === "none" ? null : event.target.value,
+                  })
+                }
+              >
+                <option value="none">不读取（匿名尝试）</option>
+                <option value="chrome">Chrome</option>
+                <option value="edge">Edge</option>
+                <option value="firefox">Firefox</option>
+                <option value="brave">Brave</option>
+                <option value="chromium">Chromium</option>
+                <option value="opera">Opera</option>
+                <option value="vivaldi">Vivaldi</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-copy">
+            <label>自定义 cookies.txt（可选）</label>
+            <p>浏览器不在列表、或用便携版时，可填 Netscape 格式 cookies.txt 的完整路径；优先级高于上面的浏览器选择</p>
+          </div>
+          <div className="setting-control wide">
+            <div className="input-with-button">
+              <input
+                value={settings.mediaCookieFile ?? ""}
+                onChange={(event) =>
+                  update({ mediaCookieFile: event.target.value.trim() || null })
+                }
+                placeholder="留空则使用上面的浏览器 Cookie 来源"
+                spellCheck={false}
+              />
+              <button
+                className="input-button"
+                onClick={async () => {
+                  const picked = await backend.pickFile(settings.mediaCookieFile ?? "");
+                  if (picked) update({ mediaCookieFile: picked });
+                }}
+                title="选择 cookies.txt 文件"
+              >
+                <FolderOpen size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="tip-card">
+          <Sparkles size={15} />
+          <div className="tip-body">
+            <p>
+              粘贴抖音视频详情页链接（或 v.douyin.com 短链）到「新建任务」即可解析下载。
+              若提示「Fresh cookies」，选上你登录过抖音的浏览器后重试；反爬签名由内置
+              yt-dlp 自动维护。快手网页链接因内置解析器无该站点提取器，仍请用扩展「本页资源」里的视频直链。
+            </p>
+          </div>
+        </div>
+
         <div className="setting-row inline">
           <div className="setting-copy">
             <label>自动更新 yt-dlp</label>

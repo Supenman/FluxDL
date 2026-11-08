@@ -1,5 +1,6 @@
 use percent_encoding::percent_decode_str;
 use reqwest::header::HeaderMap;
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -220,6 +221,191 @@ pub fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
             written += n;
         }
         Ok(())
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// 分片写后回读校验（0.4.0 A 档）
+//
+// 背景：分段下载把每个 Range 的响应体经 `write_at` 直接写到同一个稀疏 .part
+// 文件的绝对偏移。一旦出现「长度对、内容是 0」的稀疏空洞、并发分段越界互相
+// 覆盖、或磁盘写未真正落盘，光靠 `downloaded == total` 完全发现不了——用户会
+// 拿到一个大小正确却打不开的损坏文件（0.3.9 的 P0-2 是同类问题的一种）。
+//
+// 做法：segment_loop 在「写盘的同时」用 DigestSink 对流过的字节增量算 SHA-256，
+// 记录本次真正写下的绝对区间；全部结束后由 verify_regions 从 .part 回读同一
+// 区间重算比对。不一致就拒绝 finish_file、不产生最终文件、强制全量重下。
+// 注意：这里校验的是「写盘完整性」（网络字节 == 落盘字节），不是与服务器给的
+// 期望哈希比对——HTTP 普遍没有 Content-MD5，不做无依据的真实性断言。
+// --------------------------------------------------------------------------- //
+
+/// 与 `write_at` 对称的绝对偏移读取（同样是 &self，不移动文件游标，可供并发分段共享）。
+pub fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        file.seek_read(buf, offset)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_at(buf, offset)
+    }
+}
+
+const VERIFY_BUF: usize = 64 * 1024;
+
+/// 增量摘要器：包一层 Sha256，把 sha2 完全封在 util 内，http.rs 只依赖本模块。
+#[derive(Clone, Default)]
+pub struct DigestSink {
+    hasher: Sha256,
+}
+
+/// 本次运行中某个分段写下的字节区间及其摘要（start 为绝对文件偏移，len 为字节数）。
+#[derive(Clone, Debug)]
+pub struct SegmentDigest {
+    pub start: u64,
+    pub len: u64,
+    pub hash: [u8; 32],
+}
+
+impl DigestSink {
+    pub fn new() -> Self {
+        Self { hasher: Sha256::new() }
+    }
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.hasher.update(bytes);
+    }
+    /// 收尾成一条可回读校验记录。`end_pos` 是本分段写完后的绝对游标。
+    pub fn finish(&self, start: u64, end_pos: u64) -> SegmentDigest {
+        let out = self.hasher.clone().finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&out);
+        SegmentDigest {
+            start,
+            len: end_pos.saturating_sub(start),
+            hash,
+        }
+    }
+}
+
+/// 计算 .part 文件 `[start, start+len)` 区间的 SHA-256（分块读，避免一次分配整段）。
+pub fn hash_region(file: &File, start: u64, len: u64) -> io::Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; VERIFY_BUF];
+    let mut off = start;
+    let mut left = len;
+    while left > 0 {
+        let want = (left as usize).min(VERIFY_BUF);
+        let n = read_at(file, &mut buf[..want], off)?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "回读校验：文件提前结束",
+            ));
+        }
+        hasher.update(&buf[..n]);
+        off += n as u64;
+        left -= n as u64;
+    }
+    let out = hasher.finalize();
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&out);
+    Ok(hash)
+}
+
+/// 逐段回读比对；返回第一个不一致的记录下标（None = 全部一致）。
+pub fn verify_regions(file: &File, digests: &[SegmentDigest]) -> io::Result<Option<usize>> {
+    for (i, d) in digests.iter().enumerate() {
+        if d.len == 0 {
+            continue;
+        }
+        let got = hash_region(file, d.start, d.len)?;
+        if got != d.hash {
+            return Ok(Some(i));
+        }
+    }
+    Ok(None)
+}
+
+// --------------------------------------------------------------------------- //
+// 慢连接抢占换线（0.4.0 A 档）
+//
+// 参考 YunX「12KB/s 持续 15s 判定慢片、重连换线路」。FluxDL 的 segment_loop
+// 原来只有「请求头 30s 超时」，连接建立后若某条线路只滴几 KB/s（甚至完全卡住
+// 但不断流），既不会触发超时也不会重试，会一直拖到整体超时。这里用一个纯时间
+// 窗口状态机：观测窗口内吞吐低于阈值且已过热身、且该分段还剩足够字节时，
+// 主动断开本条连接、回到重试循环从当前 pos 重新 Range（换一条线路）。
+//
+// 关键防误判：任务级或全局限速开启时吞吐低是**人为**的，不能换线；分段快下完
+// 时换线无意义；换线次数设上限，避免劣质链路无限重连。时间由调用方以 f64 秒
+// 传入，状态机纯数据、可确定性单测。
+// --------------------------------------------------------------------------- //
+
+pub const STALL_WINDOW_SECS: f64 = 15.0;
+pub const STALL_MIN_BPS: f64 = 12.0 * 1024.0;
+pub const STALL_GRACE_SECS: f64 = 5.0;
+pub const STALL_MAX_SWAPS: usize = 3;
+pub const STALL_MIN_REMAIN: u64 = 256 * 1024;
+/// 无 chunk 到达时的探测心跳间隔（秒），用于识别「完全不断流但零字节」的死连接。
+pub const STALL_TICK_SECS: u64 = 1;
+
+#[derive(Debug, Clone)]
+pub struct StallWatch {
+    connect_at: f64,
+    window_at: f64,
+    window_bytes: u64,
+    swaps: usize,
+}
+
+impl StallWatch {
+    pub fn new(now: f64) -> Self {
+        Self {
+            connect_at: now,
+            window_at: now,
+            window_bytes: 0,
+            swaps: 0,
+        }
+    }
+
+    /// 换线重连后调用：重置热身与窗口起点，但保留累计换线次数上限。
+    pub fn on_reconnect(&mut self, now: f64) {
+        self.connect_at = now;
+        self.window_at = now;
+        self.window_bytes = 0;
+    }
+
+    pub fn swaps(&self) -> usize {
+        self.swaps
+    }
+
+    /// 一次观测：`chunk_bytes` 本事件新增字节，`remaining` 本分段剩余字节，
+    /// `enabled` 表示是否允许换线（无主动限速）。返回 true = 应断开换线。
+    ///
+    /// 每次窗口到期都重置窗口（无论是否触发），保证「持续低吞吐」判定是滑动的，
+    /// 不会被某个历史快窗口永久掩盖，也不会因一次慢窗口就反复触发。
+    pub fn observe(
+        &mut self,
+        now: f64,
+        chunk_bytes: u64,
+        remaining: u64,
+        enabled: bool,
+    ) -> bool {
+        self.window_bytes = self.window_bytes.saturating_add(chunk_bytes);
+        let elapsed = now - self.window_at;
+        if elapsed < STALL_WINDOW_SECS {
+            return false;
+        }
+        let rate = self.window_bytes as f64 / elapsed.max(0.001);
+        self.window_at = now;
+        self.window_bytes = 0;
+        let graced = now - self.connect_at >= STALL_GRACE_SECS;
+        let worth = remaining >= STALL_MIN_REMAIN;
+        if enabled && graced && worth && self.swaps < STALL_MAX_SWAPS && rate < STALL_MIN_BPS {
+            self.swaps += 1;
+            return true;
+        }
+        false
     }
 }
 
@@ -631,5 +817,204 @@ mod tests {
             sample.advance(i as f64 * 0.35, bytes, field);
             assert!(sample.speed > 0, "第 {i} 帧速度塌 0");
         }
+    }
+
+    // ---- 0.4.0 A 档：分片写后回读校验 ----
+
+    fn write_test_region(file: &File, offset: u64, data: &[u8]) -> SegmentDigest {
+        // write_at 内部循环写完整个 buf，返回 ()；直接一次写完再对同一批字节算摘要。
+        let mut sink = DigestSink::new();
+        write_at(file, data, offset).unwrap();
+        sink.update(data);
+        sink.finish(offset, offset + data.len() as u64)
+    }
+
+    #[test]
+    fn digest_sink_matches_sha256_of_written_bytes() {
+        // 摘要必须等于「网络流过的字节」的 SHA-256，长度/区间记录也要精确。
+        let data = b"the quick brown fox jumps over the lazy dog";
+        let mut sink = DigestSink::new();
+        sink.update(&data[..20]);
+        sink.update(&data[20..]);
+        let d = sink.finish(100, 100 + data.len() as u64);
+        assert_eq!(d.start, 100);
+        assert_eq!(d.len, data.len() as u64);
+        let expected: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let out = Sha256::digest(data);
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&out);
+            h
+        };
+        assert_eq!(d.hash, expected);
+    }
+
+    #[test]
+    fn verify_regions_accepts_intact_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let file = tmp.reopen().unwrap();
+        file.set_len(4096).unwrap();
+        let a = b"AAAAAAAAAAAAAAAA";
+        let b = b"BBBBBBBBBBBBBBBB";
+        let da = write_test_region(&file, 0, a);
+        let db = write_test_region(&file, 2048, b);
+        assert_eq!(verify_regions(&file, &[da, db]).unwrap(), None);
+    }
+
+    #[test]
+    fn verify_regions_detects_zeroed_sparse_hole() {
+        // 复现「长度对、内容是 0」：记录的是写过的字节，但磁盘上被补成 0。
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let file = tmp.reopen().unwrap();
+        file.set_len(1024).unwrap();
+        let data = b"REAL-CONTENT-HERE";
+        let d = write_test_region(&file, 0, data);
+        // 模拟稀疏空洞 / 覆盖：把落盘内容清零，但长度与记录完全一致。
+        write_at(&file, &[0u8; 17], 0).unwrap();
+        assert_eq!(verify_regions(&file, &[d]).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn verify_regions_skips_empty_digests() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let file = tmp.reopen().unwrap();
+        let empty = SegmentDigest { start: 0, len: 0, hash: [0u8; 32] };
+        assert_eq!(verify_regions(&file, &[empty]).unwrap(), None);
+    }
+
+    #[test]
+    fn hash_region_respects_absolute_offset() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let file = tmp.reopen().unwrap();
+        file.set_len(9000).unwrap();
+        let data = b"offset-region-payload";
+        write_at(&file, data, 4096).unwrap();
+        let got = hash_region(&file, 4096, data.len() as u64).unwrap();
+        let expected: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let out = Sha256::digest(data);
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&out);
+            h
+        };
+        assert_eq!(got, expected, "回读必须从绝对偏移起，不受文件游标影响");
+    }
+
+    #[test]
+    fn hash_region_errors_on_short_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let file = tmp.reopen().unwrap();
+        // 请求读 100 字节但文件为空 → 回读提前结束，必须报错而不是判成一致。
+        assert!(hash_region(&file, 0, 100).is_err());
+    }
+
+    // ---- 0.4.0 A 档：慢连接抢占换线 ----
+
+    #[test]
+    fn stall_watch_does_not_fire_before_window_or_grace() {
+        let mut w = StallWatch::new(0.0);
+        // 窗口未到期（< 15s）不判；即使完全零字节也不换线。
+        assert!(!w.observe(10.0, 0, 10_000_000, true));
+        assert_eq!(w.swaps(), 0);
+    }
+
+    #[test]
+    fn stall_watch_fires_on_sustained_low_throughput() {
+        let mut w = StallWatch::new(0.0);
+        // 15s 窗口只收到 30KB（≈2KB/s < 12KB/s），且已过热身、剩余量大 → 换线。
+        assert!(w.observe(15.0, 30_000, 10_000_000, true));
+        assert_eq!(w.swaps(), 1);
+    }
+
+    #[test]
+    fn stall_watch_fires_on_dead_connection_zero_bytes() {
+        let mut w = StallWatch::new(0.0);
+        // 心跳每秒 observe 一次零字节；到第 15s 窗口到期应判死连接换线。
+        let mut fired = false;
+        for t in 1..=20u64 {
+            if w.observe(t as f64, 0, 10_000_000, true) {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "完全不断流但零字节的死连接必须被换线");
+    }
+
+    #[test]
+    fn stall_watch_healthy_connection_never_fires() {
+        let mut w = StallWatch::new(0.0);
+        let mut fired = false;
+        for t in 1..=60u64 {
+            // 每秒 1MB，远超阈值。
+            if w.observe(t as f64, 1_048_576, 50_000_000, true) {
+                fired = true;
+            }
+        }
+        assert!(!fired);
+        assert_eq!(w.swaps(), 0);
+    }
+
+    #[test]
+    fn stall_watch_never_fires_when_rate_limited() {
+        // 人为限速导致的低吞吐不能误判为「慢连接」。
+        let mut w = StallWatch::new(0.0);
+        for t in 1..=60u64 {
+            assert!(!w.observe(t as f64, 1_000, 50_000_000, false));
+        }
+        assert_eq!(w.swaps(), 0);
+    }
+
+    #[test]
+    fn stall_watch_ignores_almost_finished_segment() {
+        // 分段只剩几 KB 时换线无意义（重连成本 > 收益）。
+        let mut w = StallWatch::new(0.0);
+        assert!(!w.observe(15.0, 0, 1024, true));
+        assert_eq!(w.swaps(), 0);
+    }
+
+    #[test]
+    fn stall_watch_caps_swaps_and_recovers_after_reconnect() {
+        // 单调递增时间：每条新连接都要重新熬过热身(5s)+窗口(15s)才能再次换线。
+        // 连续 6 段劣质链路，但换线次数不得超过 STALL_MAX_SWAPS。
+        let mut w = StallWatch::new(0.0);
+        let mut now = 0.0f64;
+        let mut fired_total = 0;
+        for _ in 0..6 {
+            // 该连接持续 16s 零字节，期间每秒一次心跳观测。
+            let mut fired_this_conn = false;
+            for _ in 0..16 {
+                now += 1.0;
+                if w.observe(now, 0, 10_000_000, true) {
+                    fired_this_conn = true;
+                    break;
+                }
+            }
+            if fired_this_conn {
+                fired_total += 1;
+                w.on_reconnect(now);
+            }
+        }
+        assert!(fired_total > 0, "劣质链路应至少换线一次");
+        assert_eq!(
+            fired_total, STALL_MAX_SWAPS,
+            "换线次数必须恰好封顶，防止无限重连"
+        );
+        assert_eq!(w.swaps(), STALL_MAX_SWAPS);
+    }
+
+    #[test]
+    fn stall_watch_healthy_after_reconnect_resets_grace() {
+        // 换线后立刻恢复健康，不应因为「历史慢窗口」继续被判换线。
+        let mut w = StallWatch::new(0.0);
+        assert!(w.observe(15.0, 0, 10_000_000, true));
+        w.on_reconnect(15.0);
+        let mut fired = false;
+        for t in 16..=45u64 {
+            if w.observe(t as f64, 2_000_000, 50_000_000, true) {
+                fired = true;
+            }
+        }
+        assert!(!fired, "重连后健康的连接不得再被误判");
+        assert_eq!(w.swaps(), 1);
     }
 }

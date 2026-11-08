@@ -115,6 +115,18 @@ pub struct EngineOptions {
     /// 是否在后台自动更新随包内置的 yt-dlp（视频站点提取器频繁改版，旧版会解析失败）。
     /// 默认开启；仅对随包内置的 yt-dlp 生效，PATH 里的系统 yt-dlp 不接管。
     pub auto_update_yt_dlp: bool,
+    /// 视频站点解析用的浏览器 Cookie 来源（B 档）。抖音等站点的网页解析需要浏览器
+    /// 下发的匿名校验 cookie 或登录态；由 yt-dlp 直接读取**本机**浏览器 Cookie 库，
+    /// 扩展 / 网页探针不接触任何凭证，也不经网络传输。取值：
+    /// `"none"` / 空 = 不读取（匿名尝试），`"chrome"` / `"edge"` / `"firefox"` /
+    /// `"brave"` / `"chromium"` / `"opera"` / `"vivaldi"` 等 yt-dlp 支持的浏览器名。
+    /// 与 `media_cookie_file` 二选一；两者都设时以文件优先。
+    #[serde(default)]
+    pub media_cookie_browser: Option<String>,
+    /// 自定义 Netscape 格式 cookies.txt 的完整路径，优先级高于 media_cookie_browser。
+    /// 供浏览器不在 yt-dlp 支持列表 / 便携版 / 想精细控制登录态的场景使用。
+    #[serde(default)]
+    pub media_cookie_file: Option<String>,
     pub clipboard_watch: bool,
     pub close_to_tray: bool,
     pub open_folder_after: bool,
@@ -136,6 +148,8 @@ impl Default for EngineOptions {
             ffmpeg_path: None,
             aria2_path: None,
             auto_update_yt_dlp: true,
+            media_cookie_browser: None,
+            media_cookie_file: None,
             clipboard_watch: true,
             close_to_tray: true,
             open_folder_after: false,

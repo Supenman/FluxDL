@@ -5,7 +5,13 @@
 //! * **一次直下**：不再针对 YouTube 的 bot 挑战做「换客户端 → 更新 yt-dlp → 再重试」
 //!   的多轮递归。旧实现失败时会连着跑三轮 yt-dlp，UI 上表现为「下载中 0 B / 未知」
 //!   长时间空转，用户以为卡死。现在失败就是失败，报错即止，原因一眼可见。
-//! * **不落凭证**：不再接收 / 写盘 cookies.txt，磁盘上不会留下任何登录态。
+//! * **凭证只在桌面端**（B 档）：抖音等站点的网页解析要浏览器下发的匿名校验 cookie /
+//!   登录态。旧版因「不碰凭证」红线，人为在 `media_page_blocker` 里拒绝整页抖音链接、
+//!   也不给 yt-dlp 传 cookie，导致「粘贴抖音链接下载」必然失败。现在按用户确认解除
+//!   红线：cookie 由 yt-dlp 直接读本机浏览器（`--cookies-from-browser`）或用户指定的
+//!   cookies.txt，扩展 / 网页探针一律不接触、不传输凭证，磁盘上也不落任何登录态文件。
+//!   反爬签名（`a_bogus` / `msToken` / `ttwid` / `s_v_web_id`）由 yt-dlp 的 Douyin
+//!   提取器自行维护，本项目不逆向、不复制任何 AGPL 代码。
 //! * **并发分片**：`--concurrent-fragments 4`，DASH / HLS 的音视频分片并发拉取，
 //!   这是对 B 站、抖音这类分片流最直接的提速手段。
 //! * **B 站客户端**：`--extractor-args bilibili:player_client=tv,app` 绕开 web 端最严
@@ -289,13 +295,17 @@ impl Drop for WorkDirGuard {
 
 /// 桌面端新建媒体任务时，对「必然无法整页解析」的网页链接给出提前拦截提示。
 ///
-/// 0.3.6：真机截图显示用户把快手 / 抖音**页面 URL** 粘贴进新建任务，会被建成
-/// Media 任务，然后 yt-dlp 报 `Unsupported URL` / `Fresh cookies`，留下一个失败
-/// 任务和红色报错。页面 URL 不是视频文件，只有浏览器扩展嗅探到的 CDN 直链才能
-/// 下载；与其创建必然失败的任务，不如在建任务时直接给出可操作指引。
+/// 0.3.6 曾把快手 / 抖音整页链接一律拦截；其中抖音被拦的真实原因是旧「不碰凭证」
+/// 红线 —— cookie 门槛被当成不可逾越的能力边界。B 档（用户确认解除红线）后：
+/// * **抖音放行**：yt-dlp 内置 Douyin 提取器会自行处理匿名校验 cookie / 反爬签名，
+///   设置里可配置「从本机浏览器读 Cookie」或 cookies.txt（见 `cookie_args`）。
+///   `/video/<id>`、`v.douyin.com` 短链、带 `modal_id` 的聚合页（由
+///   `normalize_media_url` 转成详情页）都交给 yt-dlp 尝试，不再人为拒绝。
+/// * **快手仍拦截**：随包 yt-dlp（2026.10.26）确实没有 Kuaishou / Kwai 提取器，
+///   放行只会得到 `Unsupported URL` 的失败任务；给 cookie 也救不了没有提取器的站点。
+///   保留拦截并给出「本页资源直链」的可操作指引，避免制造必然失败的任务。
 ///
-/// 返回 `Some(提示)` 表示应拒绝，`None` 表示照常交给 yt-dlp 尝试。只覆盖已证实
-/// 不可解析的站点 / 页面，B 站等正常站点不受影响；容器直链永不拦截。
+/// 返回 `Some(提示)` 表示应拒绝，`None` 表示照常交给 yt-dlp 尝试。容器直链永不拦截。
 pub fn media_page_blocker(url: &str) -> Option<&'static str> {
     if is_direct_media_file(url) {
         return None;
@@ -308,15 +318,9 @@ pub fn media_page_blocker(url: &str) -> Option<&'static str> {
     if is_ks {
         return Some("快手网页链接无法整页解析（内置视频解析器没有该站点的提取器）。请在浏览器扩展弹窗的「本页资源」里选择视频直链下载，或把直链地址粘贴为普通下载任务");
     }
-    let is_dy = host == "douyin.com"
-        || host.ends_with(".douyin.com")
-        || host == "iesdouyin.com"
-        || host.ends_with(".iesdouyin.com");
-    if is_dy {
-        return Some("抖音网页解析需要浏览器下发的匿名校验 cookie，FluxDL 不读取、传输或保存任何凭证，因此不解析这类页面。请在浏览器扩展弹窗的「本页资源」里选择视频直链下载");
-    }
 
-    // 其它站点的首页 / 发现页 / 精选页：不是单个视频详情页。
+    // 抖音 / 其它站点的首页 / 发现页 / 精选页：不是单个视频详情页，拦截；
+    // 带 modal_id 的聚合页会被 normalize_media_url 归一成 /video/<id>，放行。
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let path = after_scheme.split(['?', '#']).next().unwrap_or("");
     let path = path.split_once('/').map(|(_, p)| p).unwrap_or("");
@@ -346,6 +350,39 @@ pub fn media_page_blocker(url: &str) -> Option<&'static str> {
         return Some("这是站点首页 / 发现页 / 精选页，不是单个视频详情页，无法整页解析。请打开要下载的那个视频再试，或在浏览器扩展弹窗的「本页资源」里选择视频直链");
     }
     None
+}
+
+/// 依据设置把「浏览器 Cookie 来源」翻译成 yt-dlp 参数。
+///
+/// 优先级：自定义 cookies.txt 文件 > 从本机浏览器读取 > 不传（匿名尝试）。
+/// cookie 全程只由 yt-dlp 子进程在本机读取，扩展 / 网页探针不接触、不传输，
+/// 磁盘上不落地任何登录态文件。返回的参数要同时加到「标题探测」和「正式下载」
+/// 两条命令，否则标题探测因风控失败会让文件名一直停在默认名。
+pub fn cookie_args(options: &EngineOptions) -> Vec<String> {
+    if let Some(file) = options
+        .media_cookie_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return vec!["--cookies".to_string(), file.to_string()];
+    }
+    if let Some(browser) = options
+        .media_cookie_browser
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "none")
+    {
+        return vec!["--cookies-from-browser".to_string(), browser.to_string()];
+    }
+    Vec::new()
+}
+
+/// 把 cookie 参数追加到 yt-dlp 命令（两条命令共用，避免漏加）。
+fn apply_cookie_args(cmd: &mut Command, options: &EngineOptions) {
+    for arg in cookie_args(options) {
+        cmd.arg(arg);
+    }
 }
 
 pub async fn run(
@@ -393,6 +430,8 @@ pub async fn run(
     // 结果写入 title_slot，主循环 emit 时顺手取走回填；失败（风控 / 网络抖动）保持默认，
     // 绝不阻塞下载主流程。B 站与正式下载一致用 tv/app 客户端。
     let title_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // B 档：cookie 参数两条命令必须一致，否则标题探测因风控失败、文件名停在默认名。
+    let cookies = cookie_args(&options);
     {
         let slot = title_slot.clone();
         let bin = bin.to_string();
@@ -402,6 +441,7 @@ pub async fn run(
         let is_bili = is_bilibili(&entry.url);
         let referer = entry.options.referer.clone();
         let proxy = entry.proxy.clone();
+        let cookies = cookies.clone();
         tokio::spawn(async move {
             let mut p = Command::new(&bin);
             p.args(["--skip-download", "--no-warnings", "--no-playlist", "--print", "%(title)s"])
@@ -411,6 +451,9 @@ pub async fn run(
                 .env("PYTHONUTF8", "1")
                 .env("PYTHONIOENCODING", "utf-8:replace")
                 .env("PYTHONUNBUFFERED", "1");
+            for c in &cookies {
+                p.arg(c);
+            }
             if is_bili {
                 p.arg("--extractor-args").arg("bilibili:player_client=tv,app");
             }
@@ -491,6 +534,9 @@ pub async fn run(
         .env("PYTHONIOENCODING", "utf-8:replace")
         .env("PYTHONUNBUFFERED", "1")
         .kill_on_drop(true);
+
+    // B 档：抖音等站点解析需要 cookie，追加到 URL 之前（与所有影响解析的参数同区段）。
+    apply_cookie_args(&mut cmd, &options);
 
     // B 站：显式指定 tv / app 客户端。web 端匿名单连接被限速到 ~120 KB/s，
     // 而 tv/app 客户端拿到的下发地址限速宽松得多。
@@ -978,9 +1024,9 @@ fn aria2_candidates(options: &EngineOptions) -> Vec<PathBuf> {
 ///
 /// 0.3.5 修正：0.3.0~0.3.4 的 `Unsupported URL` 提示写着「FluxDL 目前支持
 /// B 站、抖音、快手、小红书、微博等国内站点」，与内置 yt-dlp 的实际能力不符
-/// ——打包版（2026.10.26，1755 个提取器）里**没有任何快手 / Kwai 提取器**，
-/// 抖音网页解析还要求 `s_v_web_id` 匿名校验 cookie，而 FluxDL 不读取、不传输、
-/// 不落盘任何凭证。用户照着那句提示反复重试只会一直失败（真机截图已复现）。
+/// ——打包版（2026.10.26，1755 个提取器）里**没有任何快手 / Kwai 提取器**。
+/// 0.3.9 B 档：抖音网页解析的 cookie 门槛已可通过「设置 → 视频下载 → Cookie 来源」
+/// 解决，报错提示改成引导配置 cookie，不再宣称「不碰凭证、不支持」。
 /// 现在按「站点 + 错误类型」分别给出真正可行的下一步，不再列举虚假支持名单。
 fn failure_hint(errors: &[String], url: &str) -> &'static str {
     let host = host_of(url);
@@ -994,15 +1040,16 @@ fn failure_hint(errors: &[String], url: &str) -> &'static str {
         return "（内置视频解析器不支持快手的网页链接。请在浏览器扩展弹窗的资源列表里选择嗅探到的视频直链，用普通下载；或把该视频的直链地址粘贴到新建任务。首页 / 发现页不能整页解析）";
     }
 
-    // 抖音等站点要求浏览器下发的匿名校验 cookie 才能解析网页，FluxDL 明确
-    // 不碰任何凭证，这条路径在本产品里是关闭的，得如实说清楚并给出替代方案。
+    // 抖音等站点要求浏览器下发的匿名校验 / 登录 cookie 才能解析网页。B 档起
+    // 可在「设置 → 视频下载 → Cookie 来源」让 yt-dlp 读取本机浏览器 cookie；
+    // 报错时给出这条可操作路径，而不是旧的「不支持」结论。
     let needs_cookie = errors.iter().any(|e| {
         e.contains("Fresh cookies")
             || e.contains("s_v_web_id")
             || e.contains("not necessarily logged in")
     });
     if needs_cookie {
-        return "（该站点要求浏览器下发的匿名校验 cookie 才能解析网页；FluxDL 不读取、传输或保存任何登录凭证，因此不解析这类页面。请在浏览器扩展弹窗的资源列表里选择该视频的直链，用普通下载）";
+        return "（该站点要求浏览器 cookie 才能解析网页。请在「设置 → 视频下载 → 视频 Cookie 来源」选择你已登录过该站点的浏览器（或填入 cookies.txt 路径）后重试；cookie 只由 yt-dlp 在本机读取，不经网络传输、不落盘登录态。仍失败时可用浏览器扩展「本页资源」里的视频直链做普通下载）";
     }
 
     let unsupported = errors.iter().any(|e| {
@@ -1021,7 +1068,7 @@ fn failure_hint(errors: &[String], url: &str) -> &'static str {
             || e.contains("DRM")
     });
     if need_login {
-        return "（该内容需要登录或会员权限，FluxDL 不保存任何账号凭证，请改用普通下载任务或换可用来源）";
+        return "（该内容需要登录或会员权限。请在「设置 → 视频下载 → 视频 Cookie 来源」配置已登录该站点的浏览器 Cookie 后重试；仍不可用请换来源或用扩展「本页资源」的视频直链做普通下载）";
     }
     ""
 }
@@ -1320,12 +1367,13 @@ mod tests {
     }
 
     #[test]
-    fn login_error_gets_credential_free_hint() {
+    fn login_error_guides_cookie_setup() {
         let hint = failure_hint(
             &["ERROR: This video requires login".into()],
             "https://example.com",
         );
-        assert!(hint.contains("不保存任何账号凭证"));
+        assert!(hint.contains("Cookie 来源"), "登录报错应引导配置 Cookie 来源：{hint}");
+        assert!(!hint.contains("不保存任何账号凭证"), "不得再宣称不碰凭证（B 档红线已解除）");
     }
 
     #[test]
@@ -1404,10 +1452,10 @@ mod tests {
         }
     }
 
-    /// 0.3.5：失败提示按站点分流，不再宣称「支持快手」这类与内置解析器
-    /// 实际能力不符的名单，且明确说明不碰凭证。
+    /// 失败提示按站点分流，不再宣称「支持快手」这类与内置解析器实际能力不符的名单。
+    /// B 档：cookie 门槛不再下「不支持」结论，改为引导用户配置 Cookie 来源。
     #[test]
-    fn failure_hints_are_site_aware_and_credential_free() {
+    fn failure_hints_are_site_aware_and_guide_cookie_setup() {
         let ks = failure_hint(
             &["ERROR: Unsupported URL: https://www.kuaishou.com/new-reco".into()],
             "https://www.kuaishou.com/new-reco",
@@ -1419,7 +1467,9 @@ mod tests {
             &["ERROR: Fresh cookies (not necessarily logged in) are needed".into()],
             "https://www.douyin.com/video/123",
         );
-        assert!(cookie.contains("不读取、传输或保存任何登录凭证"));
+        assert!(cookie.contains("Cookie 来源"), "cookie 报错应引导配置 Cookie 来源：{cookie}");
+        assert!(cookie.contains("yt-dlp"), "应说明 cookie 由 yt-dlp 本机读取：{cookie}");
+        assert!(!cookie.contains("不读取、传输或保存"), "不得再宣称不碰凭证（红线已解除）");
 
         let unsupported = failure_hint(
             &["ERROR: Unsupported URL: https://example.com/x".into()],
@@ -1434,17 +1484,47 @@ mod tests {
         );
     }
 
-    /// 0.3.6：页面 URL 不等于视频文件。真机截图里快手 / 抖音网页链接被建成
-    /// 必然失败的 Media 任务（Unsupported URL / Fresh cookies），这里把
-    /// 「建任务前拒绝」钉成红线；容器直链与正常详情页必须放行。
+    /// B 档：cookie 参数构造 —— 文件优先于浏览器、none 与空值不传参、
+    ///  trimming 生效。这是「粘贴抖音链接能解析」的关键开关。
     #[test]
-    fn media_page_blocker_rejects_unparsable_pages_but_allows_direct_files() {
+    fn cookie_args_respect_priority_and_none() {
+        let mut o = EngineOptions::default();
+        assert!(cookie_args(&o).is_empty(), "默认不启用任何 cookie 来源");
+
+        o.media_cookie_browser = Some("edge".into());
+        assert_eq!(
+            cookie_args(&o),
+            vec!["--cookies-from-browser".to_string(), "edge".to_string()]
+        );
+
+        // 文件优先级高于浏览器
+        o.media_cookie_file = Some("  C:\\Users\\me\\cookies.txt  ".into());
+        assert_eq!(
+            cookie_args(&o),
+            vec!["--cookies".to_string(), "C:\\Users\\me\\cookies.txt".to_string()],
+            "自定义 cookies.txt 应优先并被 trim"
+        );
+
+        // none / 空字符串不产生参数
+        o.media_cookie_file = None;
+        o.media_cookie_browser = Some("none".into());
+        assert!(cookie_args(&o).is_empty(), "none 应视为不启用");
+        o.media_cookie_browser = Some("   ".into());
+        assert!(cookie_args(&o).is_empty(), "纯空白应视为不启用");
+        o.media_cookie_file = Some("   ".into());
+        assert!(cookie_args(&o).is_empty(), "空白文件路径不应产生参数");
+    }
+
+    /// B 档：抖音整页链接不再被人为拒绝（cookie 门槛已可通过设置解决），
+    /// 快手因打包 yt-dlp 无提取器仍拦截，纯首页 / 发现页拦截，容器直链与
+    /// 正常详情页放行。
+    #[test]
+    fn media_page_blocker_allows_douyin_pages_but_blocks_kuaishou_and_home() {
+        // 应拦截：快手全站、无 id 的站点首页 / 精选 / 发现页
         for url in [
             "https://www.kuaishou.com/new-reco",
             "https://www.kuaishou.com/short-video/3xabc",
             "https://v.kuaishou.com/abc",
-            "https://www.douyin.com/video/7702008165390421263",
-            "https://www.douyin.com/jingxuan?modal_id=7702008165390421263",
             "https://www.douyin.com/jingxuan",
             "https://www.bilibili.com/",
             "https://www.bilibili.com/index",
@@ -1454,7 +1534,12 @@ mod tests {
                 "应提前拦截，不要创建必然失败的 Media 任务：{url}"
             );
         }
+        // 应放行：抖音详情页 / 短链 / 带 modal_id 的聚合页（会被归一化成详情页）
         for url in [
+            "https://www.douyin.com/video/7702008165390421263",
+            "https://www.douyin.com/jingxuan?modal_id=7702008165390421263",
+            "https://v.douyin.com/iRabcdef/",
+            "https://www.iesdouyin.com/share/video/7702008165390421263",
             "https://www.bilibili.com/video/BV1GysQ6hEgB",
             "https://b23.tv/abcd",
             "https://v2.kuaishou.com/abc.mp4",
@@ -1463,11 +1548,12 @@ mod tests {
             "https://example.com/article/123",
             "https://www.youtube.com/watch?v=abcdefghijk",
         ] {
-            assert_eq!(media_page_blocker(url), None, "不应误拦：{url}");
+            assert_eq!(media_page_blocker(url), None, "B 档后不应拦：{url}");
         }
         let hint = media_page_blocker("https://www.kuaishou.com/new-reco").unwrap();
         assert!(hint.contains("本页资源"), "提示必须给出可操作路径：{hint}");
         assert!(!hint.contains("支持快手"), "不得再宣称支持快手整页解析");
+        assert!(!hint.contains("cookie"), "快手拦截原因不是 cookie，别误导用户去配凭证");
     }
 
     /// 0.3.6：目录守卫覆盖所有退出路径。未 keep 时 Drop 删掉整个目录

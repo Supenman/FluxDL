@@ -1,8 +1,8 @@
 //! v0.3.6 真机截图问题的功能回归测试。
 //!
 //! 覆盖：
-//!   1. 复制快手 / 抖音**页面链接**不再建成必然失败的 Media 任务
-//!      （Engine::add 提前拒绝，且不落任何任务 / 工作目录）
+//!   1. (B 档更新) 快手 / 无 id 聚合页仍由 Engine::add 提前拒绝；抖音详情页 /
+//!      带 modal_id 精选页放行给 yt-dlp 整页解析（解除旧红线的人为拦截）
 //!   2. yt-dlp 失败时下载目录不再残留 `fluxdl-<id>` 文件夹（WorkDirGuard）
 //!   3. 成功下载后产物仍发布回用户下载目录，独占目录同样不残留
 //!   4. CDN 容器直链与正常详情页不被提前拦截误伤
@@ -80,23 +80,37 @@ fn leftover_work_dirs(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// 问题 1/2 的引擎侧：真机截图里用户粘贴的快手 / 抖音页面 URL 会被建成
-/// 失败任务，报 Unsupported URL / Fresh cookies。0.3.6 在 add() 阶段直接拒绝，
-/// 因此既不会有失败任务，也不会在下载目录留下 fluxdl-<id> 文件夹。
+/// 问题 1/2 的引擎侧：真机截图里用户粘贴的页面 URL 曾被建成失败任务，
+/// 报 Unsupported URL / Fresh cookies。B 档（红线解除）后：
+/// * 快手（内置 yt-dlp 无提取器）、无 id 聚合首页仍在 add() 阶段提前拒绝，
+///   不创建必然失败的任务、不落 fluxdl-<id> 目录；
+/// * 抖音详情页 / 带 modal_id 精选页放行给 yt-dlp 整页解析（cookie 可在设置里配）。
 #[tokio::test]
 async fn unparsable_media_pages_are_rejected_before_creating_tasks() {
+    // 纯函数判定：抖音放行、快手/聚合页仍拦，避免起真实 yt-dlp 引入异步竞态。
+    for url in [
+        "https://www.douyin.com/video/7702008165390421263",
+        "https://www.douyin.com/jingxuan?modal_id=7702008165390421263",
+        "https://v.douyin.com/iRabcdef/",
+    ] {
+        assert_eq!(
+            media_page_blocker(url),
+            None,
+            "B 档后抖音单视频链接应放行给 yt-dlp：{url}"
+        );
+    }
     let dir = tempfile::tempdir().unwrap();
     // 故意不配置 yt-dlp：若真的创建了任务，会立刻失败并留下目录。
     let e = engine(dir.path());
     for url in [
         "https://www.kuaishou.com/new-reco",
-        "https://www.douyin.com/video/7702008165390421263",
-        "https://www.douyin.com/jingxuan?modal_id=7702008165390421263",
+        "https://www.douyin.com/jingxuan",
+        "https://www.bilibili.com/",
     ] {
         let err = e
             .add(TaskKind::Media, url, NewTaskOptions::default())
             .await
-            .expect_err("页面链接应被提前拒绝");
+            .expect_err("快手/聚合首页应被提前拒绝");
         assert!(
             err.to_string().contains("本页资源") || err.to_string().contains("直链"),
             "{url} 的提示必须给出可操作路径，实际：{err}"

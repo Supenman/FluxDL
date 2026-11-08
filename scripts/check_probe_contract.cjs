@@ -572,10 +572,12 @@ function tick() {
   pass("background 只信 sender.tab.id，拒绝伪造 tabId 与无标签页上下文");
 
   // ---------------------------------------------------------------- //
-  // 10) manifest 结构与「不升版本」纪律
+  // 10) manifest 结构与版本纪律
   // ---------------------------------------------------------------- //
   const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
-  assert.equal(manifest.version, "2.2.0", "本次只实现源码，不改扩展版本号");
+  // 0.3.7 正式发版：探针随包发出，扩展版本随功能合入小版本递增。
+  // 0.3.9 扩展功能变动（本页资源直链显式 http、移除「用链接下载」入口）→ 2.2.2。
+  assert.equal(manifest.version, "2.2.2", "0.3.9 起扩展版本应为 2.2.2");
   assert.equal(manifest.minimum_chrome_version, "102",
     "保留 102：Chrome<111 不认识 world 字段，探针自动降级，webRequest 嗅探不受影响");
   assert(manifest.permissions.includes("webRequest"), "webRequest 嗅探必须保留");
@@ -590,7 +592,7 @@ function tick() {
   for (const f of ["page-probe.js", "probe-bridge.js"]) {
     assert(fs.existsSync(path.join(EXT, f)), `缺少文件：${f}`);
   }
-  pass("manifest：MAIN/ISOLATED 双 world 注册、版本与最低 Chrome 版本保持不变");
+  pass("manifest：MAIN/ISOLATED 双 world 注册、扩展版本 2.2.2 与最低 Chrome 102");
 
   // ---------------------------------------------------------------- //
   // 11) 凭证红线：源码（去掉注释后）不得出现任何 cookie / 凭据操作
@@ -621,6 +623,182 @@ function tick() {
     assert(!re.test(bgCode), `background.js 出现凭证相关代码：${re}`);
   }
   pass("凭证红线：新增代码无 cookie/Authorization/withCredentials/setRequestHeader 等操作");
+
+  // ---------------------------------------------------------------- //
+  // 12) 0.3.9 本页资源增强：归一化分组 / 元数据探测 / DOM+performance 补漏
+  // ---------------------------------------------------------------- //
+  assert.equal(typeof bg.dedupeKey, "function", "background 缺少 dedupeKey 导出");
+  assert.equal(typeof bg.metadataState, "function", "background 缺少 metadataState 导出");
+  assert.equal(typeof bg.metadataFromResponse, "function", "background 缺少 metadataFromResponse 导出");
+  assert.equal(typeof bg.probeMetadata, "function", "background 缺少 probeMetadata 导出");
+  assert.equal(typeof bg.mergeResource, "function", "background 缺少 mergeResource 导出");
+  assert.equal(typeof probe.extractFromPerformance, "function", "探针缺少 extractFromPerformance");
+  assert.equal(typeof probe.extractFromMediaElements, "function", "探针缺少 extractFromMediaElements");
+
+  // 12a 归一化：签名 / 时效参数变化归一到同一组，语义参数与清晰度保留
+  const dk1 = bg.dedupeKey("https://cdn.example.com/v.mp4?token=aaa&expires=123&video_id=9&ratio=720p");
+  const dk2 = bg.dedupeKey("https://cdn.example.com/v.mp4?token=bbb&expires=999&video_id=9&ratio=720p");
+  assert.equal(dk1, dk2, "仅签名 / 时效参数变化时应归一到同一组");
+  assert.notEqual(dk1, bg.dedupeKey("https://cdn.example.com/v.mp4?token=aaa&video_id=10&ratio=720p"),
+    "不同 video_id 不得误并成一行");
+  assert.notEqual(dk1, bg.dedupeKey("https://cdn.example.com/v.mp4?token=aaa&video_id=9&ratio=1080p"),
+    "不同清晰度参数不得误并成一行");
+  assert.notEqual(dk1, bg.dedupeKey("https://other.example.com/v.mp4?video_id=9&ratio=720p"),
+    "不同 host 不得误并");
+  assert.equal(bg.dedupeKey("https://user:pass@x/a.mp4"), "https://user:pass@x/a.mp4",
+    "带 user:pass@ 的 URL 原样返回，不参与分组（凭证红线）");
+  pass("dedupeKey：签名归一、语义参数与清晰度保留、凭证 URL 不参与分组");
+
+  // 12b 状态三态：403 / 超时 / 5xx 一律 unknown，绝不误杀
+  for (const s of [200, 206, 302]) assert.equal(bg.metadataState(s), "ok", `${s} 应为 ok`);
+  for (const s of [404, 410]) assert.equal(bg.metadataState(s), "dead", `${s} 应为 dead`);
+  for (const s of [0, 401, 403, 405, 429, 500, 503, undefined, null, "NA"]) {
+    assert.equal(bg.metadataState(s), "unknown", `${s} 不得误杀，应为 unknown`);
+  }
+  pass("metadataState：2xx/3xx=ok、404/410=dead、防盗链与超时一律 unknown");
+
+  // 12c 响应头解析：补体积 / 类型 / 文件名 / Accept-Ranges
+  function metaResponse(status, headers) {
+    return {
+      status,
+      headers: { get: (n) => headers[String(n).toLowerCase()] || "" },
+    };
+  }
+  const okMeta = bg.metadataFromResponse(metaResponse(200, {
+    "content-length": "20480000",
+    "content-type": "video/mp4; charset=binary",
+    "content-disposition": 'attachment; filename="clip.mp4"',
+    "accept-ranges": "bytes",
+  }));
+  assert.equal(okMeta.state, "ok");
+  assert.equal(okMeta.size, 20480000, "应从 content-length 补回真实体积");
+  assert.equal(okMeta.mime, "video/mp4");
+  assert.equal(okMeta.name, "clip.mp4", "应从 content-disposition 补回真实文件名");
+  assert.equal(okMeta.ranges, true, "应识别 Accept-Ranges: bytes");
+  const deniedMeta = bg.metadataFromResponse(metaResponse(403, { "content-length": "1234" }));
+  assert.equal(deniedMeta.state, "unknown");
+  assert.equal(deniedMeta.size, 0, "403 防盗链页面的长度不能当文件体积采信");
+  assert.equal(bg.metadataFromResponse(null).state, "unknown", "无响应对象应安全退化");
+  assert.equal(bg.metadataFromResponse({ status: 200 }).state, "ok", "无 headers 的 stub 不应抛错");
+  assert.equal(bg.parseTotalLength("", "bytes 0-0/9999"), 9999, "206 的 Content-Range 应能兜底总量");
+  pass("metadataFromResponse：体积/mime/文件名/ranges 提取，403 不采信体积，stub 安全退化");
+
+  // 12d 探测请求凭证红线：实跑 probeMetadata，验证 fetch 参数
+  const metaCalls = [];
+  const bgProbe = load(BG, {
+    chrome: chromeStub,
+    navigator: { userAgent: "Probe-Test" },
+    fetch: async (url, init) => {
+      metaCalls.push({ url, init });
+      return metaResponse(200, { "content-length": "1024", "content-type": "video/mp4" });
+    },
+  });
+  const metaResult = await bgProbe.probeMetadata("https://cdn.example.com/a.mp4");
+  assert.equal(metaCalls.length, 1, "probeMetadata 应只发一次请求");
+  assert.equal(metaCalls[0].init.method, "HEAD", "优先轻量 HEAD");
+  assert.equal(metaCalls[0].init.credentials, "omit", "探测必须显式 omit 凭证");
+  assert.equal(metaCalls[0].init.referrerPolicy, "no-referrer", "探测不得携带 referer 上下文");
+  assert(!metaCalls[0].init.headers, "HEAD 请求不得带自定义头");
+  assert.equal(metaResult.state, "ok");
+  assert.equal(metaResult.size, 1024);
+  // HEAD 不支持时降级一次 Range GET
+  metaCalls.length = 0;
+  const bgProbe405 = load(BG, {
+    chrome: chromeStub,
+    navigator: { userAgent: "Probe-Test" },
+    fetch: async (url, init) => {
+      metaCalls.push({ url, init });
+      return metaResponse(metaCalls.length === 1 ? 405 : 206, { "content-range": "bytes 0-0/4096" });
+    },
+  });
+  const fallback = await bgProbe405.probeMetadata("https://cdn.example.com/b.mp4");
+  assert.equal(metaCalls.length, 2, "405 应降级一次 Range GET");
+  assert.equal(metaCalls[1].init.headers.Range, "bytes=0-0");
+  assert.equal(fallback.size, 4096);
+  pass("probeMetadata：credentials=omit / no-referrer / HEAD 优先 / 405 降级 Range GET");
+
+  // 12e performance 补漏：只收媒体直链，噪声与 blob 全部排除
+  const perfFound = probe.extractFromPerformance([
+    { name: "https://cdn.example.com/a.mp4" },
+    { name: "https://cdn.example.com/config.json" },
+    { name: "https://cdn.example.com/seg-1.m4s" },
+    "https://cdn.example.com/b.mp4?token=x",
+    { name: "blob:https://x/abc" },
+    { name: "https://cdn.example.com/logo.png" },
+  ]);
+  assert(perfFound.includes("https://cdn.example.com/a.mp4"), "performance 直链应补回");
+  assert(perfFound.includes("https://cdn.example.com/b.mp4?token=x"), "字符串型 entry 也应识别");
+  assert(!perfFound.some((u) => /\.(json|m4s|png)/.test(u) || u.startsWith("blob:")),
+    "performance 噪声 / 分片 / blob 不得上报");
+  assert.deepEqual(probe.extractFromPerformance(null), [], "非数组输入应返回空");
+  pass("extractFromPerformance：补漏媒体直链，过滤噪声/分片/blob，非数组安全");
+
+  // 12f DOM 媒体元素补漏：相对地址按 base 解析、blob/图片过滤、getAttribute 兜底
+  const domDoc = {
+    querySelectorAll: (sel) => {
+      assert.equal(sel, "video, audio, source", "应扫描 video/audio/source 三类元素");
+      return [
+        { currentSrc: "https://cdn.example.com/direct.mp4", src: "" },
+        { src: "/rel/clip.mp4" },
+        { getAttribute: (a) => (a === "src" ? "https://cdn.example.com/attr.mp4" : "") },
+        { src: "blob:https://x/1" },
+        { src: "https://cdn.example.com/pic.png" },
+      ];
+    },
+  };
+  const domFound = probe.extractFromMediaElements(domDoc, "https://www.example.com/page/");
+  assert(domFound.includes("https://cdn.example.com/direct.mp4"), "video.currentSrc 应补回");
+  assert(domFound.includes("https://www.example.com/rel/clip.mp4"), "相对 src 应按 baseUrl 解析");
+  assert(domFound.includes("https://cdn.example.com/attr.mp4"), "getAttribute(src) 应兜底");
+  assert(!domFound.some((u) => u.startsWith("blob:") || /\.png/.test(u)),
+    "DOM blob / 图片不得上报");
+  assert.deepEqual(probe.extractFromMediaElements(null, "https://x/"), [], "无 doc 应返回空");
+  assert.deepEqual(probe.extractFromMediaElements({ querySelectorAll: () => { throw new Error("denied"); } }, "https://x/"), [],
+    "querySelectorAll 抛错应安全退化");
+  pass("extractFromMediaElements：currentSrc/src/getAttribute、相对解析、blob/图片过滤、异常退化");
+
+  // 12g 合并同组资源时保留真实响应头数据，绝不被探针的空字段覆盖
+  const merged = bg.mergeResource(
+    { url: "u", size: 2048, mime: "video/mp4", name: "real.mp4", referer: "https://r/", meta: { state: "ok" }, at: 1 },
+    { url: "u", size: 0, mime: "", name: "", referer: "", variants: [], at: 2 },
+  );
+  assert.equal(merged.size, 2048, "真实体积不得被 0 覆盖");
+  assert.equal(merged.mime, "video/mp4");
+  assert.equal(merged.name, "real.mp4");
+  assert.equal(merged.referer, "https://r/");
+  assert.equal(merged.meta.state, "ok");
+  assert.equal(merged.at, 1);
+  pass("mergeResource：真实响应头字段优先，同组合并不丢体积/mime/文件名/referer");
+
+  // 12h 端到端：归一化同组的两条直链只入一行，备用地址收进 variants
+  sessionStore = {};
+  const groupResp = await callBg({
+    type: "probeResources",
+    urls: [
+      "https://cdn.example.com/movie.mp4?token=aaa&expires=1&video_id=7",
+      "https://cdn.example.com/movie.mp4?token=bbb&expires=2&video_id=7",
+      "https://cdn.example.com/other.mp4?video_id=8",
+    ],
+    pageUrl: "https://www.example.com/video/7",
+  }, senderTab);
+  assert(groupResp && groupResp.ok, `group probeResources 失败：${JSON.stringify(groupResp)}`);
+  const groupPage = await callBg({ type: "getPageResources" }, senderTab);
+  assert.equal(groupPage.resources.length, 2, "仅签名不同的两条镜像应合并成一行");
+  const grouped = groupPage.resources.find((r) => r.url.includes("movie.mp4"));
+  assert(grouped, "主行应保留 movie.mp4 主地址");
+  assert.equal(grouped.variants.length, 1, "另一条镜像应作为备用地址");
+  assert(grouped.variants[0].url.includes("token=bbb"), "备用地址应保留原始完整 URL");
+  assert.equal(grouped.dedupeKey, bg.dedupeKey(grouped.url), "主行应带归一化 key");
+  pass("端到端：签名镜像归一成一行 + variants 备用地址，不同 video_id 不合并");
+
+  // 12i 源码级：探测排队挂在入队链路，且凭证红线不破
+  const bgFull = fs.readFileSync(BG, "utf8");
+  assert(/scheduleMetadataProbe\(tabId, url\)/.test(bgFull), "probeResources 应对新直链排队元数据探测");
+  assert(/case "refreshMetadata":/.test(bgFull), "应支持弹窗主动刷新校验状态");
+  assert(/credentials:\s*"omit"/.test(bgFull), "探测必须显式 omit 凭证");
+  assert(!/credentials:\s*"include"/.test(bgFull), "探测不得携带凭证");
+  assert(!/withCredentials/.test(bgFull), "探测不得使用 withCredentials");
+  pass("源码：探测排队 / refreshMetadata 消息 / credentials=omit 红线");
 
   console.log("\n" + "=".repeat(64));
   console.log(`PASS 探针链路契约：${results.length} 组断言全部通过`);

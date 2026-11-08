@@ -10,9 +10,12 @@
 //!   这是对 B 站、抖音这类分片流最直接的提速手段。
 //! * **B 站客户端**：`--extractor-args bilibili:player_client=tv,app` 绕开 web 端最严
 //!   的单连接限速（web 端匿名下载常年只有 ~120 KB/s）。
-//! * **aria2 外部下载器**（0.3.1 起）：把「取字节」这一步换成 aria2 的 `-x16 -s16`，
-//!   按字节区间并发拉取，绕开单连接限速。合并 / 选格式 / 异常兜底仍由 yt-dlp 负责。
-//!   找不到 aria2c 或用户给任务限了速时，自动退回 yt-dlp 原生下载器。
+//! * **aria2 外部下载器**（0.3.1 起，0.3.4 收窄）：把「取字节」换成 aria2 的
+//!   `-x16 -s16`，按字节区间并发拉取。但 DASH / HLS 分片普遍只有 100 KB 级，
+//!   远小于 aria2 的 `-k4M` 切分阈值，aria2 恒用 1 条连接（CN:1）反而更慢，
+//!   因此 0.3.4 起 `Engine::add` 对所有 `TaskKind::Media` 默认关闭 aria2，
+//!   分片并发交给 `--concurrent-fragments 4`；aria2 现在只服务 HTTP 整文件直链
+//!   和显式要求 `aria2:true` 的高级入口。
 
 use crate::aria2;
 use crate::manager::{Engine, EngineError, TaskEntry};
@@ -582,6 +585,11 @@ pub async fn run(
     let mut last_emit = std::time::Instant::now();
     let started = std::time::Instant::now();
     let mut speed_hinted = false;
+    // 0.3.8：Media 速度的唯一写入者是本循环的进度行，平滑状态也随任务走。
+    // tick() 不再用差分覆盖 speed_bps，避免两个来源以不同节奏把同一字段来回拉扯。
+    // 0.3.9：改用状态机统一处理「浮点 / NA / 空串」速度字段：浮点优先，
+    // 字段未知时用字节差分兜底，任何时刻都不把 0 发布成速度（否则显示 `—`）。
+    let mut speed_sample = util::SpeedSample::default();
 
     loop {
         let next = tokio::select! {
@@ -609,11 +617,20 @@ pub async fn run(
                     .filter(|v| *v > 0)
                     .or_else(|| parts[2].parse::<u64>().ok())
                     .unwrap_or(0);
-                // speed 字段来自 aria2：`-1` 表示「速度未知」（DL:--），此时保留
-                // 上一次有效速度，避免图表谷底塌陷到 0 造成虚假锯齿；其余值照常采用。
-                let raw_speed: i64 = parts[3].parse().unwrap_or(-1);
-                let speed = if raw_speed >= 0 { raw_speed as u64 } else { 0 };
-                let eta = parts[4].parse::<f64>().ok().map(|v| v.max(0.0) as u64);
+                // 0.3.9：速度推导统一交给状态机。旧实现 `parts[3].parse::<i64>()`
+                // 解析不了 yt-dlp 的浮点速度（如 `1234567.89`）→ 恒 -1 →
+                // smoothed_speed 恒 0 → 前端速度显示 `—`，而 ETA 走 f64 解析
+                // 仍有值，形成真机截图里「有剩余时间却没速度」的矛盾画面。
+                // 现在浮点 / 整数优先，NA / None / 空串用「字节增量 / 时间增量」
+                // 兜底；未知帧保留上一次平滑速度，绝不写 0、不砸谷底。
+                speed_sample.advance(started.elapsed().as_secs_f64(), downloaded, parts[3]);
+                let smoothed_speed = speed_sample.speed;
+                let speed = smoothed_speed;
+                // 0.3.8：ETA 与 view.speed_bps 同口径——用平滑速度重算剩余时间，
+                // 削掉解析器原始 ETA 随分片切换的跳字；总量未知 / 速度未知 / 已完成
+                // 时退回解析器给出的估计值，不显示虚假的 0。
+                let parsed_eta = parts[4].parse::<f64>().ok().map(|v| v.max(0.0) as u64);
+                let eta = util::eta_from_speed(total, downloaded, smoothed_speed, parsed_eta);
 
                 // 单连接长期低速时给一次可操作的提示（每个任务只提示一次）。
                 if !speed_hinted
@@ -632,10 +649,9 @@ pub async fn run(
                 let mut view = entry.view.lock().await;
                 view.total_bytes = total;
                 view.downloaded_bytes = downloaded;
-                // 速度未知（-1）时保留上一次有效速度，不归零。
-                if raw_speed >= 0 {
-                    view.speed_bps = raw_speed as u64;
-                }
+                // 0.3.8：发布平滑后的速度；速度未知（-1）时 smoothed_speed 保持不变，
+                // 等价于「保留上一次有效速度」，不归零、不砸出谷底。
+                view.speed_bps = smoothed_speed;
                 view.eta_seconds = eta;
                 // 注意：进度行的 filename 是 yt-dlp 当前正在写的中间文件名（分片 / .part），
                 // 用它覆盖任务名会把真实标题污染成中间名，因此不写入 view.filename；

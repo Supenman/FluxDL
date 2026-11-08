@@ -268,11 +268,103 @@ async function main() {
     handler.indexOf("const url = current.tab"),
   );
   assert(guidance.length > 0, "popup 缺少整页解析不可用的分支");
-  assert(!/kind\s*:/.test(guidance), "整页解析不可用时不得再发送 media 页面任务");
-  assert(/url:\s*best\.url/.test(guidance), "整页解析不可用时必须发送嗅探到的视频直链");
+  assert(!/kind\s*:\s*"media"/.test(guidance), "整页解析不可用时不得再发送 media 页面任务");
+  assert(
+    /resourcePayload\(best\)/.test(guidance),
+    "整页解析不可用时主按钮必须经 resourcePayload 发送嗅探到的视频直链（显式 http）",
+  );
+
+  // ---- 7. 0.3.9 收敛：移除「用链接下载」+ 「本页资源」直链显式 kind:"http" ----
+  const popupHtml = fs.readFileSync(path.join(ROOT, "browser-extension", "popup.html"), "utf8");
+  const popupCss = fs.readFileSync(path.join(ROOT, "browser-extension", "popup.css"), "utf8");
+  // 「用链接下载」入口已整段移除：弹窗 DOM / 样式 / 脚本都不再有它。
+  assert(!/id="link-input"/.test(popupHtml), "「用链接下载」输入框应已从弹窗移除");
+  assert(!/id="link-download"/.test(popupHtml), "「用链接下载」按钮应已从弹窗移除");
+  assert(!/link-card/.test(popupHtml), "「用链接下载」卡片应已从弹窗移除");
+  assert(!/\.link-card|#link-input|link-row/.test(popupCss), "「用链接下载」样式应已移除");
+  assert(!/linkInput|linkDownload|classifyLink/.test(popupSrc), "弹窗脚本不应残留「用链接下载」逻辑");
+
+  const bgSrc = fs.readFileSync(EXT, "utf8");
+  // 方案 A 与 classifyLink 裁决链路全部删除，不得残留。
+  assert(!/function internalSniff/.test(bgSrc), "background 必须删除 internalSniff（开页嗅探）");
+  assert(!/case "openTabForSniff":/.test(bgSrc), "background 必须删除 openTabForSniff");
+  assert(!/case "getTabResources":/.test(bgSrc), "background 必须删除 getTabResources");
+  assert(!/function pollBestVideo/.test(bgSrc), "background 必须删除 pollBestVideo");
+  assert(!/case "classifyLink":/.test(bgSrc), "background 必须删除 classifyLink 裁决");
+
+  // 本页资源：所有下载都经 resourcePayload 显式带 kind:"http"。
+  // 这是「本页资源做好了」的关键：抖快探针嗅到的多是无扩展名直链
+  // （.../play/?mime_type=video_mp4），若不带 kind，桌面端 handle_capture_conn
+  // 会用 looks_like_media 兜底判成 Media 任务，再被 media_page_blocker 拒绝。
+  assert(/function resourcePayload/.test(popupSrc), "本页资源需有统一的 resourcePayload 构造器");
+  const rpBody = popupSrc.slice(
+    popupSrc.indexOf("function resourcePayload"),
+    popupSrc.indexOf("function renderResources"),
+  );
+  assert(/kind:\s*"http"/.test(rpBody), "resourcePayload 必须显式带 kind:\"http\"");
+  assert(/referer:/.test(rpBody), "resourcePayload 需携带 referer（防盗链）");
+  assert(/filename:/.test(rpBody), "resourcePayload 需携带 filename");
+  // 三个弹窗下载入口都走 resourcePayload：单条下载、全部发送、主按钮直链。
+  // 用调用点计数（rec 应出现 2 次，best 1 次），比位置正则稳健。
+  const recCalls = (popupSrc.match(/resourcePayload\(rec\)/g) || []).length;
+  const bestCalls = (popupSrc.match(/resourcePayload\(best\)/g) || []).length;
+  assert(recCalls >= 2, `单条 + 全部发送都应走 resourcePayload(rec)，实得 ${recCalls} 次`);
+  assert(bestCalls === 1, `主按钮直链应走 resourcePayload(best)，实得 ${bestCalls} 次`);
+  assert(
+    !/sendDownload\(\{\s*url:\s*rec\.url/.test(popupSrc),
+    "不得再绕过 resourcePayload 手写资源 payload（会漏掉 kind:\"http\"）",
+  );
+
+  // 实跑：弹窗 sendDownload 一条无扩展名的抖音直链（模拟 resourcePayload 产物），
+  // 桌面端收到的 body 必须是 kind:"http" 且 url 原样，绝不能被改写成 media。
+  sent.length = 0;
+  const sniffDirect = "https://www.douyin.com/aweme/v1/play/?mime_type=video_mp4&token=abc";
+  const sniffResult = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("sendDownload 未回调")), 3000);
+    messageListeners[0](
+      {
+        type: "sendDownload",
+        payload: {
+          url: sniffDirect,
+          filename: "video.mp4",
+          referer: "https://www.douyin.com/",
+          kind: "http",
+        },
+        silent: true,
+      },
+      {},
+      (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+    );
+  });
+  assert(sniffResult && sniffResult.ok, "本页资源无扩展名直链应发送成功");
+  assert.equal(sent.length, 1, "应只发一次 /api/downloads");
+  const sniffBody = JSON.parse(sent[0].init.body);
+  assert.equal(sniffBody.kind, "http", "本页资源直链必须以 kind:\"http\" 送达桌面端");
+  assert.equal(sniffBody.url, sniffDirect, "直链 url 需原样透传");
+  assert.equal(sniffBody.referer, "https://www.douyin.com/", "直链需携带 referer");
+  assert.equal(sniffBody.userAgent, "Mozilla/5.0 (FluxDL-Contract-Test)", "仍需注入 UA");
+
+  // 右键菜单「下载此媒体」按菜单类型分流：srcUrl 是直链，显式 http，不走网页判定。
+  assert(/info\.menuItemId === MENU_MEDIA/.test(bgSrc), "右键菜单需按 MENU_MEDIA 分流媒体直链");
+  const menuMedia = bgSrc.slice(
+    bgSrc.indexOf("if (info.menuItemId === MENU_MEDIA)"),
+    bgSrc.indexOf("if (info.menuItemId !== MENU_LINK) return;"),
+  );
+  assert(/kind:\s*"http"/.test(menuMedia), "MENU_MEDIA 直链必须显式 kind:\"http\"");
+  assert(!/isUnsupportedPage/.test(menuMedia), "MENU_MEDIA 不得再走网页 unsupported 判定");
+
+  // isUnsupportedPage 仍导出，供右键菜单「下载此链接」分流复用
+  assert.equal(typeof mod.isUnsupportedPage, "function", "缺少导出：isUnsupportedPage");
+  assert.equal(mod.isUnsupportedPage("https://www.douyin.com/video/7702008165390421263"), true);
+  assert.equal(mod.isUnsupportedPage("https://www.kuaishou.com/new-reco"), true);
+  assert.equal(mod.isUnsupportedPage("https://www.bilibili.com/video/BV1xx"), false,
+    "支持整页解析的站点不应被误判为不支持");
 
   console.log(
-    `PASS 扩展契约：payload=userAgent，导出完好，前后端站点名单一致（${tsSet.size} 个域名），直链短路/聚合页/资源噪声/最佳直链与弹窗引导态全部通过`,
+    `PASS 扩展契约：payload=userAgent，导出完好，前后端站点名单一致（${tsSet.size} 个域名），直链短路/聚合页/资源噪声/最佳直链/弹窗引导态/移除「用链接下载」/本页资源直链显式 kind:"http"（含右键媒体）全部通过`,
   );
 }
 

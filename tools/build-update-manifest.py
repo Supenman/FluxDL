@@ -25,7 +25,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA = 1
-DEFAULT_REPO = "Supenman/FuxDL"
+# 仓库原名 FuxDL，用户已改名为 FluxDL；生成的下载地址必须写新名，
+# 否则私有仓库的 release 直链不会跟随旧名重定向。
+DEFAULT_REPO = "Supenman/FluxDL"
 
 
 def sha256_of(path: Path) -> str:

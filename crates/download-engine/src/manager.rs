@@ -464,7 +464,13 @@ impl Engine {
         }
         entry.wanted_pause.store(false, Ordering::SeqCst);
         entry.finished.store(false, Ordering::SeqCst);
-        entry.sample.lock().at = None;
+        {
+            // 0.3.8：恢复要连平滑速度一起清零。只清 `at` 会让 EMA 继承暂停前的高速，
+            // 恢复瞬间显示一个虚高且缓慢衰减的速度，而不是从当前真实值重新起步。
+            let mut s = entry.sample.lock();
+            s.at = None;
+            s.speed = 0;
+        }
         self.emit_task(&entry).await;
 
         let engine = self.clone();
@@ -697,9 +703,20 @@ impl Engine {
 
         for entry in entries {
             let bytes = entry.downloaded.load(Ordering::Relaxed);
-            let speed = {
+            let is_media = entry.kind == TaskKind::Media;
+
+            // 0.3.8：速度按任务类型分工，消除「两个写入者交替覆盖」。
+            // · Media：`view.speed_bps` / `eta_seconds` 由 media::run 的进度行独占
+            //   （yt-dlp / aria2 自己的速度经 EMA 平滑后写入）。tick 若再用
+            //   `entry.downloaded` 差分覆盖，两个来源以 400ms / 500ms 不同节奏写
+            //   同一个字段，正是速度数字与曲线来回跳的根因。
+            // · HTTP：没有子进程进度行，速度只能由本采样器提供，且瞬时差分要先过
+            //   EMA 削掉 TCP 抖动 / 分段写入节奏造成的尖峰与谷底。
+            let speed = if is_media {
+                0
+            } else {
                 let mut sample = entry.sample.lock();
-                let speed = match sample.at {
+                let instant = match sample.at {
                     Some(prev) => {
                         let dt = now.duration_since(prev).as_secs_f64();
                         if dt > 0.0 {
@@ -712,8 +729,9 @@ impl Engine {
                 };
                 sample.bytes = bytes;
                 sample.at = Some(now);
-                sample.speed = speed;
-                speed
+                // 首帧 prev=0 时 EMA 直接采用 instant，起步不会被拖慢；之后逐帧削峰。
+                sample.speed = util::smooth_speed(sample.speed, instant);
+                sample.speed
             };
 
             let mut view = entry.view.lock().await;
@@ -721,16 +739,12 @@ impl Engine {
             view.segments = entry.segments.lock().clone();
             if view.status.is_active() {
                 any_active = true;
-                view.speed_bps = speed;
-                view.eta_seconds = if view.total_bytes > 0 && speed > 0 {
-                    Some(
-                        view.total_bytes
-                            .saturating_sub(bytes)
-                            .saturating_div(speed.max(1)),
-                    )
-                } else {
-                    None
-                };
+                if !is_media {
+                    view.speed_bps = speed;
+                    // 0.3.8：与 Media 共用同一纯函数，剩余时间也按平滑速度重算，
+                    // 总量未知 / 已完成 / 速度未知时返回 None，不显示虚假的 0。
+                    view.eta_seconds = util::eta_from_speed(view.total_bytes, bytes, speed, None);
+                }
             } else {
                 view.speed_bps = 0;
                 view.eta_seconds = None;

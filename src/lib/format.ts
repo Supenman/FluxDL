@@ -21,6 +21,20 @@ export function formatSpeed(bytesPerSecond: number): string {
   return `${formatBytes(bytesPerSecond)}/s`;
 }
 
+/**
+ * 速度图表的纵轴量程：峰值即时跟随、回落缓慢。
+ *
+ * 旧实现直接用窗口内最大值当量程，一个尖峰进入窗口会把整条曲线压平到画布底部，
+ * 尖峰滑出窗口后量程骤降、同一段曲线又被整体拉高——用户看到的「锯齿」有一半来自
+ * 量程反复缩放，而非速度本身。这里让量程跨帧保留：新峰值立刻抬高，之后按固定比例
+ * 缓慢回落，且始终不低于当前窗口真实峰值，保证曲线不会顶出画布也不陡然变形。
+ */
+export function nextChartScale(prevScale: number, samples: number[]): number {
+  const peak = Math.max(1, ...samples);
+  if (peak >= prevScale) return peak;
+  return Math.max(peak, prevScale * 0.85, 1);
+}
+
 export function formatEta(seconds: number | null | undefined): string {
   if (!seconds || seconds <= 0) return "—";
   if (seconds < 60) return `${Math.round(seconds)} 秒`;

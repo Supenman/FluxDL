@@ -1,6 +1,6 @@
 [package]
 name = "fluxdl-engine"
-version = "0.3.6"
+version = "0.3.9"
 edition = "2021"
 description = "FluxDL download engine: multi-connection HTTP, resume, rate limiting, yt-dlp integration"
 

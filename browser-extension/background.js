@@ -263,6 +263,197 @@ function probeResourceKind(url) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 0.3.9 增强（一）：资源归一化分组
+ *
+ * 抖音 / 快手 CDN 直链每次刷新都换签名参数（token / expires / ssig ...），
+ * 同一条视频会在「本页资源」里堆成好几行；而 play_addr.url_list 里的多镜像、
+ * 多清晰度也混在一起。这里用「去掉易变签名参数后的 scheme://host/path +
+ * 有语义 query」作为去重键：相同键合并成一行，其它地址收进 variants 供弹窗
+ * 展开选择。
+ *
+ * 红线：只处理 URL 字符串本身，不发请求、不读 cookie、不携带任何凭证。
+ * ------------------------------------------------------------------ */
+
+// 易变参数白名单（签名 / 时效 / 随机 / 缓存打点）。有语义的参数一律保留：
+// video_id / id / ratio / bitrate / quality / mime_type 等用于区分不同视频或清晰度，
+// 绝不能因为去掉它们把两条不同资源误并成一行。
+const VOLATILE_QUERY = /^(?:token|tokens|sign|signature|sig|ssig|auth_?key|authkey|access_?token|expires?|exp|e|t|ts|timestamp|time|nonce|salt|rnd|random|_|cache|cachebust|cb|hash|md5|key|secret|q-sign-algorithm|q-sign-time|q-key-time|q-signature|q-url-param-list|q-header-list|x-oss-signature|x-oss-signature-version|x-oss-expires|x-oss-access-key-id|x-amz-signature|x-amz-date|x-amz-expires|x-amz-credential|x-amz-security-token|x-cos-signature|x-cos-security-token|ossaccesskeyid|cdn_?hash|wstime|wssecret|verify|digest|checksum)$/i;
+
+const MAX_VARIANTS = 8;
+
+/** 归一化去重键；非法 URL / 带 user:pass@ 的原样返回，不参与分组。 */
+function dedupeKey(url) {
+  try {
+    const u = new URL(String(url));
+    if (!/^https?:$/i.test(u.protocol) || u.username || u.password) return String(url);
+    const keep = [];
+    u.searchParams.forEach((value, key) => {
+      if (!VOLATILE_QUERY.test(key)) keep.push(`${key}=${value}`);
+    });
+    keep.sort();
+    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${u.pathname}${keep.length ? "?" + keep.join("&") : ""}`;
+  } catch {
+    return String(url);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 0.3.9 增强（二）：轻量元数据探测
+ *
+ * 探针（page-probe.js）从 JSON body 里读到的直链没有响应头，size 恒为 0、
+ * mime 靠猜、文件名难看，且带时效签名的直链可能已经失效。这里对每条新入队
+ * 的资源做一次轻量 HEAD（服务器不支持时降级一次 Range GET），补回真实体积、
+ * content-type / disposition 文件名、Accept-Ranges，并给一个可校验状态。
+ *
+ * 状态严格三态，避免误杀：
+ *   2xx/3xx        -> ok（可下载，采信体积）
+ *   404 / 410      -> dead（明确失效，弹窗标灰）
+ *   403/401/429/5xx/超时/网络错 -> unknown（防盗链或临时失败，不标灰，仍允许下载）
+ *
+ * 红线：credentials:"omit"，不带任何 cookie / Authorization / 登录态；
+ *       不设置自定义请求头（除降级时的 Range）；读到响应头立即断开连接。
+ * ------------------------------------------------------------------ */
+
+const META_TIMEOUT_MS = 3500;
+const META_TTL_MS = 60_000;
+const META_CONCURRENCY = 3;
+
+/** 状态分类：拿不准的一律 unknown，绝不把防盗链 403 当成失效。 */
+function metadataState(status) {
+  const s = Number(status) || 0;
+  if (s >= 200 && s < 400) return "ok";
+  if (s === 404 || s === 410) return "dead";
+  return "unknown";
+}
+
+function parseTotalLength(contentLength, contentRange) {
+  const n = Number.parseInt(String(contentLength || ""), 10);
+  if (Number.isFinite(n) && n > 0) return n;
+  const m = /\/(\d+)\s*$/.exec(String(contentRange || ""));
+  return m ? Number.parseInt(m[1], 10) || 0 : 0;
+}
+
+/** 从 fetch Response 提取元数据；缺字段 / stub 环境一律安全退化。 */
+function metadataFromResponse(response) {
+  const at = Date.now();
+  if (!response || typeof response !== "object") {
+    return { state: "unknown", status: 0, size: 0, mime: "", name: "", ranges: false, at };
+  }
+  const status = Number(response.status) || 0;
+  const h = response.headers;
+  const get = (name) => {
+    if (!h || typeof h.get !== "function") return "";
+    try { return String(h.get(name) || ""); } catch { return ""; }
+  };
+  const state = metadataState(status);
+  const head = {
+    length: get("content-length"),
+    range: get("content-range"),
+    type: get("content-type"),
+    disposition: get("content-disposition"),
+    ranges: get("accept-ranges"),
+  };
+  return {
+    state,
+    status,
+    // 只有明确 ok 才采信体积：403 / 404 页面返回的 content-length 不是文件大小
+    size: state === "ok" ? parseTotalLength(head.length, head.range) : 0,
+    mime: state === "ok" ? head.type.split(";")[0].trim().toLowerCase() : "",
+    name: state === "ok" ? nameFromDisposition(head.disposition) : "",
+    ranges: state === "ok" && /bytes/i.test(head.ranges),
+    at,
+  };
+}
+
+async function probeMetadata(url) {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => { try { controller.abort(); } catch { /* noop */ } }, META_TIMEOUT_MS)
+    : null;
+  const init = {
+    method: "HEAD",
+    credentials: "omit",
+    cache: "no-store",
+    referrerPolicy: "no-referrer",
+    ...(controller ? { signal: controller.signal } : {}),
+  };
+  try {
+    let response;
+    try {
+      response = await fetch(url, init);
+    } catch {
+      return metadataFromResponse(null);
+    }
+    // 部分 CDN 不实现 HEAD；降级一次 Range GET，只取 1 字节且读完头就断开。
+    if (response && [405, 501].includes(Number(response.status))) {
+      try {
+        response = await fetch(url, { ...init, method: "GET", headers: { Range: "bytes=0-0" } });
+      } catch {
+        return metadataFromResponse(null);
+      }
+    }
+    return metadataFromResponse(response);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (controller) { try { controller.abort(); } catch { /* noop */ } }
+  }
+}
+
+const metaQueue = [];
+const metaLastAt = new Map();
+let metaActive = 0;
+
+function scheduleMetadataProbe(tabId, url, force = false) {
+  if (!/^https?:/i.test(String(url))) return;
+  const key = dedupeKey(url);
+  const now = Date.now();
+  if (!force && now - (metaLastAt.get(key) || 0) < META_TTL_MS) return;
+  metaLastAt.set(key, now);
+  metaQueue.push({ tabId, url });
+  pumpMetadataQueue();
+}
+
+function pumpMetadataQueue() {
+  while (metaActive < META_CONCURRENCY && metaQueue.length) {
+    const job = metaQueue.shift();
+    metaActive += 1;
+    void (async () => {
+      try {
+        const meta = await probeMetadata(job.url);
+        await applyMetadata(job.tabId, job.url, meta);
+      } catch {
+        // 探测失败不影响资源列表与主流程
+      } finally {
+        metaActive -= 1;
+        pumpMetadataQueue();
+      }
+    })();
+  }
+}
+
+async function applyMetadata(tabId, url, meta) {
+  return enqueueResourceOp(async () => {
+    const key = `res:${tabId}`;
+    const data = await chrome.storage.session.get(key);
+    const list = Array.isArray(data[key]) ? data[key] : [];
+    const dk = dedupeKey(url);
+    let changed = false;
+    const next = list.map((rec) => {
+      if (rec.url !== url && rec.dedupeKey !== dk) return rec;
+      changed = true;
+      const patched = { ...rec, meta };
+      if (meta.state === "ok") {
+        if ((!Number(rec.size) || rec.size <= 0) && meta.size > 0) patched.size = meta.size;
+        if (!rec.mime && meta.mime) patched.mime = meta.mime;
+        if (meta.name && (!rec.name || looksGeneric(rec.name))) patched.name = meta.name;
+      }
+      return patched;
+    });
+    if (changed) await chrome.storage.session.set({ [key]: next });
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * 本页资源缓存（按标签页）
  *
  * 注意：storage.session 的「读 → 改 → 写」之间跨了 await，MV3 事件循环里
@@ -283,16 +474,79 @@ async function addResource(tabId, record) {
     const key = `res:${tabId}`;
     const data = await chrome.storage.session.get(key);
     const list = Array.isArray(data[key]) ? data[key] : [];
-    if (list.some((x) => x.url === record.url)) return;
-    const next = [record, ...list].slice(0, MAX_RESOURCES);
-    await chrome.storage.session.set({ [key]: next });
-    try {
-      await chrome.action.setBadgeText({ tabId, text: String(next.length) });
-      await chrome.action.setBadgeBackgroundColor({ tabId, color: "#2f6df6" });
-    } catch {
-      // 低版本 Chrome 不支持 badge 时忽略
+    const dk = dedupeKey(record.url);
+    const incoming = {
+      ...record,
+      dedupeKey: dk,
+      variants: Array.isArray(record.variants) ? record.variants.slice(0, MAX_VARIANTS) : [],
+    };
+
+    // 1) 完全相同的 URL：只补齐更完整的字段，不重复插入一行
+    const sameUrl = list.findIndex((x) => x.url === record.url);
+    if (sameUrl >= 0) {
+      const next = list.slice();
+      next[sameUrl] = mergeResource(next[sameUrl], incoming);
+      await chrome.storage.session.set({ [key]: next });
+      setBadge(tabId, next.length).catch(() => {});
+      return;
     }
+
+    // 2) 归一化同组（仅签名参数不同的镜像 / 多清晰度）：合并进已有行的 variants，
+    //    列表不再堆重复行；弹窗可展开 variants 选择具体地址。
+    const sameGroup = list.findIndex(
+      (x) => (x.dedupeKey || dedupeKey(x.url)) === dk,
+    );
+    if (sameGroup >= 0) {
+      const next = list.slice();
+      const base = next[sameGroup];
+      const variants = Array.isArray(base.variants) ? base.variants.slice() : [];
+      const exists = variants.some((v) => v && v.url === record.url);
+      if (!exists && variants.length < MAX_VARIANTS) {
+        variants.push({
+          url: record.url,
+          size: Number(record.size) || 0,
+          mime: record.mime || "",
+          name: record.name || nameFromUrl(record.url),
+          via: record.via || "webRequest",
+        });
+      }
+      // 同组只追加备用地址，主地址保留首条（先到先得），避免主按钮目标被顶掉
+      next[sameGroup] = mergeResource(base, { ...incoming, url: base.url, variants });
+      await chrome.storage.session.set({ [key]: next });
+      setBadge(tabId, next.length).catch(() => {});
+      return;
+    }
+
+    // 3) 新资源
+    const next = [incoming, ...list].slice(0, MAX_RESOURCES);
+    await chrome.storage.session.set({ [key]: next });
+    setBadge(tabId, next.length).catch(() => {});
   });
+}
+
+/** 合并同一条资源：保留更完整 / 更可信的字段，绝不覆盖真实响应头数据。 */
+function mergeResource(base, incoming) {
+  const size = Number(base.size) || 0;
+  const nextSize = Number(incoming.size) || 0;
+  return {
+    ...base,
+    ...incoming,
+    size: nextSize > 0 ? nextSize : size,
+    mime: base.mime || incoming.mime || "",
+    name: base.name && !looksGeneric(base.name) ? base.name : (incoming.name || base.name || ""),
+    referer: base.referer || incoming.referer || "",
+    meta: base.meta || incoming.meta,
+    at: base.at || incoming.at || Date.now(),
+  };
+}
+
+async function setBadge(tabId, count) {
+  try {
+    await chrome.action.setBadgeText({ tabId, text: String(count) });
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: "#2f6df6" });
+  } catch {
+    // 低版本 Chrome 不支持 badge 时忽略
+  }
 }
 
 async function markStream(tabId) {
@@ -328,16 +582,29 @@ chrome.webRequest.onResponseStarted.addListener(
     }
 
     const size = Number(headerValue(headers, "content-length")) || 0;
+    const cd = headerValue(headers, "content-disposition");
+    const mime = headerValue(headers, "content-type").split(";")[0].trim();
     const name =
-      nameFromDisposition(headerValue(headers, "content-disposition")) ||
+      nameFromDisposition(cd) ||
       nameFromUrl(url);
     void addResource(tabId, {
       url,
       name,
       size,
-      mime: headerValue(headers, "content-type").split(";")[0].trim(),
+      mime,
       referer: details.initiator || "",
       at: Date.now(),
+      via: "webRequest",
+      // webRequest 拿到的就是真实响应头，无需再发 HEAD 探测
+      meta: {
+        state: "ok",
+        status: 200,
+        size,
+        mime: mime.toLowerCase(),
+        name: nameFromDisposition(cd),
+        ranges: /bytes/i.test(headerValue(headers, "accept-ranges")),
+        at: Date.now(),
+      },
     });
   },
   { urls: ["<all_urls>"] },
@@ -379,11 +646,37 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener((info) => {
-  let url = "";
-  if (info.menuItemId === MENU_LINK) url = info.linkUrl;
-  else if (info.menuItemId === MENU_MEDIA) url = info.srcUrl;
+  // 「下载此媒体」(contexts: video/audio) 拿到的是 <video>/<audio> 的 srcUrl ——
+  // 已经是可直接下载的文件 / 视频直链，不是网页。一律显式 kind:"http" 走普通
+  // 下载，且不做网页判定：抖快的 srcUrl 常无扩展名（.../play/?mime_type=video_mp4），
+  // 走 isUnsupportedPage 会被误当成网页拒绝，走 looks_like_media 会被误建成
+  // Media 任务再被 media_page_blocker 拦掉。
+  if (info.menuItemId === MENU_MEDIA) {
+    const src = info.srcUrl;
+    if (src && /^https?:/i.test(src)) {
+      void sendToFluxDL({ url: src, kind: "http", referer: info.pageUrl }).catch(() => {});
+    }
+    return;
+  }
+  if (info.menuItemId !== MENU_LINK) return;
+  const url = info.linkUrl;
   if (!url || !/^https?:/i.test(url)) return;
-  void sendToFluxDL({ url, referer: info.pageUrl }).catch(() => {});
+  // 0.3.9 收敛：抖音 / 快手等网页解析需要浏览器下发的匿名校验 cookie，FluxDL
+  // 不读取、传输或保存任何凭证，因此这类站点直接提示不支持，不再尝试开页嗅探
+  // （实测后台开页嗅探在抖音短链跳转 / 后台标签节流下几乎拿不到可用直链）。
+  if (isUnsupportedPage(url)) {
+    notify(
+      "暂不支持解析下载",
+      "抖音 / 快手等网页解析需要浏览器下发的匿名校验 cookie，FluxDL 不读取、传输或保存任何凭证，因此暂不支持这些站点的解析下载。可在下方「本页资源」里手动选择视频直链，或改用其它来源。",
+      true,
+    );
+    return;
+  }
+  if (isVideoPage(url)) {
+    void sendToFluxDL({ url, kind: "media", referer: url }).catch(() => {});
+    return;
+  }
+  void sendToFluxDL({ url, kind: "http", referer: info.pageUrl }).catch(() => {});
 });
 
 /* ------------------------------------------------------------------ *
@@ -445,6 +738,24 @@ function notify(title, message, isError) {
     // 通知权限被拒绝时静默失败
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * 0.3.9 收敛：抖音 / 快手下载方案
+ *
+ * 原「方案 A（开页嗅探直链）」经真机验证不可行：抖音短链会跳转验证 / 登录、
+ * 后台标签被浏览器节流不执行播放脚本、探针常只抓到 m4s 分片而非完整 mp4；
+ * 即便抓到直链也多带时效签名 + 防盗链，脱离浏览器上下文即 403。
+ *
+ * 因此收敛为：抖音 / 快手网页解析需要浏览器下发的匿名校验 cookie，而 FluxDL
+ * 不读取、传输或保存任何凭证，这部分明确「暂不支持」（弹窗提示 + 右键菜单
+ * 提示），不再投放必然失败的入口。可整页解析的站点（B站等）与 CDN 直链 /
+ * 普通文件继续正常下载。
+ *
+ * 「用链接下载」输入框已移除（可解析站点直接在页面点解析、抖快又不支持，
+ * 属用不上的入口）。重心放到「本页资源」：扩展嗅探到的都是文件 / 视频直链，
+ * 下载时一律显式 kind:"http"，避免无扩展名直链被 looks_like_media 误判成
+ * Media 任务再被 media_page_blocker 拒绝。
+ * ------------------------------------------------------------------ */
 
 // 缓存健康检查结果，避免每个下载都探测一次端口。
 let healthCache = { at: 0, ok: false };
@@ -587,6 +898,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let added = 0;
         let streams = 0;
         const ops = [];
+        const toProbe = [];
         for (let i = 0; i < urls.length && i < 48; i += 1) {
           const url = String(urls[i] || "");
           if (!/^https?:/i.test(url) || url.startsWith(API)) continue;
@@ -604,10 +916,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             ops.push(markStream(tabId));
             continue;
           }
+          // 探针没有响应头：体积 / 类型 / 文件名全靠猜，需要一次轻量 HEAD 校验。
+          // 只对可下载直链排队，分片与清单不探测（它们本来就不入列表）。
+          toProbe.push(url);
           ops.push(addResource(tabId, {
             url,
             name: nameFromUrl(url),
-            size: 0,                 // 探针无响应头，体积未知；bestVideo 会把它排在有体积的之后
+            size: 0,                 // 真实体积由 metadata 探测补回
             mime: inferProbeMime(url),
             referer,
             at: Date.now(),
@@ -616,7 +931,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           added += 1;
         }
         await Promise.all(ops);
+        for (const url of toProbe) scheduleMetadataProbe(tabId, url);
         return { ok: true, added, streams };
+      }
+      case "refreshMetadata": {
+        // 弹窗「重新检测」/主动刷新：对当前标签页所有资源强制重探一次。
+        // 只探测未校验或校验过期的记录，避免每次打开弹窗都打满 CDN。
+        if (!tab) return { ok: false, resources: [] };
+        const key = `res:${tab.id}`;
+        const data = await chrome.storage.session.get(key);
+        const list = Array.isArray(data[key]) ? data[key] : [];
+        const now = Date.now();
+        for (const rec of list) {
+          const meta = rec && rec.meta;
+          const fresh = meta && meta.at && now - meta.at < META_TTL_MS;
+          if (!fresh && /^https?:/i.test(String(rec.url))) {
+            scheduleMetadataProbe(tab.id, rec.url, true);
+          }
+        }
+        return { ok: true, scheduled: list.length };
       }
       case "getPageResources": {
         if (!tab) {
@@ -669,9 +1002,16 @@ if (typeof module !== "undefined" && module.exports) {
     bestVideoResource,
     inferProbeMime,
     probeResourceKind,
+    dedupeKey,
+    metadataState,
+    metadataFromResponse,
+    parseTotalLength,
+    probeMetadata,
+    mergeResource,
     pageHint,
     nameFromDisposition,
     nameFromUrl,
     suggestedFilename,
+    isUnsupportedPage,
   };
 }

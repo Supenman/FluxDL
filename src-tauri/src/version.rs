@@ -25,10 +25,12 @@ const CACHE_TTL_MS: i64 = 6 * 3600 * 1000;
 
 /// 清单来源：Release 附件优先（随版本一起发布），其次仓库 main 的 raw，
 /// 最后走加速镜像——国内直连 raw.githubusercontent.com 经常超时。
+/// 仓库原名 FuxDL，用户已改名为 FluxDL；旧名只在网页 / API 上重定向，raw 与
+/// release 下载直链不保证跟随，因此这里统一写改名后的新名。
 const MANIFEST_URLS: &[&str] = &[
-    "https://github.com/Supenman/FuxDL/releases/latest/download/update-manifest.json",
-    "https://raw.githubusercontent.com/Supenman/FuxDL/main/update-manifest.json",
-    "https://ghfast.top/https://raw.githubusercontent.com/Supenman/FuxDL/main/update-manifest.json",
+    "https://github.com/Supenman/FluxDL/releases/latest/download/update-manifest.json",
+    "https://raw.githubusercontent.com/Supenman/FluxDL/main/update-manifest.json",
+    "https://ghfast.top/https://raw.githubusercontent.com/Supenman/FluxDL/main/update-manifest.json",
 ];
 
 fn http_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {

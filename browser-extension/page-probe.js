@@ -201,6 +201,64 @@
     return out;
   }
 
+  /**
+   * 从 performance.getEntriesByType("resource") 补漏：探针运行在 document_start，
+   * 但仍可能漏掉「由 HTML 标签 / CSS / 浏览器内部发起」的请求（<video src>、
+   * <link rel=preload> 等不走 fetch/XHR hook），以及 hook 安装前已完成的条目。
+   * 只读 entry.name（URL 字符串），不读取任何响应体 / 凭据。
+   */
+  function extractFromPerformance(entries) {
+    const out = [];
+    if (!Array.isArray(entries)) return out;
+    const limit = Math.min(entries.length, 600);
+    for (let i = 0; i < limit && out.length < MAX_EMIT; i += 1) {
+      const item = entries[i];
+      const raw = typeof item === "string" ? item : (item && item.name);
+      const url = normalizeUrl(raw);
+      if (url && looksLikeMedia(url)) out.push(url);
+    }
+    return dedupe(out);
+  }
+
+  /**
+   * 从 <video> / <audio> / <source> 的 src / currentSrc 补漏。preload="none"
+   * 的播放器把直链写在 DOM 上却从不发请求，webRequest 与 fetch hook 都看不到。
+   * blob:/data: 地址由 normalizeUrl 直接拒绝；相对地址按 baseUrl 解析成绝对地址。
+   * 仍走 looksLikeMedia 过滤，保证与 background 的 probeResourceKind 收录面一致。
+   */
+  function extractFromMediaElements(doc, baseUrl) {
+    const out = [];
+    if (!doc || typeof doc.querySelectorAll !== "function") return out;
+    let nodes;
+    try {
+      nodes = doc.querySelectorAll("video, audio, source");
+    } catch {
+      return out;
+    }
+    if (!nodes || typeof nodes.length !== "number") return out;
+    for (let i = 0; i < nodes.length && out.length < MAX_EMIT; i += 1) {
+      const el = nodes[i] || {};
+      for (const attr of ["currentSrc", "src"]) {
+        let raw = "";
+        try {
+          raw = String(el[attr] || (typeof el.getAttribute === "function" ? el.getAttribute(attr) : "") || "");
+        } catch { /* noop */ }
+        if (!raw) continue;
+        let abs = "";
+        try {
+          abs = normalizeUrl(new URL(raw, baseUrl || undefined).href);
+        } catch {
+          abs = normalizeUrl(raw);
+        }
+        if (abs && looksLikeMedia(abs)) {
+          out.push(abs);
+          break;
+        }
+      }
+    }
+    return dedupe(out);
+  }
+
   // ---- 浏览器侧安装（Node 测试里这些全局是 stub，install 会被显式调用）----
 
   /** 全局去重集合：同一 URL 只上报一次，避免 MutationObserver 反复触发刷屏。 */
@@ -365,11 +423,26 @@
       }
     } catch { /* 不可 hook 时跳过 */ }
 
-    // 4) MutationObserver：SPA 路由切换后新插入的内联 <script> 重新扫描。
+    // 4) MutationObserver：SPA 路由切换后新插入的内联 <script> 重新扫描；
+    //    同时补扫 DOM 媒体元素与 performance 资源条目（标签发起的请求不走
+    //    fetch/XHR hook，preload="none" 的 <video src> 甚至从不发请求）。
     try {
       const MO = win.MutationObserver;
       if (typeof MO === "function" && doc && doc.documentElement) {
         let timer = null;
+        const deferred = [];      // 有限次数的定时补扫，uninstall 时统一清理
+        const scanPage = () => {
+          try {
+            const perf = win.performance;
+            const entries = perf && typeof perf.getEntriesByType === "function"
+              ? perf.getEntriesByType("resource")
+              : [];
+            emit(extractFromPerformance(entries), "performance");
+          } catch { /* noop */ }
+          try {
+            emit(extractFromMediaElements(doc, baseHref(win)), "media-element");
+          } catch { /* noop */ }
+        };
         const scanScripts = () => {
           try {
             const scripts = doc.querySelectorAll("script:not([src])");
@@ -384,14 +457,20 @@
         };
         const observer = new MO(() => {
           if (timer) win.clearTimeout(timer);
-          timer = win.setTimeout(scanScripts, 400);  // 防抖，避免高频 DOM 变动
+          timer = win.setTimeout(() => { scanScripts(); scanPage(); }, 400);  // 防抖，避免高频 DOM 变动
         });
         observer.observe(doc.documentElement, {
           childList: true, characterData: true, subtree: true,
         });
-        // 首屏也扫一次
-        win.setTimeout(scanScripts, 0);
-        originals.push(() => { observer.disconnect(); if (timer) win.clearTimeout(timer); });
+        // 首屏也扫一次；播放器常在 DOM 稳定后才写 src，再补两次（有限次数，不常驻）。
+        deferred.push(win.setTimeout(() => { scanScripts(); scanPage(); }, 0));
+        deferred.push(win.setTimeout(scanPage, 800));
+        deferred.push(win.setTimeout(scanPage, 2500));
+        originals.push(() => {
+          observer.disconnect();
+          if (timer) win.clearTimeout(timer);
+          for (const t of deferred) win.clearTimeout(t);
+        });
       }
     } catch { /* 不支持时跳过 */ }
 
@@ -428,7 +507,8 @@
   const api = {
     TAG, BODY_LIMIT, MAX_EMIT, MAX_URL_LEN,
     normalizeUrl, looksLikeMedia, extractUrls, extractFromBody,
-    extractFromManifest, scanValue, dedupe, makeEmitter, install,
+    extractFromManifest, extractFromPerformance, extractFromMediaElements,
+    scanValue, dedupe, makeEmitter, install,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

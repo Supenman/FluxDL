@@ -759,6 +759,22 @@ fn host_of(url: &str) -> String {
     rest.split(':').next().unwrap_or("").to_ascii_lowercase()
 }
 
+/// 扩展捕获请求 → 任务类型：显式 `kind` 优先，未指定时才按站点名单兜底。
+///
+/// 0.3.9：扩展「本页资源」嗅探到的都是文件 / 视频直链，下载时一律显式带
+/// `kind:"http"`。这些直链常无容器扩展名（抖快 CDN 的 `.../play/?mime_type=
+/// video_mp4`），`is_direct_media_file` 认不出，若走名单兜底会被判成 Media 任务、
+/// 再被 `media_page_blocker` 拒绝 —— 表现就是「本页资源点了下载没反应」。
+/// 抽成纯函数便于用单测锁死「显式 http 压过名单」这条契约。
+fn capture_task_kind(kind: Option<&str>, url: &str) -> TaskKind {
+    match kind {
+        Some("media") => TaskKind::Media,
+        Some("http") => TaskKind::Http,
+        _ if looks_like_media(url) => TaskKind::Media,
+        _ => TaskKind::Http,
+    }
+}
+
 async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
     let Some(request) = read_http_request(&mut stream).await else {
         return;
@@ -847,12 +863,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
         return;
     }
 
-    let kind = match payload.kind.as_deref() {
-        Some("media") => TaskKind::Media,
-        Some("http") => TaskKind::Http,
-        _ if looks_like_media(&url) => TaskKind::Media,
-        _ => TaskKind::Http,
-    };
+    let kind = capture_task_kind(payload.kind.as_deref(), &url);
 
     let options = NewTaskOptions {
         filename: payload.filename,
@@ -1163,6 +1174,46 @@ mod contract_tests {
             serde_json::from_str(r#"{"url":"https://example.com/a.mp4"}"#).unwrap();
         assert!(bare.user_agent.is_none());
         assert!(bare.filename.is_none());
+    }
+
+    /// 0.3.9「本页资源做好了」：无容器扩展名的抖快视频直链，若扩展不显式带
+    /// kind，会被 looks_like_media 判成 Media 再被 media_page_blocker 拒绝；
+    /// 扩展显式带 kind:"http" 后必须压过名单兜底，稳定建成 Http 任务。
+    #[test]
+    fn explicit_http_kind_overrides_media_host_heuristic() {
+        let no_ext_douyin = "https://www.douyin.com/aweme/v1/play/?mime_type=video_mp4&token=abc";
+        let no_ext_kuaishou = "https://v2.kuaishou.com/rest/wd/play/?mime_type=video_mp4";
+
+        // 前提：这两个 URL 无容器扩展名，走名单兜底确实会被判成 Media（复现 bug）。
+        assert!(looks_like_media(no_ext_douyin), "无扩展名抖音直链会命中站点名单");
+        assert!(looks_like_media(no_ext_kuaishou), "无扩展名快手直链会命中站点名单");
+
+        // 不带 kind：名单兜底 → Media（这是修复前「本页资源点了没反应」的成因）。
+        assert_eq!(capture_task_kind(None, no_ext_douyin), TaskKind::Media);
+        assert_eq!(capture_task_kind(None, no_ext_kuaishou), TaskKind::Media);
+
+        // 显式 kind:"http"：压过名单 → Http，绕过 media_page_blocker。
+        assert_eq!(
+            capture_task_kind(Some("http"), no_ext_douyin),
+            TaskKind::Http,
+            "本页资源直链显式 http 必须是 Http 任务",
+        );
+        assert_eq!(
+            capture_task_kind(Some("http"), no_ext_kuaishou),
+            TaskKind::Http,
+            "本页资源直链显式 http 必须是 Http 任务",
+        );
+
+        // 可整页解析的页面仍按 media 建任务；带扩展名的直链不带 kind 也短路成 Http。
+        assert_eq!(
+            capture_task_kind(Some("media"), "https://www.bilibili.com/video/BV1xx"),
+            TaskKind::Media,
+        );
+        assert_eq!(
+            capture_task_kind(None, "https://v2.kuaishou.com/a.mp4"),
+            TaskKind::Http,
+            "带 .mp4 扩展名的 CDN 直链仍短路成 Http",
+        );
     }
 
     /// P0-1：桌面新建（前端 isMediaUrl）与扩展自动接管（这里 looks_like_media）

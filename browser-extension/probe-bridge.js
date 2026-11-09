@@ -19,6 +19,7 @@
   const MAX_FORWARD = 40;
   const MAX_URL_LEN = 16384;
   const MAX_ITEMS = 200;
+  const MAX_MEDIA_FORWARD = 24;
 
   /** 校验一条消息，返回要转发的 URL 数组；不合格返回 []。 */
   function sanitizeMessage(data, sourceIsWindow) {
@@ -43,14 +44,59 @@
     return out;
   }
 
+  /**
+   * 结构化解析条目（media）单独走白名单：字段位置已确认是视频正片，URL 常无
+   * 扩展名，因此这里只做与 sanitizeMessage 同级的 URL 硬校验，绝不透传任何
+   * 未知字段、请求头或凭证。返回干净的条目数组。
+   */
+  function clip(value, limit) {
+    return typeof value === "string" ? value.slice(0, limit) : "";
+  }
+
+  function sanitizeMedia(data, sourceIsWindow) {
+    if (!sourceIsWindow || !data || typeof data !== "object") return [];
+    if (data[TAG] !== true) return [];
+    const list = Array.isArray(data.media) ? data.media : [];
+    const out = [];
+    const seen = new Set();
+    for (let i = 0; i < list.length && i < MAX_ITEMS; i += 1) {
+      const m = list[i];
+      if (!m || typeof m !== "object") continue;
+      const u = String(m.url || "");
+      if (u.length > MAX_URL_LEN || !/^https?:\/\//i.test(u)) continue;
+      if (/[\x00-\x20\x7f]/.test(u)) continue;
+      try {
+        const parsed = new URL(u);
+        if (!/^https?:$/i.test(parsed.protocol) || parsed.username || parsed.password) continue;
+      } catch {
+        continue;
+      }
+      if (seen.has(u)) continue;                 // 同 URL 只保留首条（保留其标题 / 清晰度等元信息）
+      seen.add(u);
+      const platform = /^(douyin|kuaishou)$/i.test(String(m.platform || "")) ? "detail" : "";
+      out.push({
+        url: u,
+        title: clip(m.title, 120),
+        author: clip(m.author, 60),
+        ratio: clip(m.ratio, 32),
+        platform,
+      });
+      if (out.length >= MAX_MEDIA_FORWARD) break;
+    }
+    return out;
+  }
+
   /** 生成发给 background 的负载。pageUrl 只用于 referer，不含任何凭证。 */
-  function buildPayload(data, urls) {
-    return {
+  function buildPayload(data, urls, media) {
+    const payload = {
       type: "probeResources",
       urls,
       pageUrl: typeof data.pageUrl === "string" ? data.pageUrl.slice(0, MAX_URL_LEN) : "",
       source: typeof data.source === "string" ? String(data.source).slice(0, 40) : "probe",
     };
+    // 只在有结构化条目时附加该字段，旧消息形态保持完全一致。
+    if (Array.isArray(media) && media.length) payload.media = media;
+    return payload;
   }
 
   function install(win, runtime) {
@@ -64,9 +110,10 @@
       const source = event && event.source;
       const fromSelf = !source || source === win;
       const urls = sanitizeMessage(event && event.data, fromSelf);
-      if (!urls.length) return;
+      const media = sanitizeMedia(event && event.data, fromSelf);
+      if (!urls.length && !media.length) return;
       try {
-        runtime.sendMessage(buildPayload(event.data, urls), () => {
+        runtime.sendMessage(buildPayload(event.data, urls, media), () => {
           // 吞掉 lastError：扩展热重载 / service worker 休眠时 sendMessage 会回调报错
           try { void (runtime.lastError || (win.chrome && win.chrome.runtime && win.chrome.runtime.lastError)); }
           catch { /* noop */ }
@@ -88,7 +135,10 @@
     install(window, chrome.runtime);
   }
 
-  const api = { TAG, MAX_FORWARD, MAX_URL_LEN, sanitizeMessage, buildPayload, install };
+  const api = {
+    TAG, MAX_FORWARD, MAX_URL_LEN, MAX_MEDIA_FORWARD,
+    sanitizeMessage, sanitizeMedia, buildPayload, install,
+  };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   }

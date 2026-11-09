@@ -152,7 +152,12 @@ function bestVideoResource(resources) {
   // （aweme/.../play/?mime_type=video_mp4）会压过明确的 .mp4 容器直链。
   // 体积相同时优先「URL path 带容器扩展名」的直链，保证选择确定且更可下载。
   const rank = (r) => (VIDEO_CONTAINER_EXT.test(String((r && r.url) || "").split(/[?#]/)[0]) ? 0 : 1);
+  // 结构化解析给出的「正片」是页面接口明确指定的那条，比按体积猜更可信；
+  // 没有该标记时（webRequest / 通用探针）行为与原来完全一致。
+  const primaryRank = (r) => (r && r.primary ? 0 : 1);
   list.sort((a, b) => {
+    const byPrimary = primaryRank(a) - primaryRank(b);
+    if (byPrimary !== 0) return byPrimary;
     const bySize = (Number(b.size) || 0) - (Number(a.size) || 0);
     return bySize !== 0 ? bySize : rank(a) - rank(b);
   });
@@ -166,6 +171,28 @@ function nameFromUrl(url) {
   } catch {
     return String(url).slice(0, 80);
   }
+}
+
+/**
+ * 结构化解析条目的文件名：优先用页面作品标题（YunX 的 VideoParseResult 思路），
+ * 附上作者与清晰度，保证 .mp4 后缀。清理 Windows / POSIX 非法字符与控制字符，
+ * 避免把页面文案直接当文件名时写出非法路径。
+ */
+function mediaFileName(rec) {
+  const clean = (v, n) => String(v || "")
+    .replace(/[\x00-\x1f\x7f]/g, "")
+    .replace(/[\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, n);
+  const title = clean(rec.title, 80);
+  const author = clean(rec.author, 32);
+  const ratio = clean(rec.ratio, 16);
+  if (!title) return nameFromUrl(rec.url);
+  const parts = [title];
+  if (author) parts.push(author);
+  if (ratio) parts.push(ratio);
+  return `${parts.join(" - ")}.mp4`;
 }
 
 function nameFromDisposition(cd) {
@@ -537,6 +564,10 @@ function mergeResource(base, incoming) {
     name: base.name && !looksGeneric(base.name) ? base.name : (incoming.name || base.name || ""),
     referer: base.referer || incoming.referer || "",
     meta: base.meta || incoming.meta,
+    primary: Boolean(base.primary || incoming.primary),
+    title: base.title || incoming.title || "",
+    author: base.author || incoming.author || "",
+    ratio: base.ratio || incoming.ratio || "",
     at: base.at || incoming.at || Date.now(),
   };
 }
@@ -896,12 +927,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           : -1;
         if (tabId < 0) return { ok: false, error: "无法确定来源标签页" };
         const urls = Array.isArray(message.urls) ? message.urls : [];
+        const media = Array.isArray(message.media) ? message.media : [];
         const pageUrl = typeof message.pageUrl === "string" ? message.pageUrl : "";
         const referer = pageUrl || (sender.tab && sender.tab.url) || "";
         let added = 0;
         let streams = 0;
         const ops = [];
         const toProbe = [];
+
+        // 结构化解析条目优先入队：页面接口明确给出的无水印正片，URL 常无扩展名，
+        // 不能走 probeResourceKind（会判成 null）。先建立带标题 / primary 的基准行，
+        // 随后通用 urls 里若出现同一地址只会 merge，不会顶掉标题。
+        // primary 只给首条成功入队的正片：workItems 已按可信度排序，第一条就是
+        // 页面接口指定的无水印主片。若同批每条都标 primary，体积全是 0 时会退回
+        // 按扩展名 / 体积猜测，导致 .mp4 备用清晰度顶掉真正的正片。
+        let primaryAssigned = false;
+        for (let i = 0; i < media.length && i < 24; i += 1) {
+          const m = media[i] || {};
+          const url = String(m.url || "");
+          if (!/^https?:/i.test(url) || url.startsWith(API)) continue;
+          try {
+            const parsed = new URL(url);
+            if (!/^https?:$/i.test(parsed.protocol) || parsed.username || parsed.password) continue;
+          } catch {
+            continue;
+          }
+          const isPrimary = !primaryAssigned;
+          primaryAssigned = true;
+          toProbe.push(url);
+          ops.push(addResource(tabId, {
+            url,
+            name: mediaFileName(m),
+            size: 0,
+            mime: "video/mp4",
+            referer,
+            at: Date.now(),
+            via: "detail",
+            primary: isPrimary,
+            title: String(m.title || "").slice(0, 120),
+            author: String(m.author || "").slice(0, 60),
+            ratio: String(m.ratio || "").slice(0, 32),
+          }));
+          added += 1;
+        }
+
         for (let i = 0; i < urls.length && i < 48; i += 1) {
           const url = String(urls[i] || "");
           if (!/^https?:/i.test(url) || url.startsWith(API)) continue;
@@ -1011,6 +1080,7 @@ if (typeof module !== "undefined" && module.exports) {
     parseTotalLength,
     probeMetadata,
     mergeResource,
+    mediaFileName,
     pageHint,
     nameFromDisposition,
     nameFromUrl,

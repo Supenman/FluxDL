@@ -237,13 +237,17 @@ function renderResources() {
     name.textContent = rec.name || rec.url;
     name.title = rec.url;
     const meta = document.createElement("small");
-    const via = rec.via === "probe" ? "探针" : "响应头";
+    const via = rec.via === "detail" ? "解析正片" : rec.via === "probe" ? "探针" : "响应头";
     const when = relativeTime(rec.at);
     const variants = Array.isArray(rec.variants) ? rec.variants.length : 0;
+    const ratio = rec.ratio ? String(rec.ratio) : "";
+    const author = rec.author ? String(rec.author) : "";
     meta.textContent = [
-      formatSize(rec.size), rec.mime || "未知类型", via, when,
+      formatSize(rec.size), rec.mime || "未知类型", via,
+      ratio || "", author || "", when,
       variants ? `${variants} 个备用` : "",
     ].filter(Boolean).join(" · ");
+    meta.title = rec.title ? String(rec.title) : "";
     info.appendChild(name);
     info.appendChild(meta);
 

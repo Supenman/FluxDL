@@ -53,6 +53,29 @@
   // 必须与 background.js 的 inferProbeMime 保持同一规则（见契约测试）。
   const VIDEO_MIME_HINT = /[?&](?:mime_?type|mime|media_?type|content_?type)=video/i;
 
+  /* ------------------------------------------------------------------ *
+   * 平台感知的结构化解析（参考 YunX 的「一平台一解析器」）
+   *
+   * YunX 用内嵌 Chromium 跑完反爬 JS 后，从页面里读 aweme/detail 的响应或
+   * SSR 数据。FluxDL 的探针本来就运行在用户已打开的真实页面里 —— 页面自己
+   * 会带合法签名发出这些请求并把结果交给播放器。我们不需要（也不应该）自己
+   * 计算 a_bogus / msToken，只需按接口与 SSR 的字段语义，把「无水印正片直链」
+   * 连同标题 / 作者 / 清晰度挑出来，让「本页资源」直接给出可下载的主视频。
+   *
+   * 与通用扫描的区别：抖音 / 快手 CDN 正片常既无 .mp4 扩展名、也无
+   * mime_type=video 线索，通用 looksLikeMedia 会把它整条丢掉；这里的字段位置
+   * （play_addr.url_list、mainMvUrls 等）本身就是「这是视频正片」的强证据，
+   * 因此只过 normalizeUrl 的协议 / 凭证 / 控制字符校验，不再套扩展名规则。
+   *
+   * 设计边界不变：只读 URL 字符串与页面公开文本，不读取、不携带任何凭证。
+   * ------------------------------------------------------------------ */
+  const PLATFORM_MAX_MEDIA = 24;
+  const DY_API = /\/aweme\/v\d+\/web\/aweme\/(?:detail|post)|aweme\/v1\/play\/|web\/api\/v2\/aweme\/(?:iteminfo|slidesinfo)/i;
+  const KS_API = /\/graphql\b|\/rest\/(?:n|wd)\//i;
+  // 内联 SSR 的强特征：普通页面 JSON 不会带这些，避免结构化解析误报。
+  const SSR_MARK = /window\._ROUTER_DATA|window\.INIT_STATE|RENDER_DATA|SSR_RENDER_DATA|mainMvUrls|aweme_detail/i;
+  const TARGET_HOST = /douyin|iesdouyin|snssdk|douyinvod|kuaishou|kwai|chenzhongtech/i;
+
   /** 归一化并严格校验一条候选 URL；不合格返回 ""。 */
   function normalizeUrl(raw) {
     let url = String(raw || "").trim();
@@ -259,18 +282,292 @@
     return dedupe(out);
   }
 
+  /* ------------------------------------------------------------------ *
+   * 平台结构化解析（纯函数，Node 契约测试可直接加载）
+   *
+   * 参考 YunX 的 DouyinParser / KuaishouParser：按「字段语义」而不是通用正则
+   * 取直链。通用正则要求 URL path 带 .mp4 或查询串带 mime_type=video，但抖快
+   * CDN 正片常是 https://v3-web.douyinvod.com/.../video/tos/... 这种既无扩展名
+   * 也无 MIME 线索的地址 —— 它藏在 play_addr.url_list 里，字段位置本身就是
+   * 「这是无水印正片」的强证据。这里把它挑出来，附上标题 / 作者 / 清晰度。
+   *
+   * 三种数据来源：接口 JSON、window.* 赋值式 SSR、URL 编码的 RENDER_DATA。
+   * 图集图片不纳入（交给既有 webRequest 链路），分片与静态资源一律排除。
+   * ------------------------------------------------------------------ */
+
+  /** 判定接口 / 文本属于哪个平台；都不命中返回 ""，避免对普通页面误解析。 */
+  function platformOf(requestUrl, text) {
+    const u = String(requestUrl || "");
+    if (DY_API.test(u) || /douyin|iesdouyin|snssdk|douyinvod/i.test(u)) return "douyin";
+    if (KS_API.test(u) || /kuaishou|kwai|chenzhongtech/i.test(u)) return "kuaishou";
+    const s = String(text || "").slice(0, BODY_LIMIT);
+    if (/RENDER_DATA|_ROUTER_DATA|SSR_RENDER_DATA|aweme_detail|aweme_list|item_list/i.test(s)) return "douyin";
+    if (/window\.INIT_STATE|__INITIAL_STATE__|mainMvUrls/i.test(s)) return "kuaishou";
+    return "";
+  }
+
+  function decodeLoose(s) {
+    try { return decodeURIComponent(s); } catch { return ""; }
+  }
+
+  /** 先按原串、再按 URL 解码后的串尝试解析 JSON（RENDER_DATA 是 %7B...%7D）。 */
+  function tryParseJson(raw) {
+    const str = String(raw || "");
+    for (const cand of [str, decodeLoose(str)]) {
+      if (!cand) continue;
+      try {
+        const v = JSON.parse(cand);
+        if (v && typeof v === "object") return v;
+      } catch { /* 试下一个候选 */ }
+    }
+    return null;
+  }
+
+  /** 引号感知的括号配对，从 from 之后的第一个 { 抠出完整 JSON 对象字面量。 */
+  function extractJsonBlock(s, from) {
+    const start = s.indexOf("{", from);
+    if (start < 0) return "";
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    const end = Math.min(s.length, start + BODY_LIMIT);
+    for (let i = start; i < end; i += 1) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === "{") depth += 1;
+      else if (c === "}") {
+        depth -= 1;
+        if (depth === 0) return s.slice(start, i + 1);
+      }
+    }
+    return "";
+  }
+
+  /** 把一段响应 / 内联脚本文本解析成若干 JSON 根对象（最多 4 个）。 */
+  function jsonCandidates(text) {
+    const s = String(text || "").slice(0, BODY_LIMIT);
+    const out = [];
+    const push = (v) => { if (v && typeof v === "object") out.push(v); };
+    const trimmed = s.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) push(tryParseJson(s));
+
+    const assignRe = /window\.(?:_ROUTER_DATA|INIT_STATE|__INITIAL_STATE__|SSR_RENDER_DATA)\s*=\s*/g;
+    let m;
+    while ((m = assignRe.exec(s)) !== null && out.length < 4) {
+      const block = extractJsonBlock(s, m.index + m[0].length);
+      if (block) push(tryParseJson(block));
+    }
+    const renderRe = /<script[^>]+id=["']RENDER_DATA["'][^>]*>([\s\S]*?)<\/script>/gi;
+    while ((m = renderRe.exec(s)) !== null && out.length < 4) {
+      push(tryParseJson(String(m[1] || "").trim()));
+    }
+    return out;
+  }
+
+  /** 在树里找第一个非空的指定字符串字段（标题 / 作者），带节点预算。 */
+  function findText(root, keys, limit, budget) {
+    let hit = "";
+    const walk = (v, depth) => {
+      if (hit || !v || typeof v !== "object" || depth > 12) return;
+      if (budget.nodes++ > MAX_SCAN_NODES * 2) return;
+      if (Array.isArray(v)) {
+        for (const it of v) { walk(it, depth + 1); if (hit) return; }
+        return;
+      }
+      for (const k of keys) {
+        const val = v[k];
+        if (typeof val === "string" && val.trim()) {
+          hit = val.replace(/\s+/g, " ").trim().slice(0, limit);
+          return;
+        }
+      }
+      for (const k of Object.keys(v)) {
+        walk(v[k], depth + 1);
+        if (hit) return;
+      }
+    };
+    walk(root, 0);
+    return hit;
+  }
+
+  /** 找「作品节点」：带 play_addr / mainMvUrls / atlas 的对象，命中即停不再深入。 */
+  function collectWorkNodes(root, budget) {
+    const found = [];
+    const walk = (v, depth) => {
+      if (!v || typeof v !== "object" || depth > 14 || found.length >= 6) return;
+      if (budget.nodes++ > MAX_SCAN_NODES * 2) return;
+      if (Array.isArray(v)) {
+        for (const it of v) { walk(it, depth + 1); if (found.length >= 6) return; }
+        return;
+      }
+      const video = v.video && typeof v.video === "object" ? v.video : null;
+      const isWork = Boolean(
+        (video && (video.play_addr || video.bit_rate_list || video.download_addr)) ||
+        v.play_addr || v.download_addr ||
+        Array.isArray(v.mainMvUrls) || Array.isArray(v.photoUrls) ||
+        (v.ext_params && v.ext_params.atlas),
+      );
+      if (isWork) { found.push(v); return; }
+      for (const k of Object.keys(v)) {
+        walk(v[k], depth + 1);
+        if (found.length >= 6) return;
+      }
+    };
+    walk(root, 0);
+    return found;
+  }
+
+  /** 从 play_addr / url_list / mainMvUrls 等节点里取出 URL 字符串数组。 */
+  function urlListOf(node) {
+    if (!node) return [];
+    if (typeof node === "string") return [node];
+    if (Array.isArray(node)) {
+      const out = [];
+      for (const it of node) {
+        if (typeof it === "string") out.push(it);
+        else if (it && typeof it === "object") {
+          if (typeof it.url === "string") out.push(it.url);
+          else if (Array.isArray(it.url_list)) out.push(...urlListOf(it.url_list));
+        }
+        if (out.length >= PLATFORM_MAX_MEDIA) break;
+      }
+      return out;
+    }
+    if (typeof node === "object") {
+      if (Array.isArray(node.url_list)) return node.url_list.filter((x) => typeof x === "string");
+      if (Array.isArray(node.urls)) return node.urls.filter((x) => typeof x === "string");
+      if (typeof node.url === "string") return [node.url];
+    }
+    return [];
+  }
+
+  const IMAGE_EXT = /\.(jpe?g|png|gif|webp|bmp|ico|svg|heic|avif)(\?|#|$)/i;
+  const IMAGE_HOST = /douyinpic|kuaishoupic|yximgs|pstatp|byteimg|sns-img/i;
+
+  /** 结构化字段里的 URL 也做硬校验，但不再要求扩展名 / MIME 线索。 */
+  function isPlatformVideoUrl(url) {
+    const full = String(url);
+    // 硬校验必须前置：否则带 user:pass@ 的 .mp4 会先命中 MEDIA_EXT 早退，
+    // 绕过协议 / 凭据校验；blob: 等非 http(s) 协议也在这里一并挡掉。
+    let host = "";
+    try {
+      const parsed = new URL(full);
+      if (!/^https?:$/i.test(parsed.protocol) || parsed.username || parsed.password) return false;
+      host = parsed.hostname.toLowerCase();
+    } catch { return false; }
+    const path = full.split(/[?#]/)[0];
+    if (NOISE_EXT.test(path) || SEGMENT_EXT.test(path)) return false;  // 配置 / 分片
+    if (IMAGE_EXT.test(path) || IMAGE_HOST.test(host)) return false;    // 封面 / 图集
+    return true;                                                        // 结构化字段：无扩展名也接受
+  }
+
+  /** 一个作品节点 → 若干带元信息的直链条目；无水印 play_addr 排在最前。 */
+  function workItems(work, platform, title, author) {
+    const items = [];
+    const push = (node, ratio) => {
+      for (const raw of urlListOf(node)) {
+        if (items.length >= PLATFORM_MAX_MEDIA) break;
+        const url = normalizeUrl(raw);
+        if (!url || !isPlatformVideoUrl(url)) continue;
+        items.push({
+          url,
+          ratio: String(ratio || "").replace(/[\r\n]/g, " ").slice(0, 32),
+          platform,
+          title,
+          author,
+        });
+      }
+    };
+    const video = (work.video && typeof work.video === "object") ? work.video : {};
+    const play = video.play_addr || work.play_addr;
+    push(play, (play && play.ratio) || "");                       // 无水印正片
+    if (Array.isArray(video.bit_rate_list)) {                    // 各清晰度
+      for (const b of video.bit_rate_list) {
+        push(b && b.play_addr, (b && (b.gear_name || b.quality_type)) || "");
+      }
+    }
+    push(video.download_addr || work.download_addr, "");         // 有水印兜底
+    push(work.mainMvUrls, "");                                  // 快手
+    push(work.photoUrls, "");
+    return items;
+  }
+
+  function dedupeItems(items) {
+    const seen = new Set();
+    const out = [];
+    for (const it of items) {
+      if (!it || !it.url || seen.has(it.url)) continue;
+      seen.add(it.url);
+      out.push(it);
+      if (out.length >= PLATFORM_MAX_MEDIA) break;
+    }
+    return out;
+  }
+
+  /**
+   * 结构化解析入口。返回 { platform, title, author, items:[{url,ratio,...}] }，
+   * 或 null（不是目标平台 / 没有可下载直链）。只读文本，不发请求、不碰凭证。
+   */
+  function parsePlatformMedia(text, requestUrl) {
+    const s = String(text || "");
+    if (!s) return null;
+    const platform = platformOf(requestUrl, s);
+    if (!platform) return null;
+    const roots = jsonCandidates(s);
+    if (!roots.length) return null;
+
+    let title = "";
+    let author = "";
+    for (const root of roots) {
+      if (!title) title = findText(root, ["desc", "caption", "title"], 120, { nodes: 0 });
+      if (!author) author = findText(root, ["nickname", "userName", "authorName"], 60, { nodes: 0 });
+    }
+    author = author.replace(/\u3164/g, "").trim();
+
+    const budget = { nodes: 0 };
+    let items = [];
+    for (const root of roots) {
+      for (const work of collectWorkNodes(root, budget)) {
+        items = items.concat(workItems(work, platform, title, author));
+        if (items.length >= PLATFORM_MAX_MEDIA) break;
+      }
+      if (items.length >= PLATFORM_MAX_MEDIA) break;
+    }
+    const unique = dedupeItems(items);
+    if (!unique.length) return null;
+    return { platform, title, author, items: unique };
+  }
+
   // ---- 浏览器侧安装（Node 测试里这些全局是 stub，install 会被显式调用）----
 
   /** 全局去重集合：同一 URL 只上报一次，避免 MutationObserver 反复触发刷屏。 */
   function makeEmitter(postMessage, getPageUrl) {
     const seen = new Set();
     const pageUrl = typeof getPageUrl === "function" ? getPageUrl : () => "";
-    return function emit(urls, source) {
+    return function emit(urls, source, media) {
       const fresh = [];
       for (const u of urls || []) {
         if (seen.has(u)) continue;
         seen.add(u);
         fresh.push(u);
+      }
+      // 结构化解析条目走独立通道：它们的 URL 常无扩展名，不能过 looksLikeMedia，
+      // 但字段语义已确认是视频正片，交给 background 直接入「本页资源」。
+      const freshMedia = [];
+      const seenMedia = new Set();
+      for (const m of (Array.isArray(media) ? media : [])) {
+        if (!m || typeof m !== "object") continue;
+        const u = String(m.url || "");
+        if (!u || seenMedia.has(u)) continue;
+        seenMedia.add(u);
+        freshMedia.push(m);
+        if (freshMedia.length >= PLATFORM_MAX_MEDIA) break;
       }
       if (seen.size > SEEN_LIMIT) {
         // 滚动清理：丢弃一半，防止长期驻留 SPA 的 Set 无限增长
@@ -280,16 +577,18 @@
           if (++i >= SEEN_LIMIT / 2) break;
         }
       }
-      if (!fresh.length) return fresh;
+      if (!fresh.length && !freshMedia.length) return fresh;
       // targetOrigin 用 "*"：MAIN world 与 ISOLATED world 共享同一 window，
       // postMessage 是两者间标准桥梁；接收侧（probe-bridge.js）做来源校验。
-      // pageUrl 只作下载 referer，不含任何 cookie / 凭证。
-      postMessage({
+      // pageUrl 只作下载 referer，不含任何凭证。
+      const message = {
         [TAG]: true,
         urls: fresh,
         source: source || "probe",
         pageUrl: String(pageUrl() || "").slice(0, MAX_URL_LEN),
-      }, "*");
+      };
+      if (freshMedia.length) message.media = freshMedia;
+      postMessage(message, "*");
       return fresh;
     };
   }
@@ -339,7 +638,12 @@
                   const found = extractFromBody(text);
                   const manifest = extractFromManifest(text, requestUrl || baseHref(win));
                   const urls = dedupe([...found, ...manifest]).slice(0, MAX_EMIT);
-                  if (urls.length) emit(urls, "fetch-body");
+                  // 平台接口响应：按字段语义解析出无水印正片（常无扩展名），
+                  // 与通用正则结果一并上报，background 按 URL 去重合并。
+                  const parsed = parsePlatformMedia(text, requestUrl);
+                  if (urls.length || parsed) {
+                    emit(urls, "fetch-body", parsed ? parsed.items : []);
+                  }
                 }).catch(() => {});
               } else if (/mpegurl|dash\+xml|m3u8|mpd/i.test(ct + requestUrl)) {
                 response.clone().text().then((text) => {
@@ -385,7 +689,10 @@
                   const found = extractFromBody(text);
                   const manifest = extractFromManifest(text, reqUrl || baseHref(win));
                   const urls = dedupe([...found, ...manifest]).slice(0, MAX_EMIT);
-                  if (urls.length) emit(urls, "xhr-body");
+                  const parsed = parsePlatformMedia(text, reqUrl);
+                  if (urls.length || parsed) {
+                    emit(urls, "xhr-body", parsed ? parsed.items : []);
+                  }
                 }
               } catch { /* noop */ }
             });
@@ -450,7 +757,12 @@
               const text = String(scripts[i].textContent || "").slice(0, BODY_LIMIT);
               if (text) {
                 const urls = extractFromBody(text);
-                if (urls.length) emit(urls, "inline-script");
+                // 抖音 RENDER_DATA / 快手 INIT_STATE 等 SSR 数据就在内联脚本里，
+                // 页面 JS 已跑完反爬挑战，这里按字段语义直接取正片直链。
+                const parsed = parsePlatformMedia(text, "");
+                if (urls.length || parsed) {
+                  emit(urls, "inline-script", parsed ? parsed.items : []);
+                }
               }
             }
           } catch { /* noop */ }
@@ -505,10 +817,13 @@
 
   // 供 Node 契约测试加载纯函数；MAIN world 里 module 未定义，不会执行。
   const api = {
-    TAG, BODY_LIMIT, MAX_EMIT, MAX_URL_LEN,
+    TAG, BODY_LIMIT, MAX_EMIT, MAX_URL_LEN, PLATFORM_MAX_MEDIA,
     normalizeUrl, looksLikeMedia, extractUrls, extractFromBody,
     extractFromManifest, extractFromPerformance, extractFromMediaElements,
     scanValue, dedupe, makeEmitter, install,
+    platformOf, tryParseJson, extractJsonBlock, jsonCandidates,
+    findText, collectWorkNodes, urlListOf, isPlatformVideoUrl,
+    workItems, dedupeItems, parsePlatformMedia,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

@@ -509,6 +509,14 @@ async function addResource(tabId, record) {
       variants: Array.isArray(record.variants) ? record.variants.slice(0, MAX_VARIANTS) : [],
     };
 
+    // primary 是全页唯一的「主正片」标记，先到先得。探针的 SSR 扫描与 fetch /
+    // XHR 拦截是两条独立消息，各自都会把首条标 primary；只在单批内去重会让两条
+    // 不同直链同时 primary，bestVideoResource() 并列后回退按体积排序，主按钮可能
+    // 选中备用片。这里以落盘时的缓存为准，已有主正片就把后来者降级。
+    if (incoming.primary && list.some((x) => x && x.primary)) {
+      incoming.primary = false;
+    }
+
     // 1) 完全相同的 URL：只补齐更完整的字段，不重复插入一行
     const sameUrl = list.findIndex((x) => x.url === record.url);
     if (sameUrl >= 0) {

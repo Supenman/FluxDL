@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="head">
+        <div class="logo">F</div>
+        <div class="titles">
+          <h1>FluxDL 资源捕获</h1>
+          <p id="status-text">正在检测桌面端…</p>
+        </div>
+        <span id="status-dot" class="dot pending"></span>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <div class="copy">
+            <span>自动接管浏览器下载</span>
+            <small>所有下载一律交给 FluxDL，不设类型或大小限制</small>
+          </div>
+          <label class="switch">
+            <input id="auto-capture" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- 视频站点：可整页解析时交给 yt-dlp；不可解析时弹窗改走嗅探到的直链 -->
+      <section class="card video-card" id="video-card" hidden>
+        <div class="copy">
+          <span>本页检测到视频</span>
+          <small id="video-tip">由桌面端 yt-dlp 解析清晰度并合并音视频</small>
+        </div>
+        <button id="parse-video" class="primary">下载本页视频</button>
+      </section>
+
+      <!-- 嗅探到的可下载资源 -->
+      <section class="card res-card">
+        <div class="res-head">
+          <div class="copy">
+            <span>本页资源 <b id="res-count">0</b></span>
+            <small>自动嗅探页面加载的媒体与文件</small>
+          </div>
+          <button id="clear-res" class="link">清空</button>
+        </div>
+
+        <div class="res-toolbar">
+          <input id="res-search" class="res-search" type="search" placeholder="搜索名称或地址" autocomplete="off" />
+          <div class="res-toolbar-row">
+            <select id="res-filter" class="res-select" aria-label="按类型筛选">
+              <option value="all">全部类型</option>
+              <option value="视频">视频</option>
+              <option value="音频">音频</option>
+              <option value="压缩包">压缩包</option>
+              <option value="安装包">安装包</option>
+              <option value="文档">文档</option>
+              <option value="文件">其它文件</option>
+            </select>
+            <select id="res-sort" class="res-select" aria-label="排序方式">
+              <option value="recent">最新嗅探</option>
+              <option value="size">体积从大到小</option>
+              <option value="name">名称 A→Z</option>
+            </select>
+            <button id="res-select-all" class="res-mini" type="button">全选</button>
+          </div>
+        </div>
+
+        <div id="res-list" class="res-list"></div>
+
+        <div class="res-actions">
+          <button id="res-download-selected" class="secondary" hidden>下载选中</button>
+          <button id="res-copy-selected" class="secondary" hidden>复制直链</button>
+          <button id="download-all" class="secondary" hidden>全部发送到 FluxDL</button>
+        </div>
+        <div id="res-summary" class="res-summary"></div>
+      </section>
+
+      <section class="hint" id="hint">
+        浏览页面时自动收集资源；也可在链接或视频上右键直接发送。
+      </section>
+
+      <footer class="foot">
+        <span>本地服务 127.0.0.1:35917</span>
+        <button id="recheck" class="link">重新检测</button>
+      </footer>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

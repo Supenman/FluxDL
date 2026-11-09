@@ -6,7 +6,7 @@ use crate::types::*;
 use crate::util;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -249,13 +249,71 @@ impl Engine {
         raw_url: &str,
         options: NewTaskOptions,
     ) -> Result<TaskView, EngineError> {
-        let url = url::Url::parse(raw_url.trim())
+        let mut kind = kind;
+        let mut raw = raw_url.trim().to_string();
+        let mut options = options;
+        let mut url = url::Url::parse(&raw)
             .map_err(|_| EngineError::message("链接格式不正确"))?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(EngineError::message("仅支持 http / https 链接"));
         }
+        // 页面 URL 不等于视频文件。对已证实无法整页解析的站点 / 聚合页，
+        // 在建任务时就给出可操作指引，不创建必然失败的媒体任务。
+        if kind == TaskKind::Media {
+            if let Some(hint) = crate::media::media_page_blocker(&raw) {
+                return Err(EngineError::message(hint));
+            }
+        }
 
         let engine_options = self.options.read().clone();
+
+        // 抖音作品页：走免 Cookie 移动端详情接口解析出无水印直链，转成普通 HTTP
+        // 任务交给 A 档引擎（分片 / 校验 / 限速 / 断点续传全部复用）。
+        //
+        // PC Web 详情接口在 Argus 网关后，缺 a_bogus / uifid 一律 403；随包
+        // yt-dlp 的 Douyin 提取器生成不了这些签名，Cookie 也救不了（0.3.9 B 档
+        // 真机失败的根因）。所以抖音页面不再交给 yt-dlp，B 站等其它站点仍照旧。
+        // 解析失败时直接返回可操作指引，不创建必然失败的任务。
+        if kind == TaskKind::Media && crate::douyin::is_douyin_page(&raw) {
+            let video = crate::douyin::resolve(&raw, engine_options.proxy.as_deref())
+                .await
+                .map_err(EngineError::message)?;
+            kind = TaskKind::Http;
+            raw = video.url.clone();
+            url = url::Url::parse(&raw)
+                .map_err(|_| EngineError::message("解析出的视频直链格式不正确"))?;
+            // 抖音 CDN 校验来源页，缺 Referer 会 403。
+            if options
+                .referer
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+            {
+                options.referer = Some(crate::douyin::REFERER.to_string());
+            }
+            if options
+                .user_agent
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+            {
+                options.user_agent = Some(crate::douyin::DOWNLOAD_UA.to_string());
+            }
+            if options
+                .filename
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+            {
+                options.filename = Some(video.suggested_filename());
+            }
+            // 中文建议名来自解析结果，别让 CDN 的 Content-Disposition 覆盖掉。
+            options.prefer_header_filename = false;
+        }
+
         let save_dir = options
             .save_dir
             .clone()
@@ -290,6 +348,31 @@ impl Engine {
             .unwrap_or(engine_options.connections)
             .clamp(1, 32);
         let speed_limit = options.speed_limit.filter(|v| *v > 0);
+        // 默认值修正：`NewTaskOptions` 是 `#[derive(Default)]`，bool 字段默认 false，
+        // 而不带 `#[serde(default)]` 的字段在反序列化时同样落到 bool 默认值。
+        // 于是「未显式赋值」和「显式关闭」无法区分。aria2c 走的是外部进程，
+        // 引擎的 `RateLimiter` 管不到它，所以这里按「是否限速」做一次确定性裁决：
+        //   · 全局限速开启 → 一律关闭 aria2c（否则全局限速被绕过）
+        //   · 任务限速开启 → 关闭 aria2c
+        //   · 两者都没有   → 开启 aria2c（多连接提速）
+        // 调用方显式要求 aria2 时尊重它（回归测试 / 高级入口仍可验证该路径）。
+        let aria2_explicitly_on = options.aria2;
+        // 任务级没显式开 aria2 时，若全局已配置 aria2c 且二进制可探测到、且未限速，
+        // 默认开启 aria2 外部下载器（多连接提速）。此前前端从不传 aria2 开关，
+        // 导致即使配了 aria2c.exe，真实网页 / 桌面入口也永远走原生模式，加速形同虚设。
+        if !options.aria2 {
+            let can_accelerate = speed_limit.is_none()
+                && engine_options.global_speed_limit.filter(|v| *v > 0).is_none()
+                && Self::aria2_available(&engine_options);
+            options.aria2 = can_accelerate;
+        }
+        // 媒体页面一律交回 yt-dlp 原生下载器：DASH / HLS 分片普遍只有 100 KB 级，
+        // 远小于 aria2 的 -k4M 切分阈值，aria2 不会切分、恒用 1 条连接（CN:1），
+        // 还要为每一片多起一个进程。分片之间的并发由 --concurrent-fragments 负责。
+        // 这里只收回「自动开启」的那部分，不覆盖调用方显式开启的选择。
+        if kind == TaskKind::Media && !aria2_explicitly_on {
+            options.aria2 = false;
+        }
         let domain = url.host_str().unwrap_or("").to_string();
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp_millis();
@@ -354,6 +437,28 @@ impl Engine {
         Ok(view)
     }
 
+    /// 全局是否可用 aria2c：用户显式配置了路径，或便携包 / exe 同级的 `tools/` 下存在
+    /// aria2c 即可。只检查文件存在（与 `media::aria2_candidates` + `aria2::locate` 同口径），
+    /// 不实际运行——真正能不能跑由 `media::run` 里的 `aria2::locate` 兜底。
+    fn aria2_available(options: &EngineOptions) -> bool {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Some(p) = options.aria2_path.as_deref().filter(|s| !s.trim().is_empty()) {
+            if let Some(parent) = Path::new(p).parent() {
+                if !parent.as_os_str().is_empty() {
+                    dirs.push(parent.to_path_buf());
+                }
+            }
+            dirs.push(Path::new(p).to_path_buf());
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                dirs.push(parent.join("tools"));
+                dirs.push(parent.to_path_buf());
+            }
+        }
+        crate::aria2::locate(&dirs).is_some()
+    }
+
     async fn acquire_slot(self: &Arc<Self>, token: &CancellationToken) -> Option<SlotGuard> {
         loop {
             if token.is_cancelled() {
@@ -408,7 +513,13 @@ impl Engine {
         }
         entry.wanted_pause.store(false, Ordering::SeqCst);
         entry.finished.store(false, Ordering::SeqCst);
-        entry.sample.lock().at = None;
+        {
+            // 0.3.8：恢复要连平滑速度一起清零。只清 `at` 会让 EMA 继承暂停前的高速，
+            // 恢复瞬间显示一个虚高且缓慢衰减的速度，而不是从当前真实值重新起步。
+            let mut s = entry.sample.lock();
+            s.at = None;
+            s.speed = 0;
+        }
         self.emit_task(&entry).await;
 
         let engine = self.clone();
@@ -641,9 +752,20 @@ impl Engine {
 
         for entry in entries {
             let bytes = entry.downloaded.load(Ordering::Relaxed);
-            let speed = {
+            let is_media = entry.kind == TaskKind::Media;
+
+            // 0.3.8：速度按任务类型分工，消除「两个写入者交替覆盖」。
+            // · Media：`view.speed_bps` / `eta_seconds` 由 media::run 的进度行独占
+            //   （yt-dlp / aria2 自己的速度经 EMA 平滑后写入）。tick 若再用
+            //   `entry.downloaded` 差分覆盖，两个来源以 400ms / 500ms 不同节奏写
+            //   同一个字段，正是速度数字与曲线来回跳的根因。
+            // · HTTP：没有子进程进度行，速度只能由本采样器提供，且瞬时差分要先过
+            //   EMA 削掉 TCP 抖动 / 分段写入节奏造成的尖峰与谷底。
+            let speed = if is_media {
+                0
+            } else {
                 let mut sample = entry.sample.lock();
-                let speed = match sample.at {
+                let instant = match sample.at {
                     Some(prev) => {
                         let dt = now.duration_since(prev).as_secs_f64();
                         if dt > 0.0 {
@@ -656,8 +778,9 @@ impl Engine {
                 };
                 sample.bytes = bytes;
                 sample.at = Some(now);
-                sample.speed = speed;
-                speed
+                // 首帧 prev=0 时 EMA 直接采用 instant，起步不会被拖慢；之后逐帧削峰。
+                sample.speed = util::smooth_speed(sample.speed, instant);
+                sample.speed
             };
 
             let mut view = entry.view.lock().await;
@@ -665,16 +788,12 @@ impl Engine {
             view.segments = entry.segments.lock().clone();
             if view.status.is_active() {
                 any_active = true;
-                view.speed_bps = speed;
-                view.eta_seconds = if view.total_bytes > 0 && speed > 0 {
-                    Some(
-                        view.total_bytes
-                            .saturating_sub(bytes)
-                            .saturating_div(speed.max(1)),
-                    )
-                } else {
-                    None
-                };
+                if !is_media {
+                    view.speed_bps = speed;
+                    // 0.3.8：与 Media 共用同一纯函数，剩余时间也按平滑速度重算，
+                    // 总量未知 / 已完成 / 速度未知时返回 None，不显示虚假的 0。
+                    view.eta_seconds = util::eta_from_speed(view.total_bytes, bytes, speed, None);
+                }
             } else {
                 view.speed_bps = 0;
                 view.eta_seconds = None;

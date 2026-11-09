@@ -10,7 +10,10 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
+mod appversion;
 mod capture_guard;
+mod tools;
+mod version;
 use capture_guard::CAPTURE_PORT;
 
 struct AppState {
@@ -319,6 +322,12 @@ async fn install_tools(
             let mut options = state.engine.options();
             options.yt_dlp_path = yt_path;
             options.ffmpeg_path = Some(ff_path);
+            // 随包 aria2c 一并接管；缺失时保持 None，引擎自动退回原生下载器。
+            if let Some(aria2) = bundled_aria2_path(&app) {
+                if aria2_version(&aria2).is_some() {
+                    options.aria2_path = Some(aria2.to_string_lossy().to_string());
+                }
+            }
             state.engine.set_options(options.clone()).await;
             return Ok(InstalledTools {
                 yt_dlp_path: options.yt_dlp_path,
@@ -456,6 +465,19 @@ fn bundled_tools_dir(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             candidates.push(parent.join("tools"));
+            // 版本库启动：主程序在 `app-versions/<版本>/fluxdl.exe`，而 tools 在
+            // 上两层的应用根（`<应用根>/tools`）。只查 exe 同级会漏掉，导致 aria2c
+            // 探测失败、静默回退单连接下载 —— 表现为「一直几百 K、加速不生效」。
+            let mut up = parent.to_path_buf();
+            for _ in 0..3 {
+                match up.parent() {
+                    Some(p) => {
+                        up = p.to_path_buf();
+                        candidates.push(up.join("tools"));
+                    }
+                    None => break,
+                }
+            }
         }
     }
     #[cfg(debug_assertions)]
@@ -486,6 +508,7 @@ fn bundled_tool_paths(app: &AppHandle) -> (Option<PathBuf>, Option<PathBuf>) {
 fn apply_bundled_tools(
     options: &mut EngineOptions,
     bundled: &(Option<PathBuf>, Option<PathBuf>),
+    aria2: Option<&PathBuf>,
 ) -> bool {
     let mut changed = false;
     if let Some(path) = bundled.0.as_ref() {
@@ -507,7 +530,76 @@ fn apply_bundled_tools(
             changed = true;
         }
     }
+    // aria2c：随包就写绝对路径。用户手动配置过且文件存在时不覆盖。
+    if let Some(path) = aria2 {
+        let current = options.aria2_path.as_deref().unwrap_or("").trim();
+        let custom_valid = !current.is_empty() && Path::new(current).is_file();
+        if !custom_valid {
+            options.aria2_path = Some(path.to_string_lossy().to_string());
+            changed = true;
+        }
+    }
     changed
+}
+
+/// 随包 aria2c 的绝对路径；找不到返回 None（引擎侧会自动退回 yt-dlp 原生下载器）。
+///
+/// **不复用 `bundled_tool_paths`**：那个函数若一个工具都没找到会直接返回
+/// `(None, None)`，拿它判 aria2 会在「aria2 有、yt-dlp 没」时误判成缺失。
+/// 这里独立探测，且必须返回**文件**路径而不是目录（yt-dlp 的
+/// `--external-downloader` 要的是可执行文件本身）。
+fn bundled_aria2_path(app: &AppHandle) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "aria2c.exe" } else { "aria2c" };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("tools").join(name));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("tools").join(name));
+            // 便携版：直接躺在主程序旁边
+            candidates.push(parent.join(name));
+            // 版本库启动：`app-versions/<版本>/fluxdl.exe` 时 tools 在上两层。
+            let mut up = parent.to_path_buf();
+            for _ in 0..3 {
+                match up.parent() {
+                    Some(p) => {
+                        up = p.to_path_buf();
+                        candidates.push(up.join("tools").join(name));
+                        candidates.push(up.join(name));
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools").join(name));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// aria2c 的版本号（写进设置页展示用）。探测失败返回 None，不影响功能。
+fn aria2_version(path: &Path) -> Option<String> {
+    let mut cmd = std::process::Command::new(path);
+    cmd.arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // 首行形如 `aria2 version 1.37.0`
+    let text = String::from_utf8_lossy(&out.stdout);
+    let first = text.lines().next()?.trim();
+    first.split_whitespace().nth(2).map(|s| s.to_string())
 }
 
 #[tauri::command]
@@ -529,14 +621,10 @@ struct CaptureRequest {
     filename: Option<String>,
     #[serde(default)]
     referer: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "user_agent")]
     user_agent: Option<String>,
     #[serde(default)]
     kind: Option<String>,
-    /// 扩展采集到的 Netscape cookies.txt 文本（视频站点登录态）。
-    /// 只在本机回环传输，落地成临时文件后由媒体任务用完即删。
-    #[serde(default)]
-    cookies: Option<String>,
 }
 
 struct HttpRequest {
@@ -611,69 +699,83 @@ async fn write_http_response(
     let _ = stream.flush().await;
 }
 
-/// 把扩展送来的 cookies.txt 文本落到应用数据目录，返回临时文件路径。
-/// 只存路径不存内容，cookie 本体绝不进 tasks.json。Unix 下权限 0600。
-fn write_cookie_file(dir: &Path, raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    if bytes.is_empty() || bytes.len() > 128 * 1024 {
-        return None;
-    }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let path = dir.join(format!("cookies-{}-{}.txt", std::process::id(), stamp));
-    std::fs::write(&path, bytes).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-    Some(path.to_string_lossy().to_string())
-}
-
-/// 启动时清理上次异常退出残留的 cookie 文件，避免凭证长期留在磁盘。
-fn cleanup_stale_cookie_files(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("cookies-") && name.ends_with(".txt") {
-            let _ = std::fs::remove_file(e.path());
-        }
-    }
-}
-
+/// 是否需要交给 yt-dlp 处理（媒体任务）。
+///
+/// **唯一权威名单**：前端 `src/lib/format.ts` 的 `isMediaUrl` 必须与这里逐项一致。
+/// 0.3.3 曾出现两份名单互相矛盾（前端只有国外站点、这里只有国内站点），
+/// 导致同一链接从浏览器扩展进来建成 HTTP 直链、从桌面新建又建成媒体任务。
+///
+/// 按「主机名」精确 / 后缀匹配，不能用 `contains`：`https://example.com/bilibili.com-x`
+/// 这类把域名写进路径的链接会被误判；`x.com` 用 includes 还会命中 `apex.com`。
 fn looks_like_media(url: &str) -> bool {
-    let lowered = url.to_ascii_lowercase();
+    // 0.3.5：CDN 容器直链（如 v2.kuaishou.com/abc.mp4）虽带站点后缀，却是可直接
+    // 多连接下载的整文件，交给 yt-dlp 只会报 Unsupported URL。用引擎侧的权威
+    // 规则短路成 HTTP 直链任务，保证扩展自动接管 / 资源列表点选都走对路径。
+    if fluxdl_engine::is_direct_media_file(url) {
+        return false;
+    }
+    let host = host_of(url);
     const HOSTS: &[&str] = &[
-        "youtube.com",
-        "youtu.be",
+        // 国内
         "bilibili.com",
         "b23.tv",
+        "douyin.com",
+        "iesdouyin.com",
+        "kuaishou.com",
+        "xiaohongshu.com",
+        "xhslink.com",
+        "weibo.com",
+        "iqiyi.com",
+        "youku.com",
+        "mgtv.com",
+        "v.qq.com",
+        "music.163.com",
+        "zhihu.com",
+        "ixigua.com",
+        "acfun.cn",
+        // 国外（与前端名单同步，扩展自动接管媒体页面时不会误建成 HTTP 直链）
+        "youtube.com",
+        "youtu.be",
+        "vimeo.com",
+        "tiktok.com",
         "twitter.com",
         "x.com",
         "instagram.com",
-        "vimeo.com",
-        "tiktok.com",
-        "douyin.com",
-        "soundcloud.com",
         "facebook.com",
         "twitch.tv",
         "dailymotion.com",
         "nicovideo.jp",
-        "iqiyi.com",
-        "youku.com",
-        "weibo.com",
-        "xiaohongshu.com",
-        "music.163.com",
     ];
-    HOSTS.iter().any(|host| lowered.contains(host))
+    HOSTS
+        .iter()
+        .any(|h| host == *h || host.ends_with(&format!(".{h}")))
 }
 
-async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>, data_dir: PathBuf) {
+/// 抽出小写主机名（去端口、去 userinfo）。不是合法 URL 时返回空串。
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let rest = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let rest = rest.rsplit_once('@').map(|(_, r)| r).unwrap_or(rest);
+    rest.split(':').next().unwrap_or("").to_ascii_lowercase()
+}
+
+/// 扩展捕获请求 → 任务类型：显式 `kind` 优先，未指定时才按站点名单兜底。
+///
+/// 0.3.9：扩展「本页资源」嗅探到的都是文件 / 视频直链，下载时一律显式带
+/// `kind:"http"`。这些直链常无容器扩展名（抖快 CDN 的 `.../play/?mime_type=
+/// video_mp4`），`is_direct_media_file` 认不出，若走名单兜底会被判成 Media 任务、
+/// 再被 `media_page_blocker` 拒绝 —— 表现就是「本页资源点了下载没反应」。
+/// 抽成纯函数便于用单测锁死「显式 http 压过名单」这条契约。
+fn capture_task_kind(kind: Option<&str>, url: &str) -> TaskKind {
+    match kind {
+        Some("media") => TaskKind::Media,
+        Some("http") => TaskKind::Http,
+        _ if looks_like_media(url) => TaskKind::Media,
+        _ => TaskKind::Http,
+    }
+}
+
+async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
     let Some(request) = read_http_request(&mut stream).await else {
         return;
     };
@@ -761,32 +863,13 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>, data_di
         return;
     }
 
-    let kind = match payload.kind.as_deref() {
-        Some("media") => TaskKind::Media,
-        Some("http") => TaskKind::Http,
-        _ if looks_like_media(&url) => TaskKind::Media,
-        _ => TaskKind::Http,
-    };
-
-    // 只有交给 yt-dlp 的媒体任务才落地 cookie 文件；HTTP 任务不需要，
-    // 也不会有删除时机，写了就会变成磁盘上长期残留的凭证。
-    let cookies_file = if kind == TaskKind::Media {
-        payload
-            .cookies
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .and_then(|raw| write_cookie_file(&data_dir, raw))
-    } else {
-        None
-    };
+    let kind = capture_task_kind(payload.kind.as_deref(), &url);
 
     let options = NewTaskOptions {
         filename: payload.filename,
         prefer_header_filename: true,
         referer: payload.referer,
         user_agent: payload.user_agent,
-        cookies_file,
         ..Default::default()
     };
 
@@ -803,7 +886,7 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>, data_di
     }
 }
 
-fn start_capture_server(engine: Arc<Engine>, data_dir: PathBuf) {
+fn start_capture_server(engine: Arc<Engine>) {
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", CAPTURE_PORT)).await {
             Ok(listener) => listener,
@@ -813,9 +896,8 @@ fn start_capture_server(engine: Arc<Engine>, data_dir: PathBuf) {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     let engine = engine.clone();
-                    let data_dir = data_dir.clone();
                     tauri::async_runtime::spawn(async move {
-                        handle_capture_conn(stream, engine, data_dir).await;
+                        handle_capture_conn(stream, engine).await;
                     });
                 }
                 Err(_) => {
@@ -928,25 +1010,38 @@ fn start_clipboard_watcher(app: AppHandle, enabled: Arc<AtomicBool>) {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // 启动自检：这次跑的是不是"刚换上来、还没验证过"的版本？
+            // 是就记一次尝试；连续失败达阈值会自动回退到上一版本，
+            // 回退脚本等本进程退出后才动文件，所以这里可以直接 exit。
+            let boot_notice = appversion::boot_guard(app.handle());
+
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let _ = std::fs::create_dir_all(&data_dir);
-            cleanup_stale_cookie_files(&data_dir);
 
-            // 内置 yt-dlp / ffmpeg：随包 tools/ 存在时自动指向它，无需用户手动安装。
-            let bundled = bundled_tool_paths(app.handle());
+            // 内置 yt-dlp / ffmpeg：先复制到用户数据目录（可写），版本管理才有地方落盘；
+            // 复制失败时退回随包路径，保证功能不因此中断。
+            let bundled = tools::ensure_managed_tools(app.handle());
+            // 上次若在替换中途退出，这里判定并自动回滚。
+            let startup_notice = boot_notice.or_else(|| version::recover_on_startup(app.handle()));
+            if let Some(msg) = startup_notice.as_deref() {
+                eprintln!("[fluxdl] {msg}");
+            }
+            version::set_startup_notice(startup_notice);
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             // Engine::new spawns its 500 ms progress ticker, so it must run
             // inside the Tokio runtime context. 单独 clone 一份给 async move，
             // data_dir 后面还要传给本地捕获服务用于落地 cookie 临时文件。
             let engine_dir = data_dir.clone();
+            // aria2 路径解析需要 AppHandle；在进 async move 之前算好，避免跨 await 持有引用。
+            let aria2 = bundled_aria2_path(app.handle());
             let engine = tauri::async_runtime::block_on(async move {
                 let engine = Engine::new(engine_dir.join("tasks.json"), tx);
                 let mut options = engine.options();
-                if apply_bundled_tools(&mut options, &bundled) {
+                if apply_bundled_tools(&mut options, &bundled, aria2.as_ref()) {
                     engine.set_options(options).await;
                 }
                 engine
@@ -960,7 +1055,7 @@ pub fn run() {
                 engine,
                 clipboard_enabled: clipboard_enabled.clone(),
             });
-            start_capture_server(capture_engine.clone(), data_dir.clone());
+            start_capture_server(capture_engine.clone());
 
             // 后台静默更新随包内置的 yt-dlp（24h 冷却、失败静默），让新装用户
             // 尽早用上能跟上 YouTube 的版本，无需等待下一次 FluxDL 整包发布。
@@ -982,6 +1077,11 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
             }
+
+            // 走到这里说明窗口、引擎、捕获服务都起来了，才算"这次启动成功"：
+            // 把 pending 确认为 active，并清零失败计数。启动阶段就崩的进程
+            // 永远走不到这一行，计数会留在磁盘上，供下次启动判定回退。
+            appversion::mark_healthy(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1008,6 +1108,19 @@ pub fn run() {
             set_clipboard_watch,
             engine_info,
             install_tools,
+            version::app_version_info,
+            version::check_app_update,
+            version::app_update_history,
+            version::download_app_update,
+            version::apply_app_update_and_restart,
+            version::take_startup_notice,
+            appversion::app_version_list,
+            appversion::activate_app_version,
+            appversion::delete_app_version,
+            tools::tool_version_list,
+            tools::tool_install_version,
+            tools::tool_activate_version,
+            tools::tool_rollback,
             pick_folder,
             pick_file,
             open_path,
@@ -1022,4 +1135,170 @@ pub fn run() {
                 tauri::async_runtime::block_on(engine.save());
             }
         });
+}
+
+/// 跨边界字段契约的回归测试。
+///
+/// 这些用例只依赖 serde / 纯函数，不启动 Tauri runtime，因此 Linux CI 也能跑。
+/// 0.3.3 的实际缺陷都出在「扩展手写 JSON → Rust serde 结构」这条边界上：
+/// 字段名写错不报错、只被静默忽略，用户看到的是任务失败且无提示。
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    /// P1-2：扩展的 User-Agent 必须能被服务端读到。
+    /// `CaptureRequest` 走 `rename_all = "camelCase"`，期望 key 是 `userAgent`；
+    /// 0.3.3 扩展发的是 `user_agent` → `None`。0.3.4 扩展改发 camelCase，
+    /// 同时这里保留 snake_case alias 兼容旧版扩展。
+    #[test]
+    fn capture_request_accepts_both_user_agent_spellings() {
+        let camel: CaptureRequest = serde_json::from_str(
+            r#"{"url":"https://example.com/a.mp4","userAgent":"UA-camel","referer":"https://example.com/"}"#,
+        )
+        .unwrap();
+        assert_eq!(camel.user_agent.as_deref(), Some("UA-camel"));
+        assert_eq!(camel.referer.as_deref(), Some("https://example.com/"));
+        assert!(camel.kind.is_none(), "扩展不传 kind 时应走 Rust 站点名单");
+
+        let snake: CaptureRequest = serde_json::from_str(
+            r#"{"url":"https://example.com/a.mp4","user_agent":"UA-snake"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            snake.user_agent.as_deref(),
+            Some("UA-snake"),
+            "旧版扩展的 snake_case 字段必须靠 alias 兼容，不能静默丢失"
+        );
+
+        let bare: CaptureRequest =
+            serde_json::from_str(r#"{"url":"https://example.com/a.mp4"}"#).unwrap();
+        assert!(bare.user_agent.is_none());
+        assert!(bare.filename.is_none());
+    }
+
+    /// 0.3.9「本页资源做好了」：无容器扩展名的抖快视频直链，若扩展不显式带
+    /// kind，会被 looks_like_media 判成 Media 再被 media_page_blocker 拒绝；
+    /// 扩展显式带 kind:"http" 后必须压过名单兜底，稳定建成 Http 任务。
+    #[test]
+    fn explicit_http_kind_overrides_media_host_heuristic() {
+        let no_ext_douyin = "https://www.douyin.com/aweme/v1/play/?mime_type=video_mp4&token=abc";
+        let no_ext_kuaishou = "https://v2.kuaishou.com/rest/wd/play/?mime_type=video_mp4";
+
+        // 前提：这两个 URL 无容器扩展名，走名单兜底确实会被判成 Media（复现 bug）。
+        assert!(looks_like_media(no_ext_douyin), "无扩展名抖音直链会命中站点名单");
+        assert!(looks_like_media(no_ext_kuaishou), "无扩展名快手直链会命中站点名单");
+
+        // 不带 kind：名单兜底 → Media（这是修复前「本页资源点了没反应」的成因）。
+        assert_eq!(capture_task_kind(None, no_ext_douyin), TaskKind::Media);
+        assert_eq!(capture_task_kind(None, no_ext_kuaishou), TaskKind::Media);
+
+        // 显式 kind:"http"：压过名单 → Http，绕过 media_page_blocker。
+        assert_eq!(
+            capture_task_kind(Some("http"), no_ext_douyin),
+            TaskKind::Http,
+            "本页资源直链显式 http 必须是 Http 任务",
+        );
+        assert_eq!(
+            capture_task_kind(Some("http"), no_ext_kuaishou),
+            TaskKind::Http,
+            "本页资源直链显式 http 必须是 Http 任务",
+        );
+
+        // 可整页解析的页面仍按 media 建任务；带扩展名的直链不带 kind 也短路成 Http。
+        assert_eq!(
+            capture_task_kind(Some("media"), "https://www.bilibili.com/video/BV1xx"),
+            TaskKind::Media,
+        );
+        assert_eq!(
+            capture_task_kind(None, "https://v2.kuaishou.com/a.mp4"),
+            TaskKind::Http,
+            "带 .mp4 扩展名的 CDN 直链仍短路成 Http",
+        );
+    }
+
+    /// P0-1：桌面新建（前端 isMediaUrl）与扩展自动接管（这里 looks_like_media）
+    /// 必须是同一份站点名单，且按主机名精确 / 后缀匹配。
+    /// 0.3.3 两份名单互相矛盾，YouTube / 爱奇艺等链接从两条入口会建成不同任务类型。
+    #[test]
+    fn media_hosts_cover_both_entry_points_without_false_positives() {
+        for url in [
+            "https://www.bilibili.com/video/BV1xx",
+            "https://b23.tv/abc",
+            "https://v.douyin.com/abc",
+            "https://www.kuaishou.com/x",
+            "https://weibo.com/tv/show/x",
+            "https://www.xiaohongshu.com/explore/x",
+            "https://www.iqiyi.com/v_x.html",
+            "https://v.youku.com/v_show/id_X.html",
+            "https://www.mgtv.com/b/1/2",
+            "https://v.qq.com/x/cover/x.html",
+            "https://www.acfun.cn/v/ac1",
+            "https://www.ixigua.com/1",
+            "https://www.youtube.com/watch?v=x",
+            "https://youtu.be/abc",
+            "https://vimeo.com/123",
+            "https://www.tiktok.com/@a/video/1",
+            "https://x.com/a/status/1",
+            "https://www.instagram.com/p/x",
+            "https://www.twitch.tv/videos/1",
+            "https://www.nicovideo.jp/watch/sm1",
+        ] {
+            assert!(looks_like_media(url), "媒体站点应被识别：{url}");
+        }
+        // includes 会把路径、查询、相似域名都误判成媒体站点
+        for url in [
+            "https://example.com/bilibili.com-x/video.mp4",
+            "https://apex.com/x.com-logo.png",
+            "https://linux.com/download/youtube.com-player.zip",
+            "https://cdn.example.org/a.zip?ref=x.com",
+            "https://notbilibili.com/video/1",
+            "https://user:pw@b23.tv:443/abc", // userinfo / 端口应被正确剥离
+        ] {
+            if url.contains("b23.tv") {
+                assert!(looks_like_media(url), "合法 b23.tv 带 userinfo 应仍识别：{url}");
+            } else {
+                assert!(!looks_like_media(url), "路径/查询/相似域名不得误判：{url}");
+            }
+        }
+    }
+
+    /// 0.3.5：扩展资源列表 / 自动接管里点选的 CDN 容器直链（如
+    /// `v2.kuaishou.com/abc.mp4`）虽带站点后缀，也必须短路成 HTTP 直链任务，
+    /// 否则会被建成 Media 交给 yt-dlp 报 Unsupported URL。分片清单不短路。
+    /// 站点网页链接仍按名单判媒体 —— B 档后抖音详情页 / 短链交给 yt-dlp 的
+    /// Douyin 提取器解析（可在设置里配置浏览器 Cookie），快手与聚合首页仍由
+    /// media_page_blocker / failure_hint 给出诚实指引。
+    #[test]
+    fn direct_container_files_bypass_media_detection() {
+        for url in [
+            "https://v2.kuaishou.com/abc.mp4",
+            "https://cdn.douyin.com/2024/x.mp4?token=deadbeef",
+            "https://cdn.example.com/a.MKV",
+            "https://cdn.example.com/song.mp3#t=1",
+        ] {
+            assert!(
+                fluxdl_engine::is_direct_media_file(url),
+                "容器直链应被识别：{url}"
+            );
+            assert!(
+                !looks_like_media(url),
+                "容器直链不得建成媒体任务：{url}"
+            );
+        }
+        for url in [
+            "https://cdn.example.com/seg-1.m4s",
+            "https://cdn.example.com/index.m3u8?token=x",
+            "https://cdn.example.com/manifest.mpd",
+            "https://www.bilibili.com/video/BV1xx",
+        ] {
+            assert!(
+                !fluxdl_engine::is_direct_media_file(url),
+                "分片 / 页面不应被当成容器直链：{url}"
+            );
+        }
+        assert!(looks_like_media("https://www.kuaishou.com/new-reco"));
+        assert!(looks_like_media(
+            "https://www.douyin.com/jingxuan?modal_id=7702008165390421263"
+        ));
+    }
 }

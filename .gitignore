@@ -1,17 +1,19 @@
-# 依赖
+# 内置工具二进制：体积大，不进 Git，由 tools/fetch-tools.sh 生成或打包流程注入
+tools/yt-dlp
+tools/yt-dlp.exe
+tools/ffmpeg
+tools/ffmpeg.exe
+tools/aria2c.exe
+tools/aria2c
+tools/*.zip
+tools/*.tar.xz
+
+# 依赖与构建产物：可重建、体积大，不进版本基线
 node_modules/
-
-# Rust 构建产物
 target/
-**/src-tauri/gen/
-
-# 前端构建产物
+src-tauri/target/
+src-tauri/gen/
 dist/
-*.tsbuildinfo
-
-# 打包产物
-release/
-
-# 本地分析/上传临时目录
-_tdm/
-.uploads/
+*.log
+*.bak
+.DS_Store

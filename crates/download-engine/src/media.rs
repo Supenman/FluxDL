@@ -1,18 +1,62 @@
+//! 视频 / 音频任务：把整条链接交给 yt-dlp 子进程处理。
+//!
+//! 0.3.0 起的策略（方案 A：只服务国内站点）
+//! ----------------------------------------
+//! * **一次直下**：不再针对 YouTube 的 bot 挑战做「换客户端 → 更新 yt-dlp → 再重试」
+//!   的多轮递归。旧实现失败时会连着跑三轮 yt-dlp，UI 上表现为「下载中 0 B / 未知」
+//!   长时间空转，用户以为卡死。现在失败就是失败，报错即止，原因一眼可见。
+//! * **抖音不再走 yt-dlp**：PC Web 详情接口在 Argus 网关后，缺 `a_bogus` /
+//!   `uifid` 一律 403，yt-dlp 的 Douyin 提取器生成不了签名，Cookie 也救不了。
+//!   0.3.9 的 B 档（yt-dlp + 本机浏览器 Cookie）真机验证无效，已移除。
+//!   抖音作品页改由 `douyin.rs` 的免 Cookie 移动端详情接口解析成直链，
+//!   在 `Engine::add` 直接转成 HTTP 任务交给 A 档引擎；本文件只服务 B 站等
+//!   仍需 yt-dlp 的站点。
+//! * **凭证边界**：本项目不读取、不传输、不落盘任何浏览器 Cookie / 登录态。
+//! * **并发分片**：`--concurrent-fragments 4`，DASH / HLS 的音视频分片并发拉取，
+//!   这是对 B 站、抖音这类分片流最直接的提速手段。
+//! * **B 站客户端**：`--extractor-args bilibili:player_client=tv,app` 绕开 web 端最严
+//!   的单连接限速（web 端匿名下载常年只有 ~120 KB/s）。
+//! * **aria2 外部下载器**（0.3.1 起，0.3.4 收窄）：把「取字节」换成 aria2 的
+//!   `-x16 -s16`，按字节区间并发拉取。但 DASH / HLS 分片普遍只有 100 KB 级，
+//!   远小于 aria2 的 `-k4M` 切分阈值，aria2 恒用 1 条连接（CN:1）反而更慢，
+//!   因此 0.3.4 起 `Engine::add` 对所有 `TaskKind::Media` 默认关闭 aria2，
+//!   分片并发交给 `--concurrent-fragments 4`；aria2 现在只服务 HTTP 整文件直链
+//!   和显式要求 `aria2:true` 的高级入口。
+
+use crate::aria2;
 use crate::manager::{Engine, EngineError, TaskEntry};
 use crate::types::*;
 use crate::util;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::SystemTime;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// 进度行协议：`FLUXDL|已下载字节|总字节|预估总字节|速度(B/s)|剩余秒|文件名`
+///
+/// 别改字段顺序 —— `run()` 里的 `splitn(6, '|')` 依赖它：第 6 段之后
+/// 整体当作文件名，这样文件名里带 `|` 也撑不破协议。
+/// aria2 模式复用同一行格式，只是文件名位留空（aria2 不知道最终输出名）。
 const PROGRESS_TEMPLATE: &str = "download:FLUXDL|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.filename)s";
+
+/// 默认格式选择：优先「最佳视频流 + 最佳音频流」合并，退到整体 best。
+const DEFAULT_FORMAT: &str = "bv*+ba/b";
+
+/// 分片并发数。国内站点的 DASH / HLS 流普遍支持多分片并发，
+/// 4 路是在「提速明显」与「不触发风控」之间的折中值。
+const CONCURRENT_FRAGMENTS: u8 = 4;
+
+/// 单连接下载只有 ~120 KB/s 出头时，B 站 web 端几乎必然是瓶颈，换 tv/app 客户端。
+const SLOW_SPEED_THRESHOLD: u64 = 300 * 1024;
+/// 判定「慢」之前先观察这么久，避开 TCP 慢启动阶段。
+const SLOW_SPEED_WINDOW: Duration = Duration::from_secs(15);
 
 /// 逐行读取子进程输出，一直读到 EOF 才关闭读端。
 ///
@@ -22,14 +66,12 @@ const PROGRESS_TEMPLATE: &str = "download:FLUXDL|%(progress.downloaded_bytes)s|%
 /// （GBK），进度模板里带中文文件名时就会产出非法 UTF-8 字节。管道读端一关，
 /// yt-dlp 再写 stdout 拿到 Windows CRT 映射出来的 EINVAL(22)，于是报
 /// `Unable to download video: [Errno 22] Invalid argument`，退出时 flush
-/// 又抛一次 `Exception ignored while flushing sys.stdout`。
+/// 又抛一次 `Exception ignoring while flushing sys.stdout`。
 ///
 /// 改为读原始字节 + lossy 解码：编码问题最多让某一行显示成乱码，不会中断下载。
-fn spawn_line_reader<R>(
-    reader: R,
-    tx: mpsc::UnboundedSender<String>,
-    prefix: &'static str,
-) where
+#[allow(dead_code)]
+fn spawn_line_reader<R>(reader: R, tx: mpsc::UnboundedSender<String>, prefix: &'static str)
+where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -56,99 +98,264 @@ fn spawn_line_reader<R>(
     });
 }
 
-/// 用完即删的 cookie 临时文件。任务暂停时保留，方便续跑时继续带登录态。
-struct CookieFileGuard {
-    path: Option<PathBuf>,
+/// 链接是否指向 B 站（含短链 b23.tv）。
+///
+/// 必须按「主机名」判断，不能用 `contains`：否则 `https://example.com/b23.tv-x`
+/// 这种把域名写进路径的链接会被误判成 B 站，进而套上一个错误的提取器参数。
+fn is_bilibili(url: &str) -> bool {
+    let host = host_of(url);
+    const HOSTS: &[&str] = &["bilibili.com", "b23.tv", "biliapi.net"];
+    HOSTS
+        .iter()
+        .any(|h| host == *h || host.ends_with(&format!(".{h}")))
 }
 
-impl CookieFileGuard {
-    fn new(path: Option<PathBuf>) -> Self {
-        Self { path }
+/// 判断 yt-dlp 输出的文本是否为编码损坏的乱码。
+///
+/// Windows 中文系统下 PyInstaller 版 `yt-dlp.exe` 的 stdout 可能按系统 ANSI 代码页
+/// 输出，Rust 侧 `from_utf8_lossy` 会把非法字节变成 U+FFFD；也可能整串 UTF-8 字节
+/// 被按 Latin-1 解读成 `Ãœ`、`â€`、`ÜŨ` 这类典型 mojibake。
+///
+/// **只丢确定是编码损坏的信号**。0.3.3 曾按「非 ASCII 里非 CJK 占比」猜测，并把
+/// `Ã`/`Â` 当硬命中，结果葡语 `SÃO`、俄语、泰文和含 emoji 的合法标题全被丢弃，
+/// 下载中一直显示默认名 `video (1)`。宁可偶尔漏一个乱码，也不能误杀正常标题。
+fn looks_mojibake(s: &str) -> bool {
+    // 解码失败的替换字符 / UTF-8 被按 Latin-1 解读的典型序列
+    if s.contains('\u{FFFD}') || s.contains("â€") {
+        return true;
+    }
+    // C1 控制区：UTF-8 字节被按 Latin-1 解读后残留的控制字符
+    if s.chars().any(|c| ('\u{0080}'..='\u{009F}').contains(&c)) {
+        return true;
+    }
+    // 真机样本 `4K|⯃ÜŨ♦GGotBBang♦`：正常标题不会堆三个以上
+    // 「既非字母数字、也非 CJK / 假名 / 谚文 / emoji / 常见标点」的怪异符号。
+    let weird = s.chars().filter(|c| is_weird_glyph(*c)).count();
+    weird >= 3
+}
+
+/// 既不是字母数字空白、也不是 CJK / 假名 / 谚文 / emoji / 合法装饰标点的怪字符。
+fn is_weird_glyph(c: char) -> bool {
+    if c.is_ascii() || c.is_alphanumeric() || c.is_whitespace() {
+        return false;
+    }
+    if ('\u{4E00}'..='\u{9FFF}').contains(&c)
+        || ('\u{3040}'..='\u{30FF}').contains(&c)
+        || ('\u{AC00}'..='\u{D7AF}').contains(&c)
+        || ('\u{FF00}'..='\u{FFEF}').contains(&c)
+        || ('\u{3000}'..='\u{303F}').contains(&c)
+        || ('\u{1F000}'..='\u{1FAFF}').contains(&c)
+    {
+        return false;
+    }
+    !matches!(
+        c,
+        '·' | '—' | '…' | '♪' | '♫' | '★' | '☆' | '●' | '○' | '◆' | '◇' | '■'
+            | '□' | '♥' | '♡' | '《' | '》' | '「' | '」' | '【' | '】' | '（'
+            | '）' | '、' | '。' | '，' | '！' | '？' | '：' | '；' | '～'
+            | '＋' | '－' | '／' | '＼' | '｜' | '％' | '＆' | '＃' | '＠'
+            | '￥' | '“' | '”' | '‘' | '’'
+    )
+}
+
+/// aria2 是否适合接管该链接的字节传输（URL 层防御性兜底）。
+///
+/// 主裁决已上移到 `Engine::add`：0.3.4 起所有 `TaskKind::Media` 一律关闭 aria2，
+/// 只有整文件 HTTP 直链才用它做多连接 —— 按站点逐个排除分片流永远会漏站点。
+/// 这里保留 B 站判断，防止将来有绕过 manager 直接构造媒体任务的入口重新踩坑。
+///
+/// 原因：DASH 分片普遍 100 KB 级，远小于 aria2 的 `-k4M` 切分阈值，aria2 恒用
+/// 1 条连接（真机 `CN:1 DL:0B`）还要为每片多起进程；分片之间并发应交给
+/// yt-dlp 的 `--concurrent-fragments`。
+fn aria2_suits_url(url: &str) -> bool {
+    !is_bilibili(url)
+}
+
+/// 从 URL 里抽出小写主机名，去掉端口与 userinfo。不是合法 URL 时返回空串。
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let rest = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let rest = rest.rsplit_once('@').map(|(_, r)| r).unwrap_or(rest);
+    let rest = rest.split(':').next().unwrap_or("");
+    rest.to_ascii_lowercase()
+}
+
+/// 把抖音「精选 / 推荐 / 个人主页」里带 `modal_id` 的聚合页归一化成
+/// `https://www.douyin.com/video/<id>`。
+///
+/// 0.3.5 真机截图：`https://www.douyin.com/jingxuan?modal_id=7702008165390421263`
+/// 被扩展当作「本页视频」发送，yt-dlp 落到 `[generic]` 报 `Unsupported URL`。
+/// `modal_id` 本身就是 aweme id，改写后能命中 `[Douyin]` 提取器。
+///
+/// 抖音作品页现在已改由 `douyin.rs` 免 Cookie 解析（不再进本文件的 yt-dlp 链路），
+/// 但该函数仍保留：其它入口若把带 modal_id 的页面直接建成 Media 任务时，
+/// 归一化依然能让链接形态统一，且对应单测覆盖的行为不能无声退化。
+///
+/// **只改写传给 yt-dlp 的链接**：任务记录里的原始 URL、referer、日志都保持不变，
+/// 用户看到的「来源」不会被悄悄改掉。其它站点、已是 `/video/<id>`、无
+/// `modal_id` 或 `modal_id` 非纯数字时原样返回。
+fn normalize_media_url(url: &str) -> String {
+    let host = host_of(url);
+    let is_douyin = host == "douyin.com"
+        || host.ends_with(".douyin.com")
+        || host == "iesdouyin.com"
+        || host.ends_with(".iesdouyin.com");
+    if !is_douyin {
+        return url.to_string();
+    }
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path = after_scheme.split(['?', '#']).next().unwrap_or("");
+    let path = path.split_once('/').map(|(_, p)| p).unwrap_or("");
+    if path.starts_with("video/") {
+        return url.to_string();
+    }
+    let query = url.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let query = query.split('#').next().unwrap_or("");
+    let id = query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        if k == "modal_id" && !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) {
+            Some(v)
+        } else {
+            None
+        }
+    });
+    match id {
+        Some(id) => format!("https://www.douyin.com/video/{id}"),
+        None => url.to_string(),
+    }
+}
+
+/// URL 是否为可直接多连接下载的整文件（容器格式），而非需要 yt-dlp 解析的视频页。
+/// CDN 直链常常仍带站点后缀（如 `v2.kuaishou.com/xxx.mp4`），按主机名判媒体会把
+/// 它错建成媒体任务再交给 yt-dlp 报 `Unsupported URL`；这类链接必须走 HTTP 直链。
+/// 只列完整容器文件，不含 `.m3u8 / .mpd / .m4s` 分片 —— 那些仍需 yt-dlp 合并。
+///
+/// 本函数是跨层权威规则：由 `lib.rs` 导出给 Tauri 建任务时复用；前端
+/// `isDirectMediaFile` 与扩展同名函数实现等价判定，由契约脚本逐项校验。
+pub fn is_direct_media_file(url: &str) -> bool {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let last = path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+    const EXTS: &[&str] = &[
+        ".mp4", ".m4v", ".mkv", ".webm", ".mov", ".flv", ".avi", ".ts", ".mp3", ".m4a",
+        ".aac", ".flac", ".wav", ".ogg", ".opus",
+    ];
+    EXTS.iter().any(|e| last.ends_with(e))
+}
+
+/// 独占工作目录的生命周期守卫。
+///
+/// 0.3.6 之前只在一处清理 `fluxdl-<id>` 子目录：下载成功且产物已 rename 回
+/// 用户下载目录。yt-dlp 失败、用户暂停、子进程启动失败、「找不到输出文件」
+/// 都直接 return，目录连同 `.part` / `.ytdl` / 分片一起留在下载目录 —— 用户
+/// 每失败一次就多一个垃圾文件夹（真机截图已复现）。用 RAII 覆盖所有退出
+/// 路径（含 `?`、暂停、panic unwind）。暂停也清理：独占目录若被复用，目录快照
+/// 差分会把上次的 .part 当成「本次新增」误判为产物，反而更危险。
+struct WorkDirGuard {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl WorkDirGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, keep: false }
     }
 
     fn keep(&mut self) {
-        self.path = None;
+        self.keep = true;
+    }
+
+    /// 目录里是否存在完整（非中间态）媒体文件。
+    /// 用于「下载完成但没能定位产物」时决定保留还是清理，避免误删已下好的视频。
+    fn has_complete_media(&self) -> bool {
+        let Ok(entries) = std::fs::read_dir(&self.path) else {
+            return false;
+        };
+        entries.flatten().any(|e| {
+            let Ok(meta) = e.metadata() else {
+                return false;
+            };
+            if !meta.is_file() || meta.len() == 0 {
+                return false;
+            }
+            let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+            !name.ends_with(".part")
+                && !name.ends_with(".ytdl")
+                && !name.ends_with(".tmp")
+                && !name.ends_with(".fluxdl-part")
+                && is_media_ext(&name)
+        })
     }
 }
 
-impl Drop for CookieFileGuard {
+impl Drop for WorkDirGuard {
     fn drop(&mut self) {
-        if let Some(path) = self.path.take() {
-            let _ = std::fs::remove_file(path);
+        if !self.keep {
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 }
 
-/// yt-dlp 的 bot 校验报错，用于决定是否追加本地化指引。
-fn needs_bot_hint(errors: &[String]) -> bool {
-    errors.iter().any(|e| {
-        e.contains("Sign in to confirm you're not a bot")
-            || e.contains("--cookies-from-browser")
-    })
-}
+/// 桌面端新建媒体任务时，对「必然无法整页解析」的网页链接给出提前拦截提示。
+///
+/// 0.3.6 曾把快手 / 抖音整页链接一律拦截。现在：
+/// * **抖音放行**：`Engine::add` 会用 `douyin.rs` 的免 Cookie 移动端详情接口把
+///   作品页解析成直链并转成 HTTP 任务，不再经过 yt-dlp，这里只需放行。
+/// * **快手仍拦截**：随包 yt-dlp（2026.10.26）确实没有 Kuaishou / Kwai 提取器，
+///   放行只会得到 `Unsupported URL` 的失败任务。
+///   保留拦截并给出「本页资源直链」的可操作指引，避免制造必然失败的任务。
+///
+/// 返回 `Some(提示)` 表示应拒绝，`None` 表示照常建任务。容器直链永不拦截。
+pub fn media_page_blocker(url: &str) -> Option<&'static str> {
+    if is_direct_media_file(url) {
+        return None;
+    }
+    let host = host_of(url);
+    let is_ks = host == "kuaishou.com"
+        || host.ends_with(".kuaishou.com")
+        || host == "kwai.com"
+        || host.ends_with(".kwai.com");
+    if is_ks {
+        return Some("快手网页链接无法整页解析（内置视频解析器没有该站点的提取器）。请在浏览器扩展弹窗的「本页资源」里选择视频直链下载，或把直链地址粘贴为普通下载任务");
+    }
 
-/// 默认格式选择：优先「最佳视频流 + 最佳音频流」合并，退到整体 best。
-/// 保持原行为不变，只有降级重试时才放宽。
-const DEFAULT_FORMAT: &str = "bv*+ba/b";
-/// 降级重试用的格式链，最后退到最低清晰度，避免一个都选不中。
-const FALLBACK_FORMAT: &str = "bv*+ba/b/worst";
-/// 降级重试时换用的 YouTube 客户端：android_vr / web_safari 等不依赖
-/// PO Token，是 yt-dlp 应对「Requested format is not available」的常用组合。
-/// `--extractor-args` 只对 youtube 提取器生效，B 站等其它站点不受影响。
-const FALLBACK_CLIENTS: &str = "android_vr,web_safari,tv,ios,mweb";
-const FORMAT_HINT: &str = "（YouTube 未返回可下载清晰度：多为 PO Token / 客户端限制，或会员、年龄、地区限制。请先在 Chrome 确认该视频能正常播放且已登录，再点「重试下载」；换一个普通公开视频可判断是单个视频受限还是整体风控）";
-const RELOAD_HINT: &str = "（YouTube 要求刷新页面：多为内置 yt-dlp 版本过旧、解不开前端挑战所致。FluxDL 已尝试自动更新 yt-dlp 并重试；若仍失败，多为 IP / 代理被限流或登录态失效，请换新网络或重新登录 YouTube 后再试）";
-
-/// 判断这次失败是不是「没拿到可用格式」，决定是否值得降级重试。
-fn needs_format_retry(errors: &[String]) -> bool {
-    errors.iter().any(|e| {
-        e.contains("Requested format is not available")
-            || e.contains("No video formats available")
-            || e.contains("--list-formats")
-    })
-}
-
-/// YouTube 近期反爬报错「The page needs to be reloaded」：通常是随包 yt-dlp 太旧、
-/// 跟不上 YouTube 前端变化所致。根因不在命令写法，而是工具版本，故走「自动更新
-/// yt-dlp 后重试」这条路，而不是换客户端。
-fn needs_reload_retry(errors: &[String]) -> bool {
-    errors.iter().any(|e| {
-        e.contains("The page needs to be reloaded")
-            || e.contains("Please sign in to confirm you're not a bot")
-    })
+    // 抖音 / 其它站点的首页 / 发现页 / 精选页：不是单个视频详情页，拦截；
+    // 带 modal_id 的聚合页会被 normalize_media_url 归一成 /video/<id>，放行。
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path = after_scheme.split(['?', '#']).next().unwrap_or("");
+    let path = path.split_once('/').map(|(_, p)| p).unwrap_or("");
+    let query = url.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let has_id = query.split('&').any(|kv| {
+        kv.split_once('=')
+            .map(|(k, v)| {
+                k == "modal_id" && !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())
+            })
+            .unwrap_or(false)
+    });
+    let aggregate = path.is_empty()
+        || matches!(
+            path.split('/').next().unwrap_or("").to_ascii_lowercase().as_str(),
+            "jingxuan"
+                | "discover"
+                | "new-reco"
+                | "hot"
+                | "feed"
+                | "recommend"
+                | "explore"
+                | "home"
+                | "index"
+                | "channel"
+        );
+    if aggregate && !has_id {
+        return Some("这是站点首页 / 发现页 / 精选页，不是单个视频详情页，无法整页解析。请打开要下载的那个视频再试，或在浏览器扩展弹窗的「本页资源」里选择视频直链");
+    }
+    None
 }
 
 pub async fn run(
     engine: &Arc<Engine>,
     entry: &Arc<TaskEntry>,
     token: CancellationToken,
-) -> Result<(), EngineError> {
-    // cookie 只在本次进程内有效；文件不存在（例如重启后）就当没有登录态，
-    // 绝不让失效路径阻塞正常下载。
-    let cookie_path = entry
-        .options
-        .cookies_file
-        .as_deref()
-        .map(PathBuf::from)
-        .filter(|p| p.is_file());
-    let mut cookie_guard = CookieFileGuard::new(cookie_path.clone());
-    // 降级重试可能跑两轮 yt-dlp，凭证文件必须跨两轮存活：guard 提到外层，
-    // 只有真正暂停（取消）才保留，成功或失败都按「用完即删」处理。
-    let cancelled = token.clone();
-    let result = run_inner(engine, entry, &token, cookie_path.as_deref(), false, false).await;
-    if cancelled.is_cancelled() {
-        cookie_guard.keep();
-    }
-    result
-}
-
-async fn run_inner(
-    engine: &Arc<Engine>,
-    entry: &Arc<TaskEntry>,
-    token: &CancellationToken,
-    cookie_path: Option<&Path>,
-    fallback: bool,
-    reload_retry: bool,
 ) -> Result<(), EngineError> {
     let options = engine.options();
     let (save_dir, placeholder) = {
@@ -162,12 +369,97 @@ async fn run_inner(
         )
     };
     util::ensure_dir(&save_dir)?;
+    // 每个媒体任务独占一个输出子目录。yt-dlp 的输出名固定为
+    // `%(title) [%(id)s].%(ext)s`，所有任务共用 save_dir 会互相「文件已存在」
+    // 跳过下载（退出 0 但不打 FLUXDONE），目录快照差分也会跨任务错配、
+    // 认领到别的任务或上次留下的旧文件（0.3.3 的完成却指向无关视频）。
+    // 独占目录让所有兜底查找只在本次任务的空目录里进行，从根上消除这两类误判。
+    let short_id: String = entry.id.chars().take(8).collect();
+    let work_dir = save_dir.join(format!("fluxdl-{short_id}"));
+    util::ensure_dir(&work_dir)?;
+    // 0.3.6：RAII 覆盖所有退出路径。以前只有「成功发布产物」一处清理，
+    // 失败 / 暂停 / spawn 失败 / 找不到输出都会留下垃圾目录。只有下面两处
+    // 确实需要把完整产物留在目录内时才 keep()，其余一律由 Drop 自动删除。
+    let mut guard = WorkDirGuard::new(work_dir.clone());
     // 先拍一份目录快照：`--print after_move` 给出的路径若因编码 / 版本差异
     // 无法解析，仍可靠「本次运行新增或变新的文件」定位 yt-dlp 的真实产物。
-    let before = snapshot_files(&save_dir);
+    let before = snapshot_files(&work_dir);
+    // 0.3.5：抖音「精选 / 推荐 / 主页」带 modal_id 的聚合页统一归一化成
+    // yt-dlp 唯一认识的 /video/<id> 再交给它。**只改写传给 yt-dlp 的链接**：
+    // 任务记录、referer、日志里的来源 URL 保持原样，用户看到的「来源」不会被悄悄改掉。
+    let media_url = normalize_media_url(&entry.url);
 
     let bin = options.yt_dlp_path.trim();
     let bin = if bin.is_empty() { "yt-dlp" } else { bin };
+
+    // —— 真实标题回填（修复 B）——
+    // 轻量探测：只取标题、不下字节，让「下载中」阶段就能显示视频标题而非默认 "video"。
+    // 结果写入 title_slot，主循环 emit 时顺手取走回填；失败（风控 / 网络抖动）保持默认，
+    // 绝不阻塞下载主流程。B 站与正式下载一致用 tv/app 客户端。
+    let title_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    {
+        let slot = title_slot.clone();
+        let bin = bin.to_string();
+        // 标题探测必须与正式下载用同一份归一化链接；否则聚合页先报
+        // Unsupported URL，标题永远停在默认名 "video"。
+        let url = media_url.clone();
+        let is_bili = is_bilibili(&entry.url);
+        let referer = entry.options.referer.clone();
+        let proxy = entry.proxy.clone();
+        tokio::spawn(async move {
+            let mut p = Command::new(&bin);
+            p.args(["--skip-download", "--no-warnings", "--no-playlist", "--print", "%(title)s"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .env("PYTHONUTF8", "1")
+                .env("PYTHONIOENCODING", "utf-8:replace")
+                .env("PYTHONUNBUFFERED", "1");
+            if is_bili {
+                p.arg("--extractor-args").arg("bilibili:player_client=tv,app");
+            }
+            if let Some(r) = referer.filter(|s| !s.is_empty()) {
+                p.arg("--referer").arg(r);
+            }
+            if let Some(pr) = proxy.filter(|s| !s.trim().is_empty()) {
+                p.arg("--proxy").arg(pr);
+            }
+            #[cfg(windows)]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                p.creation_flags(CREATE_NO_WINDOW);
+            }
+            p.arg(&url);
+            if let Ok(out) = p.output().await {
+                if out.status.success() {
+                    if let Some(t) = String::from_utf8_lossy(&out.stdout)
+                        .lines()
+                        .map(|l| l.trim())
+                        .find(|l| !l.is_empty())
+                    {
+                        // 编码损坏的标题绝不回填：宁可显示默认名，也不要把一串
+                        // U+FFFD / Latin-1 mojibake 展示给用户（真机截图已复现）。
+                        // 真实标题会在收尾时由磁盘产物名覆盖。
+                        if !looks_mojibake(t) {
+                            *slot.lock().unwrap() = Some(t.to_string());
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // aria2c：任务允许 && 站点适合 && 二进制存在，三者都满足才接管取字节；
+    // 任一不满足就走 yt-dlp 原生下载器，功能不降级。
+    // 0.3.4 起 Engine::add 已对所有 Media 任务关闭 aria2（分片流恒 CN:1），
+    // 这里再叠加 aria2_suits_url 作为 URL 层兜底，防止其他入口重新启用。
+    let aria2_bin = if entry.options.aria2 && aria2_suits_url(&entry.url) {
+        aria2::locate(&aria2_candidates(&options))
+    } else {
+        None
+    };
+    // aria2 自己的日志落在临时目录，出问题时可回溯它为什么慢 / 为什么断。
+    let aria2_log = std::env::temp_dir().join(format!("fluxdl-aria2-{}.log", entry.id));
 
     let mut cmd = Command::new(bin);
     cmd.arg("--newline")
@@ -179,22 +471,19 @@ async fn run_inner(
         .arg("5")
         .arg("--fragment-retries")
         .arg("10")
+        // 分片流并发：B 站 / 抖音的 DASH 音视频都是分片下发，串行拉取等于自废带宽。
+        .arg("--concurrent-fragments")
+        .arg(CONCURRENT_FRAGMENTS.to_string())
         .arg("--progress-template")
         .arg(PROGRESS_TEMPLATE)
         .arg("--print")
         .arg("after_move:FLUXDONE|%(filepath)s")
         .arg("-P")
-        .arg(&save_dir)
+        .arg(&work_dir)
         .arg("-o")
         .arg("%(title).150B [%(id)s].%(ext)s")
         .arg("-f")
-        .arg(
-            entry.options.format.as_deref().unwrap_or(if fallback {
-                FALLBACK_FORMAT
-            } else {
-                DEFAULT_FORMAT
-            }),
-        )
+        .arg(entry.options.format.as_deref().unwrap_or(DEFAULT_FORMAT))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -207,11 +496,10 @@ async fn run_inner(
         .env("PYTHONUNBUFFERED", "1")
         .kill_on_drop(true);
 
-    // 降级重试：换一组不依赖 PO Token 的 YouTube 客户端重新拿格式列表。
-    // 只在报错为「格式不可用」时走到这里，正常下载路径完全不受影响。
-    if fallback {
-        cmd.arg("--extractor-args")
-            .arg(format!("youtube:player_client={FALLBACK_CLIENTS}"));
+    // B 站：显式指定 tv / app 客户端。web 端匿名单连接被限速到 ~120 KB/s，
+    // 而 tv/app 客户端拿到的下发地址限速宽松得多。
+    if is_bilibili(&entry.url) {
+        cmd.arg("--extractor-args").arg("bilibili:player_client=tv,app");
     }
     if let Some(ffmpeg) = options.ffmpeg_path.as_deref().filter(|s| !s.trim().is_empty()) {
         cmd.arg("--ffmpeg-location").arg(ffmpeg.trim());
@@ -223,12 +511,36 @@ async fn run_inner(
     if let Some(referer) = entry.options.referer.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--referer").arg(referer);
     }
-    // 视频站点的登录态：yt-dlp 报 "Sign in to confirm you're not a bot" 时
-    // 必须带 cookies.txt，否则连格式列表都拿不到。
-    if let Some(path) = cookie_path {
-        cmd.arg("--cookies").arg(path);
+    // 外部下载器要放在 URL 之前，且必须在所有「会影响解析」的参数之后：
+    // yt-dlp 会先解析出直链，再把每条直链交给 aria2c 拉取。
+    if let Some(bin) = aria2_bin.as_ref() {
+        cmd.arg("--external-downloader").arg(bin);
+        cmd.arg("--external-downloader-args")
+            .arg(aria2::downloader_args(&aria2_log));
+        // 注意：**不要**在这里把 `--concurrent-fragments` 压成 1。
+        //
+        // 上一版曾加过 `--concurrent-fragments 1`，理由是「外部下载器模式下 yt-dlp
+        // 不再参与取字节」。这个假设只对「整文件直链」成立；对 B 站 DASH 这类**分片流**
+        // 是错的——yt-dlp 仍然要逐片拉取，每一片单独交给 aria2c。压成 1 等于把原本
+        // 4 路并发的分片拉取退化成串行，实测比原生下载还慢，是明确的性能回归。
+        //
+        // 分片流的正确并发模型是：分片之间由 yt-dlp 并发（CONCURRENT_FRAGMENTS），
+        // 单片之内由 aria2c 尽力（小片建连开销大，aria2 会自动跳过切分）。
     }
-    cmd.arg(&entry.url);
+    // 媒体任务的字节由 yt-dlp 子进程取，引擎的令牌桶（http.rs 里的 limiter.acquire）
+    // 管不到它。把任务级 / 全局限速翻译成 yt-dlp 的 --limit-rate，否则设置里的
+    // 限速对视频任务完全无效，而 HTTP 直链却正常减速，行为不一致。
+    let media_limit = entry
+        .limiter
+        .limit()
+        .into_iter()
+        .chain(engine.global_limit().limit())
+        .min();
+    if let Some(rate) = media_limit.filter(|v| *v > 0) {
+        cmd.arg("--limit-rate").arg(rate.to_string());
+    }
+    // 用归一化后的链接（抖音聚合页 -> /video/<id>）；原始来源 URL 只用于任务记录 / referer。
+    cmd.arg(&media_url);
 
     #[cfg(windows)]
     {
@@ -250,11 +562,19 @@ async fn run_inner(
     let stderr = child.stderr.take();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
+    // 管道分工在两种模式下完全不同，别照抄：
+    //
+    // · 原生模式：yt-dlp 的进度模板走 **stdout**（`--newline`），报错走 stderr。
+    // · aria2 模式：yt-dlp 不再逐行打进度，只有收尾一行 + `FLUXDONE`；真正的
+    //   进度是 aria2 自己打的，而且 —— 实测（aria2 1.37）**全部落在 stdout**，
+    //   stderr 只有 0 字节。所以两个管道都要过「会认领进度行」的 reader，
+    //   否则进度行会被当成普通日志丢掉，UI 从头到尾停在 0%。
+    let aria2_mode = aria2_bin.is_some();
     if let Some(stdout) = stdout {
-        spawn_line_reader(stdout, tx.clone(), "");
+        spawn_aria2_progress_reader(stdout, tx.clone(), aria2_mode);
     }
     if let Some(stderr) = stderr {
-        spawn_line_reader(stderr, tx.clone(), "ERR|");
+        spawn_aria2_progress_reader(stderr, tx.clone(), aria2_mode);
     }
     drop(tx);
 
@@ -267,6 +587,13 @@ async fn run_inner(
     let mut final_path: Option<PathBuf> = None;
     let mut errors: Vec<String> = Vec::new();
     let mut last_emit = std::time::Instant::now();
+    let started = std::time::Instant::now();
+    let mut speed_hinted = false;
+    // 0.3.8：Media 速度的唯一写入者是本循环的进度行，平滑状态也随任务走。
+    // tick() 不再用差分覆盖 speed_bps，避免两个来源以不同节奏把同一字段来回拉扯。
+    // 0.3.9：改用状态机统一处理「浮点 / NA / 空串」速度字段：浮点优先，
+    // 字段未知时用字节差分兜底，任何时刻都不把 0 发布成速度（否则显示 `—`）。
+    let mut speed_sample = util::SpeedSample::default();
 
     loop {
         let next = tokio::select! {
@@ -278,6 +605,12 @@ async fn run_inner(
         };
         let Some(line) = next else { break };
 
+        // 调试开关：设置 FLUXDL_DEBUG_PROGRESS=1 时把子进程每一行原样打到 stderr，
+        // 用于排查「进度不刷新 / 报错被吞」。默认关闭，不影响正常运行。
+        if std::env::var("FLUXDL_DEBUG_PROGRESS").is_ok() {
+            eprintln!("[raw] {line}");
+        }
+
         if let Some(rest) = line.strip_prefix("FLUXDL|") {
             let parts: Vec<&str> = rest.splitn(6, '|').collect();
             if parts.len() >= 5 {
@@ -288,35 +621,77 @@ async fn run_inner(
                     .filter(|v| *v > 0)
                     .or_else(|| parts[2].parse::<u64>().ok())
                     .unwrap_or(0);
-                let speed = parts[3].parse::<f64>().unwrap_or(0.0) as u64;
-                let eta = parts[4].parse::<f64>().ok().map(|v| v.max(0.0) as u64);
-                let file = parts.get(5).map(|s| s.trim()).filter(|s| !s.is_empty());
+                // 0.3.9：速度推导统一交给状态机。旧实现 `parts[3].parse::<i64>()`
+                // 解析不了 yt-dlp 的浮点速度（如 `1234567.89`）→ 恒 -1 →
+                // smoothed_speed 恒 0 → 前端速度显示 `—`，而 ETA 走 f64 解析
+                // 仍有值，形成真机截图里「有剩余时间却没速度」的矛盾画面。
+                // 现在浮点 / 整数优先，NA / None / 空串用「字节增量 / 时间增量」
+                // 兜底；未知帧保留上一次平滑速度，绝不写 0、不砸谷底。
+                speed_sample.advance(started.elapsed().as_secs_f64(), downloaded, parts[3]);
+                let smoothed_speed = speed_sample.speed;
+                let speed = smoothed_speed;
+                // 0.3.8：ETA 与 view.speed_bps 同口径——用平滑速度重算剩余时间，
+                // 削掉解析器原始 ETA 随分片切换的跳字；总量未知 / 速度未知 / 已完成
+                // 时退回解析器给出的估计值，不显示虚假的 0。
+                let parsed_eta = parts[4].parse::<f64>().ok().map(|v| v.max(0.0) as u64);
+                let eta = util::eta_from_speed(total, downloaded, smoothed_speed, parsed_eta);
+
+                // 单连接长期低速时给一次可操作的提示（每个任务只提示一次）。
+                if !speed_hinted
+                    && started.elapsed() > SLOW_SPEED_WINDOW
+                    && speed > 0
+                    && speed < SLOW_SPEED_THRESHOLD
+                {
+                    speed_hinted = true;
+                    engine.emit_log(
+                        &entry.id,
+                        "当前速度偏低：多为站点对单连接限速或本机网络瓶颈，可在设置里配置代理后重试",
+                    );
+                }
+
                 entry.downloaded.store(downloaded, Ordering::Relaxed);
                 let mut view = entry.view.lock().await;
                 view.total_bytes = total;
                 view.downloaded_bytes = downloaded;
-                view.speed_bps = speed;
+                // 0.3.8：发布平滑后的速度；速度未知（-1）时 smoothed_speed 保持不变，
+                // 等价于「保留上一次有效速度」，不归零、不砸出谷底。
+                view.speed_bps = smoothed_speed;
                 view.eta_seconds = eta;
-                if let Some(file) = file {
-                    let path = if Path::new(file).is_absolute() {
-                        PathBuf::from(file)
-                    } else {
-                        save_dir.join(file)
-                    };
-                    if let Some(name) = path.file_name() {
-                        view.filename = name.to_string_lossy().to_string();
-                    }
-                }
+                // 注意：进度行的 filename 是 yt-dlp 当前正在写的中间文件名（分片 / .part），
+                // 用它覆盖任务名会把真实标题污染成中间名，因此不写入 view.filename；
+                // 最终文件名由收尾的 FLUXDONE / 目录差分兜底决定。
                 view.mime = Some("video/*".into());
                 drop(view);
                 if last_emit.elapsed() > std::time::Duration::from_millis(400) {
                     last_emit = std::time::Instant::now();
+                    // 标题探测完成则回填（只覆盖默认名 "video*"，不动最终产物名）
+                    let probed = if let Ok(mut g) = title_slot.lock() {
+                        g.take()
+                    } else {
+                        None
+                    };
+                    if let Some(t) = probed {
+                        let clean = util::sanitize_filename(&t);
+                        if !clean.is_empty() {
+                            let mut view = entry.view.lock().await;
+                            if view.filename.starts_with("video") {
+                                view.filename = clean;
+                            }
+                            drop(view);
+                        }
+                    }
                     engine.emit_task(entry).await;
                 }
             }
         } else if let Some(rest) = line.strip_prefix("FLUXDONE|") {
             let path = PathBuf::from(rest.trim());
-            final_path = Some(if path.is_absolute() { path } else { save_dir.join(path) });
+            // `-P` 指向独占 work_dir，相对路径必须相对它解析；旧实现按 save_dir
+            // 拼接会把产物指到错误位置，进而落回兜底查找。
+            final_path = Some(if path.is_absolute() {
+                path
+            } else {
+                work_dir.join(path)
+            });
         } else if let Some(rest) = line.strip_prefix("ERR|") {
             let rest = rest.trim();
             if rest.is_empty() {
@@ -345,47 +720,7 @@ async fn run_inner(
             .rev()
             .collect::<Vec<_>>()
             .join(" / ");
-        // 第一层：遇到「没拿到可用格式」时，换客户端 + 放宽格式链自动重试一次。
-        // Box::pin 打断 async fn 的递归 Future 类型，避免 E0733。
-        if !fallback && needs_format_retry(&errors) {
-            engine.emit_log(
-                &entry.id,
-                "未取得可用清晰度，自动换 yt-dlp 客户端并放宽格式后重试一次…",
-            );
-            return Box::pin(run_inner(engine, entry, token, cookie_path, true, reload_retry)).await;
-        }
-        // 第二层：遇到 YouTube「页面需重载」（反爬挑战 / 旧版 yt-dlp）时，强制更新
-        // 内置 yt-dlp 后重试一次默认路径。这是该报错最常见、也最有效的修复。
-        if !reload_retry && needs_reload_retry(&errors) {
-            match engine.update_ytdlp(true).await {
-                crate::ytdlp::UpdateResult::Updated => {
-                    engine.emit_log(&entry.id, "已自动更新 yt-dlp，重新尝试下载…");
-                    return Box::pin(run_inner(engine, entry, token, cookie_path, false, true)).await;
-                }
-                _ => {
-                    // 更新失败或已是最新仍报错：再退一步换客户端 + 放宽格式做一次尝试。
-                    if !fallback {
-                        engine.emit_log(
-                            &entry.id,
-                            "尝试更换 yt-dlp 客户端与格式链后重试…",
-                        );
-                        return Box::pin(run_inner(engine, entry, token, cookie_path, true, true))
-                            .await;
-                    }
-                }
-            }
-        }
-        // yt-dlp 的英文报错对中文用户不够可操作，补一句本地化指引。
-        const BOT_HINT: &str = "（YouTube 要求登录状态：请先在 Chrome 登录 YouTube，确认扩展「视频站点自动带上登录状态」已开启并重新加载扩展；若仍失败，多为 YouTube 的 PO Token 校验）";
-        let hint = if needs_bot_hint(&errors) {
-            BOT_HINT
-        } else if needs_format_retry(&errors) {
-            FORMAT_HINT
-        } else if needs_reload_retry(&errors) {
-            RELOAD_HINT
-        } else {
-            ""
-        };
+        let hint = failure_hint(&errors, &entry.url);
         return Err(EngineError::message(if tail.is_empty() {
             format!("yt-dlp 退出码 {:?}{hint}", status.code())
         } else {
@@ -395,30 +730,306 @@ async fn run_inner(
 
     // FLUXDONE 里的路径在 Windows 中文系统下可能是 GBK 字节，lossy 解码后
     // 会变成乱码路径。此时先用「目录快照差分」找真实产物，再退回文件名匹配。
+    // 两者都只在本次任务独占的 work_dir 里找，绝不会认领别的任务或旧文件。
     let mut resolved = final_path.filter(|p| p.exists());
     if resolved.is_none() {
-        resolved = find_new_output(&save_dir, &before)
-            .or_else(|| find_output(&save_dir, &placeholder));
+        resolved = find_new_output(&work_dir, &before)
+            .or_else(|| find_output(&work_dir, &placeholder));
     }
 
     let mut view = entry.view.lock().await;
     if let Some(path) = resolved {
-        if let Some(name) = path.file_name() {
+        // 把产物从独占目录发布回用户选择的下载目录；只有发布成功才清理中间目录。
+        let published = publish_output(&path, &save_dir);
+        let kept_in_work_dir = published.starts_with(&work_dir);
+        if let Some(name) = published.file_name() {
             view.filename = name.to_string_lossy().to_string();
         }
-        view.save_path = path.to_string_lossy().to_string();
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        view.save_path = published.to_string_lossy().to_string();
+        let size = std::fs::metadata(&published).map(|m| m.len()).unwrap_or(0);
         view.total_bytes = size.max(view.downloaded_bytes);
         view.downloaded_bytes = view.total_bytes;
         entry.downloaded.store(view.total_bytes, Ordering::Relaxed);
+        if kept_in_work_dir {
+            // rename 失败，完整产物仍在独占目录里：必须保留目录，否则会被 guard 一起删掉。
+            guard.keep();
+        }
+        // 否则 guard 在函数返回时清掉整个独占目录（含 .part / .ytdl / .m4s）。
     } else {
-        return Err(EngineError::message("下载完成，但未找到输出的视频文件"));
+        // yt-dlp 退出 0 但没定位到产物：只有目录里确实存在完整媒体文件时才保留，
+        // 避免误删已下好的视频；纯中间产物一律清理，不再留空壳文件夹。
+        if guard.has_complete_media() {
+            guard.keep();
+            return Err(EngineError::message(
+                "下载完成，但未能定位输出文件；视频已保留在下载目录的 fluxdl-<任务id> 子目录，请手动取出",
+            ));
+        }
+        return Err(EngineError::message(
+            "下载完成，但未找到本次输出的视频文件；临时目录已清理，请重试或改用浏览器扩展嗅探到的视频直链下载",
+        ));
     }
     drop(view);
     Ok(())
 }
 
+/// 把独占目录里的最终产物发布回用户选择的下载目录。
+///
+/// 同名已存在时按 `name (1).ext` 避让；rename 失败时返回原路径，
+/// 调用方据此保留独占目录，避免把产物连同目录一起删掉。
+fn publish_output(path: &Path, save_dir: &Path) -> PathBuf {
+    let Some(name) = path.file_name() else {
+        return path.to_path_buf();
+    };
+    let name = name.to_string_lossy();
+    let candidate = save_dir.join(name.as_ref());
+    let target = if candidate.exists() {
+        let p = Path::new(name.as_ref());
+        let stem = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let ext = p
+            .extension()
+            .map(|s| format!(".{}", s.to_string_lossy()))
+            .unwrap_or_default();
+        let mut alt = candidate.clone();
+        for i in 1..1000 {
+            let attempt = save_dir.join(format!("{stem} ({i}){ext}"));
+            if !attempt.exists() {
+                alt = attempt;
+                break;
+            }
+        }
+        alt
+    } else {
+        candidate
+    };
+    std::fs::rename(path, &target)
+        .map(|_| target)
+        .unwrap_or_else(|_| path.to_path_buf())
+}
 
+/// 逐行读子进程输出，把进度 / 收尾协议行与错误日志正确分流。
+///
+/// `aria2_mode` 为 true 时认领 aria2 的 `[#gid ...]` 进度行；为 false（原生模式）
+/// 时认领 yt-dlp 自己的 `FLUXDL|...` 进度行。两种模式下 yt-dlp 的 `FLUXDONE|`
+/// 收尾行都原样转发，交给 `run()` 解析出最终路径。其余内容按 `ERR|` 上报。
+///
+/// ## 修复 A：原生模式曾经把所有行都加 `ERR|` 前缀
+///
+/// 旧实现 `!aria2_mode` 时直接 `spawn_line_reader(.., "ERR|")`，把 yt-dlp 的
+/// 进度行 `FLUXDL|...` 裹成 `ERR|FLUXDL|...`。`run()` 用 `strip_prefix("FLUXDL|")`
+/// 匹配不上，反被 `strip_prefix("ERR|")` 当成错误日志 —— 于是 UI 全程停在 0% /
+/// 未知，进度行还刷满了「最近错误」。现在原生模式只给非协议行加 `ERR|`。
+fn spawn_aria2_progress_reader<R>(reader: R, tx: mpsc::UnboundedSender<String>, aria2_mode: bool)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    if !aria2_mode {
+        spawn_native_reader(reader, tx);
+        return;
+    }
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(reader);
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    while let Some(&last) = buf.last() {
+                        if last == b'\n' || last == b'\r' {
+                            buf.pop();
+                        } else {
+                            break;
+                        }
+                    }
+                    let line = String::from_utf8_lossy(&buf);
+                    // 与 `aria2::spawn_progress_reader` 保持同一套过滤规则：
+                    // 装饰行（分隔线、汇总表头）既不转进度也不当报错，否则它们会
+                    // 挤进「最近错误」，任务失败时的提示就变成一堆分隔线。
+                    if let Some(progress) = aria2::parse_progress_line(&line) {
+                        if tx.send(progress).is_err() {
+                            break;
+                        }
+                    } else if line.starts_with("FLUXDONE|") {
+                        // yt-dlp 的收尾行：原样转发，否则会被 ERR| 分支吞掉，
+                        // 导致收尾拿不到最终路径，只能靠目录差分兜底。
+                        if tx.send(line.into_owned()).is_err() {
+                            break;
+                        }
+                    } else if !aria2::is_noise(&line) && tx.send(format!("ERR|{line}")).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// 原生（yt-dlp 直连）模式的输出分发。
+///
+/// yt-dlp 自己负责「取字节」，进度行格式就是 `FLUXDL|...`、收尾行是 `FLUXDONE|...`，
+/// 这两类必须**原样**交给 `run()` 解析；其余的才是需要上报的错误 / 日志。
+/// （详见 `spawn_aria2_progress_reader` 顶部关于修复 A 的说明。）
+fn spawn_native_reader<R>(reader: R, tx: mpsc::UnboundedSender<String>)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(reader);
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last_log = String::new();
+        let mut repeated = 0u32;
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    while let Some(&last) = buf.last() {
+                        if last == b'\n' || last == b'\r' {
+                            buf.pop();
+                        } else {
+                            break;
+                        }
+                    }
+                    let line = String::from_utf8_lossy(&buf).into_owned();
+                    if line.starts_with("FLUXDL|") || line.starts_with("FLUXDONE|") {
+                        if tx.send(line).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    // 0.3.4：0.3.3 把 B 站切回原生下载器后，最常用的这条路径
+                    // 反而绕过了 is_noise，yt-dlp 的阶段输出全被当 ERR| 灌进
+                    // 「最近错误」。这里与 aria2 模式用同一套过滤，并压掉重复行。
+                    if aria2::is_noise(&line) || is_ytdlp_routine_line(&line) {
+                        continue;
+                    }
+                    if line == last_log {
+                        repeated += 1;
+                        if repeated > 2 {
+                            continue;
+                        }
+                    } else {
+                        last_log = line.clone();
+                        repeated = 0;
+                    }
+                    if tx.send(format!("ERR|{line}")).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// yt-dlp 的常规阶段输出（合并 / 修复 / 分片提示），不是错误，不该进「最近错误」。
+/// 含 ERROR / error: 的行一律保留，避免把真正的失败吞掉。
+fn is_ytdlp_routine_line(line: &str) -> bool {
+    let t = line.trim_start();
+    (t.starts_with("[download]")
+        || t.starts_with("[Merger]")
+        || t.starts_with("[Fixup]")
+        || t.starts_with("[ExtractAudio]")
+        || t.starts_with("[info]")
+        || t.starts_with("[hlsnative]")
+        || t.starts_with("[dashsegments]"))
+        && !t.contains("ERROR")
+        && !t.contains("error:")
+}
+
+/// aria2c 的查找目录：用户显式配置优先，其次 yt-dlp / ffmpeg 所在目录，
+/// 最后是随包 tools/ 与 exe 同级目录（便携版布局）。
+fn aria2_candidates(options: &EngineOptions) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let push_dir_of = |dirs: &mut Vec<PathBuf>, file: &str| {
+        let file = file.trim();
+        if file.is_empty() {
+            return;
+        }
+        if let Some(parent) = Path::new(file).parent() {
+            if !parent.as_os_str().is_empty() {
+                dirs.push(parent.to_path_buf());
+            }
+        }
+    };
+    if let Some(explicit) = options.aria2_path.as_deref() {
+        // 允许直接给到 exe：父目录 + 文件名一并入列，`locate` 只做 join 判断。
+        push_dir_of(&mut dirs, explicit);
+        dirs.push(PathBuf::from(explicit));
+    }
+    push_dir_of(&mut dirs, &options.yt_dlp_path);
+    if let Some(ff) = options.ffmpeg_path.as_deref() {
+        push_dir_of(&mut dirs, ff);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            dirs.push(parent.join("tools"));
+            dirs.push(parent.to_path_buf());
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools"));
+    }
+    dirs
+}
+
+/// 把 yt-dlp 的英文报错翻译成一句中文可操作指引。
+///
+/// 0.3.5 修正：0.3.0~0.3.4 的 `Unsupported URL` 提示写着「FluxDL 目前支持
+/// B 站、抖音、快手、小红书、微博等国内站点」，与内置 yt-dlp 的实际能力不符
+/// ——打包版（2026.10.26，1755 个提取器）里**没有任何快手 / Kwai 提取器**。
+/// 0.3.9 之后：抖音作品页已改由 `douyin.rs` 免 Cookie 解析成直链，不再经过
+/// yt-dlp；B 档的「Cookie 来源」设置已移除。这里按「站点 + 错误类型」给出
+/// 真正可行的下一步，不再列举虚假支持名单、也不再引导配置任何凭证。
+fn failure_hint(errors: &[String], url: &str) -> &'static str {
+    let host = host_of(url);
+    let is_kuaishou = host == "kuaishou.com"
+        || host.ends_with(".kuaishou.com")
+        || host == "kwai.com"
+        || host.ends_with(".kwai.com");
+    // 快手网页链接：内置解析器根本没有该站点提取器，改参数也解析不出来。
+    // 唯一可行的路径是扩展嗅探到的 CDN 视频直链（普通下载任务）。
+    if is_kuaishou {
+        return "（内置视频解析器不支持快手的网页链接。请在浏览器扩展弹窗的资源列表里选择嗅探到的视频直链，用普通下载；或把该视频的直链地址粘贴到新建任务。首页 / 发现页不能整页解析）";
+    }
+
+    // 站点要求匿名校验 / 登录态：本项目不读取任何浏览器 Cookie。抖音作品页
+    // 已由 douyin.rs 免 Cookie 解析，走到这里说明是其它站点或 yt-dlp 的旧报错；
+    // 统一给出「换详情页链接 / 用扩展本页资源直链」的可操作路径。
+    let needs_cookie = errors.iter().any(|e| {
+        e.contains("Fresh cookies")
+            || e.contains("s_v_web_id")
+            || e.contains("not necessarily logged in")
+    });
+    if needs_cookie {
+        return "（该站点要求浏览器 Cookie 或匿名校验，本项目不读取任何登录态。请复制「单个视频」的详情页链接重试；抖音作品页会自动走免 Cookie 解析。仍失败时请用浏览器扩展「本页资源」里嗅探到的视频直链做普通下载）";
+    }
+
+    let unsupported = errors.iter().any(|e| {
+        e.contains("Unsupported URL")
+            || e.contains("is not a valid URL")
+            || e.contains("No video formats found")
+    });
+    if unsupported {
+        return "（这个链接不是单个视频的详情页——站点首页、发现页、精选页、合集页都无法解析。请打开要下载的那个视频、复制它的详情页链接重试；抖音「精选 / 推荐」页链接已自动归一化。仍不行时请用浏览器扩展资源列表里嗅探到的视频直链做普通下载）";
+    }
+    let need_login = errors.iter().any(|e| {
+        e.contains("login")
+            || e.contains("Sign in")
+            || e.contains("Premium")
+            || e.contains("会员")
+            || e.contains("DRM")
+    });
+    if need_login {
+        return "（该内容需要登录或会员权限，本项目不配置登录凭证。请换来源，或用浏览器扩展「本页资源」里嗅探到的视频直链做普通下载）";
+    }
+    ""
+}
 
 /// 记录目录里现有文件的大小 / 修改时间，用于下载后做差分。
 fn snapshot_files(dir: &Path) -> HashMap<PathBuf, (u64, SystemTime)> {
@@ -443,10 +1054,7 @@ fn snapshot_files(dir: &Path) -> HashMap<PathBuf, (u64, SystemTime)> {
 /// 这层兜底专门处理「FLUXDONE 路径不可解析」的情况：Windows 中文系统下
 /// `--print after_move` 可能吐 GBK 字节，lossy 解码后路径不存在，旧实现会
 /// 把一次成功下载误判成「未找到输出的视频文件」。
-fn find_new_output(
-    dir: &Path,
-    before: &HashMap<PathBuf, (u64, SystemTime)>,
-) -> Option<PathBuf> {
+fn find_new_output(dir: &Path, before: &HashMap<PathBuf, (u64, SystemTime)>) -> Option<PathBuf> {
     let mut best: Option<(SystemTime, PathBuf)> = None;
     for e in std::fs::read_dir(dir).ok()?.flatten() {
         let path = e.path();
@@ -477,24 +1085,56 @@ fn find_new_output(
     best.map(|(_, p)| p)
 }
 
+/// 媒体扩展名白名单：默认名场景下只认这些，避免误认领目录里无关的最新文件。
+fn is_media_ext(lower: &str) -> bool {
+    const EXTS: [&str; 12] = [
+        ".mp4", ".mkv", ".webm", ".flv", ".mov", ".avi", ".ts", ".m4a", ".mp3", ".aac", ".opus",
+        ".wav",
+    ];
+    EXTS.iter().any(|e| lower.ends_with(e))
+}
+
 fn find_output(dir: &Path, placeholder: &str) -> Option<PathBuf> {
     let stem = Path::new(placeholder)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    // 默认名（"video" / "video (1)" / "video (2)"…）来自 NewTaskOptions 未指定文件名，
+    // 与 yt-dlp 的真实产物名（`%(title).150B [%(id)s].%(ext)s`）毫无关系。
+    //
+    // 旧实现只认 `stem == "video"`：一旦默认名被 `unique_path_reserved` 唯一化成
+    // "video (1)"（下载目录里已存在 video / video.fluxdl-part 时必然发生），
+    // 这里就再也匹配不上任何真实文件。叠加 yt-dlp 对「目标已存在」会直接跳过下载
+    // （退出码 0、不触发 after_move、不打 FLUXDONE），`find_new_output` 又因文件
+    // 大小/mtime 未变化而落空 —— 最终把一次「文件已在本地」误报成
+    // 「下载完成，但未找到输出的视频文件」。
+    let generic = stem.is_empty() || stem == "video" || stem.starts_with("video (");
+    let mut best: Option<(SystemTime, PathBuf)> = None;
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
-        let meta = entry.metadata().ok()?;
-        if !meta.is_file() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() == 0 {
             continue;
         }
         let name = path.file_name()?.to_string_lossy().to_string();
-        if name.ends_with(".part") || name.ends_with(".ytdl") {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".part")
+            || lower.ends_with(".ytdl")
+            || lower.ends_with(".fluxdl-part")
+            || lower.ends_with(".tmp")
+        {
             continue;
         }
-        let matches = name.contains(&stem) || stem.is_empty() || stem == "video";
+        let matches = if generic {
+            // 默认名场景：认领目录内最新的媒体文件（含本次之前就存在的），
+            // 以覆盖「重试同一视频、yt-dlp 跳过下载」这一最常见分支。
+            is_media_ext(&lower)
+        } else {
+            name.contains(&stem)
+        };
         if !matches {
             continue;
         }
@@ -509,13 +1149,43 @@ fn find_output(dir: &Path, placeholder: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        needs_bot_hint, needs_format_retry, needs_reload_retry, find_new_output, snapshot_files,
-        spawn_line_reader, CookieFileGuard, DEFAULT_FORMAT, FALLBACK_FORMAT,
-        FALLBACK_CLIENTS, FORMAT_HINT,
-    };
+    use super::*;
     use tokio::io::{duplex, AsyncWriteExt};
-    use tokio::sync::mpsc;
+
+    /// 真机截图里的乱码标题（`yt-dlp.exe` stdout 按 ANSI 代码页输出后被 Latin-1 解读）。
+    /// 这类串绝不能回填到任务标题，否则用户看到的比默认名 `video (1)` 还糟。
+    #[test]
+    fn looks_mojibake_rejects_real_world_garbled_title() {
+        assert!(looks_mojibake("4K|⯃ÜŨ♦GGotBBang♦"));
+        assert!(looks_mojibake("â€œNever Gonna Give You Upâ€"));
+        assert!(looks_mojibake("\u{FFFD}\u{FFFD}\u{FFFD}"));
+    }
+
+    /// 正常中文 / 日文 / 带符号标题不能误判，否则合法标题会被丢掉退回默认名。
+    /// 0.3.3 的「非 CJK 占比」规则把下面前四组全部误杀过，这里是回归保护。
+    #[test]
+    fn looks_mojibake_accepts_normal_titles() {
+        assert!(!looks_mojibake("【4K】GGotBBang 官方MV"));
+        assert!(!looks_mojibake("Never Gonna Give You Up (Official Video)"));
+        assert!(!looks_mojibake("★ 日语标题 ♪ テスト"));
+        assert!(!looks_mojibake("SÃO PAULO 4K"));
+        assert!(!looks_mojibake("Привет мир 2025"));
+        assert!(!looks_mojibake("สวัสดีครับ"));
+        assert!(!looks_mojibake("Tiếng Việt Official MV"));
+        assert!(!looks_mojibake("Best 🔥🔥🔥 4K"));
+        assert!(!looks_mojibake(""));
+    }
+
+    /// B 站 DASH 分片流必须交回 yt-dlp 原生下载器：碎片只有 100 KB 级，
+    /// aria2 的 `-k4M` 永不切分，只会恒用 1 条连接（真机 `CN:1`）并多起进程。
+    /// 整文件直链站点则仍应交给 aria2 拿多连接。
+    #[test]
+    fn aria2_suits_url_excludes_bilibili_only() {
+        assert!(!aria2_suits_url("https://www.bilibili.com/video/BV1GysQ6hEgB"));
+        assert!(!aria2_suits_url("https://b23.tv/abcdefg"));
+        assert!(aria2_suits_url("https://example.com/big.iso"));
+        assert!(aria2_suits_url("https://cdn.example.org/a/b/c.zip?x=1"));
+    }
 
     async fn collect(bytes: &[u8], prefix: &'static str) -> Vec<String> {
         let (mut writer, reader) = duplex(1024);
@@ -581,76 +1251,304 @@ mod tests {
         assert!(find_new_output(dir.path(), &before).is_none());
     }
 
+    /// 回归：默认名被唯一化成 "video (1)" 后，仍要能认领目录里真实标题的产物。
+    ///
+    /// 旧实现 `stem == "video"` 对 "video (1)" 恒为假，导致「重试同一视频、
+    /// yt-dlp 判定文件已存在而跳过下载」被误报成「下载完成，但未找到输出文件」。
     #[test]
-    fn cookie_file_is_deleted_when_task_finishes() {
+    fn find_output_accepts_media_when_placeholder_is_deduped_default() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cookies.txt");
-        std::fs::write(&path, b"credential").unwrap();
-        {
-            let _guard = CookieFileGuard::new(Some(path.clone()));
-            assert!(path.exists());
-        }
-        assert!(!path.exists(), "任务结束后凭证文件必须删掉");
+        let real = dir.path().join("【某视频标题】 [BV1GysQ6hEgB].mp4");
+        std::fs::write(&real, b"video-data").unwrap();
+        let found = find_output(dir.path(), "video (1)").expect("应兜底认领真实产物");
+        assert_eq!(found, real);
+    }
+
+    /// 默认名场景下不能把目录里无关的最新文件（日志、说明）当成视频产物。
+    #[test]
+    fn find_output_ignores_non_media_for_generic_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("日志.txt"), b"log").unwrap();
+        std::fs::write(dir.path().join("aaa.log"), b"log").unwrap();
+        assert!(
+            find_output(dir.path(), "video").is_none(),
+            "非媒体文件不应被认领"
+        );
+    }
+
+    /// 显式文件名（非默认名）仍按名字匹配，不走媒体扩展名兜底。
+    #[test]
+    fn find_output_matches_explicit_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.bin"), b"data").unwrap();
+        let found = find_output(dir.path(), "report.bin").expect("显式名应命中");
+        assert_eq!(found.file_name().unwrap(), "report.bin");
     }
 
     #[test]
-    fn cookie_file_is_kept_when_task_is_paused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cookies.txt");
-        std::fs::write(&path, b"credential").unwrap();
+    fn default_format_prefers_video_plus_audio() {
+        assert_eq!(DEFAULT_FORMAT, "bv*+ba/b");
+        // 0.3.0 起不再有「放宽到 worst」的降级链
+        assert!(!DEFAULT_FORMAT.contains("worst"));
+    }
+
+    #[test]
+    fn concurrent_fragments_is_multiple_but_bounded() {
+        assert!(CONCURRENT_FRAGMENTS >= 2, "并发至少 2 路才有意义");
+        assert!(CONCURRENT_FRAGMENTS <= 8, "过高容易触发站点风控");
+    }
+
+    #[test]
+    fn bilibili_detection_covers_short_link() {
+        assert!(is_bilibili("https://www.bilibili.com/video/BV1xx"));
+        assert!(is_bilibili("https://bilibili.com/video/BV1xx"));
+        assert!(is_bilibili("https://b23.tv/abcd"));
+        assert!(is_bilibili("http://m.bilibili.com/video/BV1xx?p=2"));
+        assert!(!is_bilibili("https://www.douyin.com/video/1"));
+        // 不能把「域名里碰巧含 b23.tv」的其它站点也算进来
+        assert!(!is_bilibili("https://example.com/b23.tv-x"));
+        assert!(!is_bilibili("https://notbilibili.com/x"));
+        // 主机名比较要能穿透 userinfo 与端口
+        assert!(is_bilibili("https://user:pw@b23.tv:443/abcd"));
+    }
+
+    #[test]
+    fn unsupported_url_gets_actionable_hint() {
+        let hint = failure_hint(
+            &["ERROR: Unsupported URL: https://example.com".into()],
+            "https://example.com",
+        );
+        assert!(hint.contains("详情页"));
+        assert!(hint.contains("普通下载"));
+        // 0.3.5：不再宣称「支持 B 站、抖音、快手…」这类与内置解析器能力不符的名单
+        assert!(!hint.contains("支持 B 站"));
+    }
+
+    #[test]
+    fn login_error_no_longer_guides_cookie_setup() {
+        let hint = failure_hint(
+            &["ERROR: This video requires login".into()],
+            "https://example.com",
+        );
+        assert!(hint.contains("本页资源"), "登录报错应给出可操作路径：{hint}");
+        assert!(!hint.contains("Cookie 来源"), "B 档已移除，不得再引导配置 Cookie");
+        assert!(!hint.contains("不保存任何账号凭证"), "不得残留旧红线文案");
+    }
+
+    #[test]
+    fn unknown_error_has_no_hint() {
+        assert_eq!(
+            failure_hint(&["ERROR: 404 Not Found".into()], "https://example.com"),
+            ""
+        );
+    }
+
+    /// 0.3.5：抖音「精选 / 推荐 / 主页」带 modal_id 的聚合页必须归一化成
+    /// yt-dlp 唯一认识的 /video/<id>；其它站点 / 已是详情页 / 非法 id 原样返回。
+    #[test]
+    fn douyin_modal_id_urls_are_normalized_to_video_page() {
+        assert_eq!(
+            normalize_media_url("https://www.douyin.com/jingxuan?modal_id=7702008165390421263"),
+            "https://www.douyin.com/video/7702008165390421263"
+        );
+        assert_eq!(
+            normalize_media_url("https://www.douyin.com/user/MS4wLjABAAAA?modal_id=1234567890"),
+            "https://www.douyin.com/video/1234567890"
+        );
+        assert_eq!(
+            normalize_media_url("https://www.douyin.com/discover?modal_id=123&from=tab"),
+            "https://www.douyin.com/video/123"
+        );
+        assert_eq!(
+            normalize_media_url("https://v.douyin.com/iRabcdef/?modal_id=9988"),
+            "https://www.douyin.com/video/9988"
+        );
+        // 已是详情页：原样
+        assert_eq!(
+            normalize_media_url("https://www.douyin.com/video/7702008165390421263"),
+            "https://www.douyin.com/video/7702008165390421263"
+        );
+        // 非纯数字 / 无 modal_id / 非抖音：原样
+        assert_eq!(
+            normalize_media_url("https://www.douyin.com/jingxuan?modal_id=abc"),
+            "https://www.douyin.com/jingxuan?modal_id=abc"
+        );
+        assert_eq!(
+            normalize_media_url("https://www.douyin.com/jingxuan"),
+            "https://www.douyin.com/jingxuan"
+        );
+        assert_eq!(
+            normalize_media_url("https://www.kuaishou.com/new-reco?modal_id=123"),
+            "https://www.kuaishou.com/new-reco?modal_id=123"
+        );
+        assert_eq!(
+            normalize_media_url("https://example.com/bilibili.com-x/video.mp4?modal_id=9"),
+            "https://example.com/bilibili.com-x/video.mp4?modal_id=9"
+        );
+    }
+
+    /// 0.3.5：CDN 容器直链必须短路成 HTTP 普通下载，不能因主机名命中站点名单
+    /// 被误建成 Media 任务（会报 Unsupported URL）；分片清单不短路。
+    #[test]
+    fn direct_container_files_are_detected_without_catching_fragments() {
+        for url in [
+            "https://v2.kuaishou.com/abc.mp4",
+            "https://cdn.douyin.com/x/y.mp4?token=deadbeef",
+            "https://example.com/a.mkv#t=10",
+            "https://example.com/a.MP4",
+            "https://example.com/song.mp3",
+        ] {
+            assert!(is_direct_media_file(url), "完整容器直链应短路：{url}");
+        }
+        for url in [
+            "https://www.bilibili.com/video/BV1xx",
+            "https://v2.kuaishou.com/seg-1.m4s",
+            "https://cdn.example.com/index.m3u8?token=x",
+            "https://cdn.example.com/manifest.mpd",
+            "https://example.com/bilibili.com-x/video.mp4.zip",
+        ] {
+            assert!(!is_direct_media_file(url), "分片 / 页面 / 其它扩展不应短路：{url}");
+        }
+    }
+
+    /// 失败提示按站点分流，不再宣称「支持快手」这类与内置解析器实际能力不符的名单。
+    /// 抖音已改走 douyin.rs 免 Cookie 解析，任何提示都不得再引导配置 Cookie 来源。
+    #[test]
+    fn failure_hints_are_site_aware_and_never_guide_cookie_setup() {
+        let ks = failure_hint(
+            &["ERROR: Unsupported URL: https://www.kuaishou.com/new-reco".into()],
+            "https://www.kuaishou.com/new-reco",
+        );
+        assert!(ks.contains("不支持快手的网页链接"));
+        assert!(ks.contains("资源列表"));
+
+        let fresh = failure_hint(
+            &["ERROR: Fresh cookies (not necessarily logged in) are needed".into()],
+            "https://www.douyin.com/video/123",
+        );
+        assert!(fresh.contains("不读取任何登录态"), "应明确不碰凭证：{fresh}");
+        assert!(fresh.contains("本页资源"), "应给出可操作路径：{fresh}");
+        assert!(!fresh.contains("Cookie 来源"), "不得再引导配置 Cookie 来源：{fresh}");
+
+        let unsupported = failure_hint(
+            &["ERROR: Unsupported URL: https://example.com/x".into()],
+            "https://example.com/x",
+        );
+        assert!(unsupported.contains("详情页"));
+        assert!(!unsupported.contains("支持 B 站、抖音、快手"));
+
+        assert_eq!(
+            failure_hint(&["ERROR: 404 Not Found".into()], "https://example.com/x"),
+            ""
+        );
+    }
+
+    /// 抖音整页链接不再被人为拒绝（由 douyin.rs 免 Cookie 解析成直链），
+    /// 快手因打包 yt-dlp 无提取器仍拦截，纯首页 / 发现页拦截，容器直链与
+    /// 正常详情页放行。
+    #[test]
+    fn media_page_blocker_allows_douyin_pages_but_blocks_kuaishou_and_home() {
+        // 应拦截：快手全站、无 id 的站点首页 / 精选 / 发现页
+        for url in [
+            "https://www.kuaishou.com/new-reco",
+            "https://www.kuaishou.com/short-video/3xabc",
+            "https://v.kuaishou.com/abc",
+            "https://www.douyin.com/jingxuan",
+            "https://www.bilibili.com/",
+            "https://www.bilibili.com/index",
+        ] {
+            assert!(
+                media_page_blocker(url).is_some(),
+                "应提前拦截，不要创建必然失败的 Media 任务：{url}"
+            );
+        }
+        // 应放行：抖音详情页 / 短链 / 带 modal_id 的聚合页（会被归一化成详情页）
+        for url in [
+            "https://www.douyin.com/video/7702008165390421263",
+            "https://www.douyin.com/jingxuan?modal_id=7702008165390421263",
+            "https://v.douyin.com/iRabcdef/",
+            "https://www.iesdouyin.com/share/video/7702008165390421263",
+            "https://www.bilibili.com/video/BV1GysQ6hEgB",
+            "https://b23.tv/abcd",
+            "https://v2.kuaishou.com/abc.mp4",
+            "https://cdn.douyin.com/x/y.mp4?token=1",
+            "https://example.com/video.mp4",
+            "https://example.com/article/123",
+            "https://www.youtube.com/watch?v=abcdefghijk",
+        ] {
+            assert_eq!(media_page_blocker(url), None, "抖音由 douyin.rs 接管，不应拦：{url}");
+        }
+        let hint = media_page_blocker("https://www.kuaishou.com/new-reco").unwrap();
+        assert!(hint.contains("本页资源"), "提示必须给出可操作路径：{hint}");
+        assert!(!hint.contains("支持快手"), "不得再宣称支持快手整页解析");
+        assert!(!hint.contains("cookie"), "快手拦截原因不是 cookie，别误导用户去配凭证");
+    }
+
+    /// 0.3.6：目录守卫覆盖所有退出路径。未 keep 时 Drop 删掉整个目录
+    /// （含 .part / .ytdl / 分片），keep 时保留完整产物不被误删。
+    #[test]
+    fn work_dir_guard_cleans_up_unless_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let dropped = tmp.path().join("fluxdl-deadbeef");
+        std::fs::create_dir_all(&dropped).unwrap();
+        std::fs::write(dropped.join("out.mp4.part"), b"partial").unwrap();
+        std::fs::write(dropped.join("seg-1.m4s"), b"fragment").unwrap();
         {
-            let mut guard = CookieFileGuard::new(Some(path.clone()));
+            let _guard = WorkDirGuard::new(dropped.clone());
+            assert!(dropped.exists());
+        }
+        assert!(!dropped.exists(), "失败 / 暂停退出时目录必须被自动清理");
+
+        let kept = tmp.path().join("fluxdl-12345678");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::write(kept.join("real-video.mp4"), b"complete").unwrap();
+        {
+            let mut guard = WorkDirGuard::new(kept.clone());
+            assert!(guard.has_complete_media());
             guard.keep();
         }
-        assert!(path.exists(), "暂停时保留 cookie 文件以便续跑");
+        assert!(kept.exists(), "keep 后必须保留目录里的完整视频");
+        assert!(kept.join("real-video.mp4").exists());
     }
 
+    /// 只有中间态文件时不算「完整媒体」，不能因此把垃圾目录留下来。
     #[test]
-    fn bot_hint_only_for_youtube_challenge() {
-        assert!(needs_bot_hint(&[
-            "ERROR: [youtube] abc: Sign in to confirm you're not a bot".into()
-        ]));
-        assert!(needs_bot_hint(&["Use --cookies-from-browser".into()]));
-        assert!(!needs_bot_hint(&["ERROR: 404 Not Found".into()]));
+    fn work_dir_guard_ignores_partial_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("fluxdl-abcdef12");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("out.mp4.part"), b"partial").unwrap();
+        std::fs::write(work.join("out.mp4.ytdl"), b"meta").unwrap();
+        std::fs::write(work.join("seg-1.m4s.tmp"), b"fragment").unwrap();
+        let guard = WorkDirGuard::new(work.clone());
+        assert!(!guard.has_complete_media(), "中间态文件不应被当成已下好的视频");
+        drop(guard);
+        assert!(!work.exists());
     }
 
-    #[test]
-    fn format_retry_only_for_missing_formats() {
-        assert!(needs_format_retry(&[
-            "ERROR: [youtube] abc: Requested format is not available. Use --list-formats".into()
-        ]));
-        assert!(needs_format_retry(&[
-            "ERROR: No video formats available for the requested format".into()
-        ]));
-        // bot 校验不能误判成格式问题，否则会白白多跑一轮 yt-dlp
-        assert!(!needs_format_retry(&[
-            "ERROR: [youtube] abc: Sign in to confirm you're not a bot".into()
-        ]));
-        assert!(!needs_format_retry(&["ERROR: 404 Not Found".into()]));
-    }
-
-    #[test]
-    fn fallback_is_more_permissive_but_default_is_unchanged() {
-        assert_eq!(DEFAULT_FORMAT, "bv*+ba/b", "正常路径必须保持原格式串");
-        assert!(FALLBACK_FORMAT.starts_with(DEFAULT_FORMAT));
-        assert!(FALLBACK_FORMAT.ends_with("/worst"));
-        assert!(FALLBACK_CLIENTS.contains("android_vr"));
-        assert!(FALLBACK_CLIENTS.contains("web_safari"));
-        assert!(FORMAT_HINT.contains("PO Token"));
-    }
-
-    #[test]
-    fn reload_retry_only_for_page_reload_errors() {
-        assert!(needs_reload_retry(&[
-            "ERROR: [youtube] abc: The page needs to be reloaded.".into()
-        ]));
-        assert!(needs_reload_retry(&[
-            "ERROR: [youtube] abc: Please sign in to confirm you're not a bot".into()
-        ]));
-        // 格式问题不能误判成页面重载，否则会白白触发一次 yt-dlp 更新+重试
-        assert!(!needs_reload_retry(&[
-            "ERROR: [youtube] abc: Requested format is not available.".into()
-        ]));
-        assert!(!needs_reload_retry(&["ERROR: 404 Not Found".into()]));
+    /// 回归（修复 A）：原生（非 aria2）模式必须把 `FLUXDL|` / `FLUXDONE|` 当协议行
+    /// 原样转发，绝不能裹上 `ERR|` —— 旧实现 `spawn_line_reader(.., "ERR|")` 会把进度行
+    /// 变成 `ERR|FLUXDL|...`，run() 的 `strip_prefix("FLUXDL|")` 匹配不上，进度被当成
+    /// 错误日志，UI 全程停在 0% / 未知。
+    #[tokio::test]
+    async fn native_reader_forwards_progress_without_err_prefix() {
+        let payload = b"FLUXDL|100|200|200|1024|1|t.mp4\nFLUXDONE|/tmp/t.mp4\nsome yt-dlp log line\n";
+        let (mut w, r) = duplex(2048);
+        let owned = payload.to_vec();
+        tokio::spawn(async move {
+            w.write_all(&owned).await.unwrap();
+            drop(w);
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_native_reader(r, tx);
+        let mut lines = Vec::new();
+        while let Some(l) = rx.recv().await {
+            lines.push(l);
+        }
+        assert_eq!(lines.len(), 3, "三行都应被转发：{lines:?}");
+        assert!(lines[0].starts_with("FLUXDL|"), "进度行必须原样，不能被 ERR| 包裹：{lines:?}");
+        assert!(lines[1].starts_with("FLUXDONE|"), "收尾行必须原样：{lines:?}");
+        assert!(lines[2].starts_with("ERR|"), "普通日志行应加 ERR| 前缀：{lines:?}");
     }
 }

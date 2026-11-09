@@ -22,6 +22,7 @@ import { useStore } from "../store";
 import { backend, isTauri } from "../lib/backend";
 import type { EngineInfo, EngineOptions, ToolProgress } from "../lib/types";
 import { cx, formatBytes, formatSpeed } from "../lib/format";
+import { UpdateSection, ToolVersionPicker, AppVersionPicker } from "./UpdateSection";
 
 const LIMITS = [
   { value: null, label: "不限速" },
@@ -59,6 +60,7 @@ export function SettingsPage() {
   const pushToast = useStore((s) => s.pushToast);
 
   const [info, setInfo] = useState<EngineInfo | null>(null);
+  const [appVersion, setAppVersion] = useState<string>("");
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(true);
   const [installing, setInstalling] = useState(false);
@@ -67,6 +69,11 @@ export function SettingsPage() {
 
   useEffect(() => {
     void refreshInfo();
+    // 版本号以后端 package_info 为准，避免前端写死一份、发版时漏改。
+    void backend
+      .appVersionInfo()
+      .then((v) => setAppVersion(v.appVersion))
+      .catch(() => setAppVersion(""));
     return () => {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
@@ -125,12 +132,28 @@ export function SettingsPage() {
     }
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {
-      const next = useStore.getState().settings;
+      const state = useStore.getState();
+      // 首屏 getEngineOptions 还没回来时，settings 仍是硬编码默认值；
+      // 此时写回会把用户的真实配置（尤其 aria2Path）覆盖掉。
+      if (!state.settingsLoaded) {
+        pushToast("设置尚未加载完成，请稍后重试", "error");
+        return;
+      }
+      const next = state.settings;
       try {
-        await backend.setEngineOptions(next);
+        const confirmed = await backend.setEngineOptions(next);
+        if (confirmed) useStore.getState().setSettings(confirmed);
         setSaved(true);
       } catch (error) {
         pushToast(`设置保存失败：${error}`, "error");
+        // 回滚到后端实际值，避免界面保留一个没落盘的设置
+        try {
+          const actual = await backend.getEngineOptions();
+          useStore.getState().setSettings(actual);
+        } catch {
+          // 读取也失败时保持现状，错误提示已经给出
+        }
+        setSaved(false);
       }
     }, 450);
   };
@@ -410,6 +433,53 @@ export function SettingsPage() {
           </div>
         </div>
 
+        <div className="setting-row">
+          <div className="setting-copy">
+            <label>aria2c 路径（视频加速）</label>
+            <p>
+              {settings.aria2Path ? (
+                <span className="check-ok">已启用多连接下载（16 路）</span>
+              ) : (
+                "留空自动探测；未找到时退回 yt-dlp 单连接下载，速度会慢数倍"
+              )}
+            </p>
+          </div>
+          <div className="setting-control wide">
+            <div className="input-with-button">
+              <input
+                value={settings.aria2Path ?? ""}
+                onChange={(event) =>
+                  update({ aria2Path: event.target.value.trim() || null })
+                }
+                placeholder="留空则自动探测 tools/aria2c.exe"
+                spellCheck={false}
+              />
+              <button
+                className="input-button"
+                onClick={async () => {
+                  const picked = await backend.pickFile(settings.aria2Path ?? "");
+                  if (picked) update({ aria2Path: picked });
+                }}
+                title="选择 aria2c 可执行文件"
+              >
+                <FolderOpen size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="tip-card">
+          <Sparkles size={15} />
+          <div className="tip-body">
+            <p>
+              粘贴抖音视频详情页链接（或 v.douyin.com 短链）到「新建任务」即可解析下载：
+              引擎会用免 Cookie 的移动端详情接口取出无水印直链，不读取任何登录态、不需要配置 Cookie。
+              图集、实况及被风控的作品可能无法解析，此时请用扩展「本页资源」里嗅探到的视频直链；
+              快手网页链接因内置解析器无该站点提取器，同样请用「本页资源」直链。
+            </p>
+          </div>
+        </div>
+
         <div className="setting-row inline">
           <div className="setting-copy">
             <label>自动更新 yt-dlp</label>
@@ -420,6 +490,19 @@ export function SettingsPage() {
             onChange={(next) => update({ autoUpdateYtDlp: next })}
           />
         </div>
+
+        <AppVersionPicker />
+
+        <ToolVersionPicker
+          tool="yt-dlp"
+          title="yt-dlp"
+          hint="可随时切回旧版本：YouTube 改版后新版解析失败时，回滚往往能立刻恢复下载。"
+        />
+        <ToolVersionPicker
+          tool="ffmpeg"
+          title="ffmpeg"
+          hint="只在合并高清音视频时用到；换版本不影响普通 HTTP 下载。"
+        />
 
         <div className="tip-card">
           <Sparkles size={15} />
@@ -539,6 +622,8 @@ export function SettingsPage() {
         </div>
       </section>
 
+      <UpdateSection />
+
       <section className="settings-section">
         <div className="section-head">
           <span className="section-icon">
@@ -552,7 +637,7 @@ export function SettingsPage() {
         <div className="about-grid">
           <div className="about-item">
             <span>应用版本</span>
-            <strong>0.1.0</strong>
+            <strong>{appVersion ? `v${appVersion}` : "—"}</strong>
           </div>
           <div className="about-item">
             <span>引擎版本</span>

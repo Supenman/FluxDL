@@ -9,6 +9,7 @@ import {
   Monitor,
 } from "lucide-react";
 import { isTauri, windowControls } from "../lib/backend";
+import pkg from "../../package.json";
 
 export function Titlebar() {
   const theme = useStore((s) => s.theme);
@@ -37,7 +38,7 @@ export function Titlebar() {
       <div className="titlebar-brand" data-tauri-drag-region>
         <Logo size={19} />
         <span className="brand-name">FluxDL</span>
-        <span className="brand-version">0.1</span>
+        <span className="brand-version">{pkg.version}</span>
         {isTauri ? (
           <span className="engine-chip">
             <span className="live-dot" />

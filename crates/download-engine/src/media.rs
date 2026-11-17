@@ -243,6 +243,18 @@ pub fn is_direct_media_file(url: &str) -> bool {
     EXTS.iter().any(|e| last.ends_with(e))
 }
 
+/// URL 是否为 HLS / DASH 清单直链（`.m3u8` / `.mpd`）。
+///
+/// 与 `is_direct_media_file` 互斥：后者只认完整容器文件，清单必须交给 yt-dlp
+/// 解析并合并分片，不能被当作文本走 HTTP 直链下载。前端 `isHlsManifest`
+/// 与本函数逐项一致，由契约脚本校验。
+pub fn is_hls_manifest(url: &str) -> bool {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let last = path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+    last.ends_with(".m3u8") || last.ends_with(".mpd")
+}
+
 /// 独占工作目录的生命周期守卫。
 ///
 /// 0.3.6 之前只在一处清理 `fluxdl-<id>` 子目录：下载成功且产物已 rename 回
@@ -1408,6 +1420,30 @@ mod tests {
             "https://example.com/bilibili.com-x/video.mp4.zip",
         ] {
             assert!(!is_direct_media_file(url), "分片 / 页面 / 其它扩展不应短路：{url}");
+        }
+    }
+
+    /// B3：HLS / DASH 清单直链必须被识别为媒体任务（交 yt-dlp 合并分片），
+    /// 且与容器直链判定互斥。带查询串、大写扩展名都要认出。
+    #[test]
+    fn hls_manifests_are_detected_and_disjoint_from_container_files() {
+        for url in [
+            "https://cdn.example.com/index.m3u8",
+            "https://cdn.example.com/index.m3u8?token=x",
+            "https://cdn.example.com/MASTER.M3U8#t=10",
+            "https://cdn.example.com/manifest.mpd",
+            "https://v2.kuaishou.com/hls/720p/index.m3u8",
+        ] {
+            assert!(is_hls_manifest(url), "清单直链应判为媒体：{url}");
+            assert!(!is_direct_media_file(url), "清单不能被当成容器直链：{url}");
+        }
+        for url in [
+            "https://v2.kuaishou.com/abc.mp4",
+            "https://cdn.example.com/seg-1.m4s",
+            "https://www.bilibili.com/video/BV1xx",
+            "https://cdn.example.com/index.m3u8.txt",
+        ] {
+            assert!(!is_hls_manifest(url), "非清单不应判为 HLS：{url}");
         }
     }
 

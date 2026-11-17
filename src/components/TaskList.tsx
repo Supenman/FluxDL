@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useEffect } from "react";
 import { useStore, sortTasks, taskMatchesFilter } from "../store";
 import type { TaskStatus } from "../lib/types";
 import { TaskRow } from "./TaskRow";
@@ -18,6 +18,7 @@ export function TaskList() {
   const sort = useStore((s) => s.sort);
   const selectedId = useStore((s) => s.selectedId);
   const select = useStore((s) => s.select);
+  const compact = useStore((s) => s.compact);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -32,6 +33,33 @@ export function TaskList() {
     });
     return sortTasks(matched, sort);
   }, [tasks, filter, query, sort]);
+
+  // 键盘导航：↑/↓ 在当前筛选结果中移动选中项（抽屉随之更新），Home/End 跳首尾。
+  // 输入框聚焦或命令面板打开时不接管，避免与打字冲突。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (useStore.getState().commandOpen || useStore.getState().newTaskOpen) return;
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+      const ids = filtered.map((t) => t.id);
+      if (ids.length === 0) return;
+      e.preventDefault();
+      const cur = useStore.getState().selectedId;
+      const at = cur ? ids.indexOf(cur) : -1;
+      let next = at;
+      if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = ids.length - 1;
+      else if (e.key === "ArrowDown") next = at < 0 ? 0 : Math.min(ids.length - 1, at + 1);
+      else next = at < 0 ? ids.length - 1 : Math.max(0, at - 1);
+      useStore.getState().select(ids[next]);
+      window.requestAnimationFrame(() => {
+        document.querySelector(".task-row.is-selected")?.scrollIntoView({ block: "nearest" });
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [filtered]);
 
   if (tasks.length === 0) {
     return <EmptyState mode="empty" />;
@@ -53,6 +81,7 @@ export function TaskList() {
           <TaskRow
             key={task.id}
             task={task}
+            compact={compact}
             selected={selectedId === task.id}
             onSelect={() => select(selectedId === task.id ? null : task.id)}
           />
@@ -77,6 +106,7 @@ export function TaskList() {
               <TaskRow
                 key={task.id}
                 task={task}
+                compact={compact}
                 selected={selectedId === task.id}
                 onSelect={() => select(selectedId === task.id ? null : task.id)}
               />

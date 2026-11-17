@@ -72,6 +72,9 @@ pub struct TaskView {
     pub format: Option<String>,
     pub mime: Option<String>,
     pub domain: String,
+    /// B2 定时下载：计划开始的 UTC 毫秒时间戳。有值且任务处于 Paused 时表示
+    /// 等待定时触发；触发完成或用户手动 pause/resume 后清空。
+    pub scheduled_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -88,6 +91,9 @@ pub struct NewTaskOptions {
     pub proxy: Option<String>,
     pub headers: BTreeMap<String, String>,
     pub format: Option<String>,
+    /// B2 定时下载：期望的开始时间（UTC 毫秒时间戳）。仅当时间在未来时生效；
+    /// 到点前任务保持暂停，到点由引擎 tick 自动启动。
+    pub scheduled_at: Option<i64>,
     /// 本次任务是否允许用 aria2c 作为 yt-dlp 的外部下载器（多连接）。
     ///
     /// 单独放在任务级而不是只放全局，是因为限速是**按任务**设置的：任务一旦
@@ -128,7 +134,7 @@ impl Default for EngineOptions {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| ".".into()),
             max_active: 3,
-            connections: 8,
+            connections: 0, // 自动档：由 http.rs 按文件体积收敛；1-32 为用户显式值
             global_speed_limit: None,
             proxy: None,
             user_agent: "FluxDL/0.1 (Windows)".into(),

@@ -23,6 +23,11 @@ const GB = 1024 * MB;
 
 function segments(total: number, downloaded: number, count: number): Segment[] {
   if (!total) return [];
+  // count=0 是自动档，mock 里按体积给个合理段数，避免 total/0 得 Infinity。
+  if (count <= 0) {
+    const mib = 1024 * 1024;
+    count = total < 4 * mib ? 2 : total < 32 * mib ? 4 : total < 256 * mib ? 8 : 16;
+  }
   const chunk = Math.floor(total / count);
   const out: Segment[] = [];
   let left = downloaded;
@@ -83,6 +88,7 @@ function seedTasks(): Task[] {
       format: kind === "media" ? "mp4" : null,
       mime: kind === "media" ? "video/mp4" : "application/octet-stream",
       domain: new URL(url).hostname.replace(/^www\./, ""),
+      scheduledAt: null,
       ...extra,
     };
   };
@@ -200,7 +206,7 @@ export class MockBackend {
   private options: EngineOptions = {
     saveDir: "C:\\Users\\Alex\\Downloads",
     maxActive: 3,
-    connections: 8,
+    connections: 0, // 与真实后端 / store 一致：默认自动档
     globalSpeedLimit: null,
     proxy: null,
     userAgent: "FluxDL/0.1 (Windows)",
@@ -226,6 +232,19 @@ export class MockBackend {
   private tick() {
     const now = Date.now();
     for (const task of this.tasks) {
+      // B2：定时到点，清空计划时间并转入正常启动流程。
+      if (
+        task.status === "paused" &&
+        task.scheduledAt != null &&
+        task.scheduledAt > 0 &&
+        task.scheduledAt <= now
+      ) {
+        task.scheduledAt = null;
+        task.status = "queued";
+        task.createdAt = now;
+        this.emit({ type: "task", payload: { ...task } });
+        continue;
+      }
       if (task.status === "downloading") {
         const jitter = 0.82 + Math.random() * 0.36;
         const speed = Math.round(
@@ -306,6 +325,7 @@ export class MockBackend {
         format: kind === "media" ? opts.format ?? "mp4" : null,
         mime: kind === "media" ? "video/mp4" : null,
         domain: new URL(url).hostname.replace(/^www\./, ""),
+        scheduledAt: opts.scheduledAt ?? null,
       };
       this.tasks.unshift(task);
       tasks.push(task);

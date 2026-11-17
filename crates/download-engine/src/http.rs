@@ -111,7 +111,16 @@ async fn probe(
         }
 
         let headers = resp.headers().clone();
-        drop(resp);
+        // A3 启动优化：Range 探测（bytes=0-0）的响应体只有 1 字节，消费掉它，
+        // 让这条刚建好的连接回到 keep-alive 池，首个分段可直接复用，
+        // 省掉一次 TCP/TLS 握手（弱网/HTTPS 下可感知）。
+        // 服务器忽略 Range 返回整文件（status=200）时不消费，避免把整文件读进内存；
+        // 那种场景 ranges=false 走单连接，本就无握手可省。
+        if status == StatusCode::PARTIAL_CONTENT {
+            let _ = tokio::time::timeout(Duration::from_secs(5), resp.bytes()).await;
+        } else {
+            drop(resp);
+        }
 
         let total = util::total_from_content_range(&headers)
             .or_else(|| {
@@ -140,6 +149,28 @@ async fn probe(
         });
     }
     Err(last_error.unwrap_or_else(|| EngineError::message("探测失败")))
+}
+
+/// 把单个分段交给一条新连接。原段与 A2 分流出的新段共用此入口。
+fn spawn_segment(
+    set: &mut JoinSet<Result<Option<util::SegmentDigest>, EngineError>>,
+    seg: &SegmentView,
+    engine: &Arc<Engine>,
+    entry: &Arc<TaskEntry>,
+    client: &Client,
+    file: &Arc<std::fs::File>,
+    token: &CancellationToken,
+) {
+    let seg = seg.clone();
+    let client = client.clone();
+    let entry = entry.clone();
+    let file = file.clone();
+    let token = token.clone();
+    let global = engine.global_limit();
+    let engine = engine.clone();
+    set.spawn(async move {
+        segment_loop(engine, entry, seg, client, file, token, global).await
+    });
 }
 
 pub async fn run(
@@ -210,7 +241,9 @@ pub async fn run(
         Vec::new()
     };
     if resumable && (segments.is_empty() || !effective_resume) {
-        segments = util::plan_segments(total, conns)
+        // A1 自适应：conns 是用户上限，按体积收敛后规划分段；续传沿用历史分段数不改。
+        let effective = util::effective_connections(conns, total, probe.ranges);
+        segments = util::plan_segments(total, effective)
             .into_iter()
             .enumerate()
             .map(|(i, (start, end))| SegmentView {
@@ -313,42 +346,78 @@ pub async fn run(
         if seg.done || seg.downloaded >= seg.length() {
             continue;
         }
-        let seg = seg.clone();
-        let client = client.clone();
-        let entry = entry.clone();
-        let file = file.clone();
-        let token = token.clone();
-        let global = engine.global_limit();
-        let engine = engine.clone();
-        set.spawn(async move {
-            segment_loop(
-                engine,
-                entry,
-                seg,
-                client,
-                file,
-                token,
-                global,
-            )
-            .await
-        });
+        spawn_segment(&mut set, seg, &engine, &entry, &client, &file, &token);
     }
 
     let mut first_error: Option<EngineError> = None;
     let mut digests: Vec<util::SegmentDigest> = Vec::new();
-    while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok(Ok(Some(d))) => digests.push(d),
-            Ok(Ok(None)) => {}
-            Ok(Err(err)) => {
-                first_error = Some(err);
-                set.abort_all();
-                break;
+    let mut splits_used = 0usize;
+    // A2：慢连接判定与分流只在「无主动限速」时启用——限速下低吞吐是人为的。
+    let rebalance_enabled = entry.limiter.limit().is_none() && engine.global_limit().limit().is_none();
+    let mut tick = tokio::time::interval(Duration::from_secs(util::REBALANCE_TICK_SECS));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await; // 消费首拍，从现在开始计时
+
+    while !set.is_empty() {
+        tokio::select! {
+            joined = set.join_next() => {
+                match joined {
+                    Some(Ok(Ok(Some(d)))) => digests.push(d),
+                    Some(Ok(Ok(None))) => {}
+                    Some(Ok(Err(err))) => {
+                        first_error = Some(err);
+                        set.abort_all();
+                        break;
+                    }
+                    Some(Err(join_err)) => {
+                        first_error = Some(EngineError::message(format!("下载线程异常：{join_err}")));
+                        set.abort_all();
+                        break;
+                    }
+                    None => {}
+                }
             }
-            Err(join_err) => {
-                first_error = Some(EngineError::message(format!("下载线程异常：{join_err}")));
-                set.abort_all();
-                break;
+            _ = tick.tick(), if rebalance_enabled => {
+                // 采样各段快照，判定是否有明显落后的段。
+                let laggard = {
+                    let segs = entry.segments.lock();
+                    let downloaded: Vec<u64> = segs.iter().map(|s| s.downloaded).collect();
+                    let lengths: Vec<u64> = segs.iter().map(|s| s.length()).collect();
+                    let done: Vec<bool> = segs.iter().map(|s| s.done).collect();
+                    util::rebalance_laggard(&downloaded, &lengths, &done, splits_used)
+                };
+                let Some(idx) = laggard else { continue };
+                // 收缩慢段 end 到「已下载位置 + 剩余的一半」，把后半段交给新连接。
+                let split_seg = {
+                    let mut segs = entry.segments.lock();
+                    let seg = &mut segs[idx];
+                    let start = seg.start;
+                    let pos = start.saturating_add(seg.downloaded);
+                    let old_end = seg.end;
+                    if old_end <= pos || seg.done {
+                        continue;
+                    }
+                    let mid = pos.saturating_add((old_end - pos) / 2);
+                    if mid >= old_end {
+                        continue;
+                    }
+                    seg.end = mid; // 原段只负责到 mid
+                    let new_index = segs.len();
+                    let new_seg = SegmentView {
+                        index: new_index,
+                        start: mid.saturating_add(1),
+                        end: old_end,
+                        downloaded: 0,
+                        done: false,
+                    };
+                    segs.push(new_seg.clone());
+                    splits_used += 1;
+                    new_seg
+                };
+                engine.emit_log(&entry.id, format!(
+                    "检测到落后分段 #{idx}，已分流一条连接协助下载（第 {splits_used} 次）"
+                ));
+                spawn_segment(&mut set, &split_seg, &engine, &entry, &client, &file, &token);
             }
         }
     }
@@ -387,7 +456,9 @@ async fn segment_loop(
 ) -> Result<Option<util::SegmentDigest>, EngineError> {
     let index = seg.index;
     let start = seg.start;
-    let end = seg.end;
+    // A2：end 为可变共享边界。主循环分流时会收缩慢段的 end 并另起连接，
+    // 本连接每轮从 entry.segments 读回最新 end，写到新边界即收尾，避免重叠写。
+    let mut end = seg.end;
     let mut pos = start.saturating_add(seg.downloaded);
     // 本次运行真正写下的字节区间：从续传起点开始（历史字节不纳入本次校验，
     // 它们在此前的运行里已校验过，或至少从未被本次响应体重新提供）。
@@ -402,6 +473,14 @@ async fn segment_loop(
     let mut attempts_left = RETRIES;
 
     loop {
+        // A2：每轮读回共享边界。若本段已被分流，end 会被收缩到切点，
+        // 写到切点即自然收尾（pos > end），后半段由新连接负责。
+        {
+            let segs = entry.segments.lock();
+            if let Some(shared) = segs.get(index) {
+                end = shared.end;
+            }
+        }
         if pos > end {
             mark_segment(&entry, index, end + 1);
             return Ok(Some(sink.finish(digest_start, pos)));

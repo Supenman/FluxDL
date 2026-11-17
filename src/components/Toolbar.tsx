@@ -1,4 +1,4 @@
-import { Search, Plus, Pause, Play, X, ChevronDown } from "lucide-react";
+import { Search, Plus, Pause, Play, X, ChevronDown, Trash2, Columns3, LayoutList } from "lucide-react";
 import { useStore } from "../store";
 import { backend } from "../lib/backend";
 import type { Filter, SortKey } from "../lib/types";
@@ -11,6 +11,10 @@ const TITLES: Record<Filter, { title: string; subtitle: string }> = {
   media: { title: "视频下载", subtitle: "由 yt-dlp 驱动的站点视频与音频" },
   paused: { title: "已暂停", subtitle: "随时继续，断点续传不会重头再来" },
   failed: { title: "失败的任务", subtitle: "重试会从已下载的位置继续" },
+  "category:video": { title: "视频", subtitle: "按文件类型归类的视频文件" },
+  "category:document": { title: "文档", subtitle: "按文件类型归类的文档文件" },
+  "category:archive": { title: "压缩包", subtitle: "按文件类型归类的压缩文件" },
+  "category:other": { title: "其他文件", subtitle: "未归入上述类型的文件" },
 };
 
 const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
@@ -27,6 +31,8 @@ export function Toolbar() {
   const sort = useStore((s) => s.sort);
   const setQuery = useStore((s) => s.setQuery);
   const setSort = useStore((s) => s.setSort);
+  const compact = useStore((s) => s.compact);
+  const setCompact = useStore((s) => s.setCompact);
   const setNewTaskOpen = useStore((s) => s.setNewTaskOpen);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -36,6 +42,7 @@ export function Toolbar() {
   const pausedCount = tasks.filter(
     (t) => t.status === "paused" || t.status === "failed",
   ).length;
+  const completedCount = tasks.filter((t) => t.status === "completed").length;
 
   const meta = TITLES[filter];
 
@@ -47,6 +54,14 @@ export function Toolbar() {
   const resumeAll = async () => {
     await backend.resumeAll();
     pushToast("已恢复全部任务", "success");
+  };
+
+  const deleteCompleted = async () => {
+    const ids = tasks.filter((t) => t.status === "completed").map((t) => t.id);
+    for (const id of ids) {
+      await backend.remove(id, false);
+    }
+    pushToast(ids.length ? `已清除 ${ids.length} 条完成记录（文件保留）` : "没有已完成的任务", "info");
   };
 
   return (
@@ -62,6 +77,15 @@ export function Toolbar() {
       </div>
 
       <div className="toolbar-actions">
+        <button
+          className="ghost-button view-toggle"
+          onClick={() => setCompact(!compact)}
+          title={compact ? "切换到舒适视图" : "切换到紧凑多列视图"}
+          aria-pressed={compact}
+        >
+          {compact ? <LayoutList size={14} /> : <Columns3 size={14} />}
+          <span>{compact ? "舒适" : "紧凑"}</span>
+        </button>
         <div className={cx("search-box", query && "has-value")}>
           <Search size={15} className="search-icon" />
           <input
@@ -99,18 +123,33 @@ export function Toolbar() {
           <ChevronDown size={13} className="select-caret" />
         </div>
 
-        {activeCount > 0 && (
-          <button className="ghost-button" onClick={pauseAll} title="暂停全部">
-            <Pause size={14} />
-            <span>全部暂停</span>
-          </button>
-        )}
-        {pausedCount > 0 && (
-          <button className="ghost-button" onClick={resumeAll} title="继续全部">
-            <Play size={14} />
-            <span>全部继续</span>
-          </button>
-        )}
+        <button
+          className="ghost-button"
+          onClick={pauseAll}
+          disabled={activeCount === 0}
+          title={activeCount === 0 ? "没有正在进行的任务" : "暂停全部"}
+        >
+          <Pause size={14} />
+          <span>全部暂停</span>
+        </button>
+        <button
+          className="ghost-button"
+          onClick={resumeAll}
+          disabled={pausedCount === 0}
+          title={pausedCount === 0 ? "没有可继续的任务" : "继续全部"}
+        >
+          <Play size={14} />
+          <span>全部继续</span>
+        </button>
+        <button
+          className="ghost-button"
+          onClick={deleteCompleted}
+          disabled={completedCount === 0}
+          title={completedCount === 0 ? "没有已完成的任务" : "清除已完成记录（保留文件）"}
+        >
+          <Trash2 size={14} />
+          <span>清除已完成</span>
+        </button>
 
         <button
           className="primary-button"

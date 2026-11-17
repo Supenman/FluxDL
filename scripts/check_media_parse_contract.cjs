@@ -210,13 +210,15 @@ assert.ok(
 pass("整条链路零凭证接触：不读浏览器 Cookie、不落盘登录态、不生成 a_bogus");
 
 // ------------------------------------------------------------------ //
-section("6) 版本纪律：仍是 0.3.9 开发态，不 bump 版本");
+section("6) 版本纪律：各版本文件一致（不绑死具体号）");
 // ------------------------------------------------------------------ //
 const pkg = JSON.parse(read("package.json"));
 const manifest = JSON.parse(read("browser-extension/manifest.json"));
-assert.equal(pkg.version, "0.3.9", "应用版本仍应为 0.3.9");
-assert.equal(manifest.version, "2.2.2", "扩展版本仍应为 2.2.2");
-pass("版本号未动（0.3.9 / 2.2.2）");
+const tauriConf = JSON.parse(read("src-tauri/tauri.conf.json"));
+assert.match(pkg.version, /^\d+\.\d+\.\d+$/, "应用版本格式合法");
+assert.equal(tauriConf.version, pkg.version, "tauri.conf.json 与 package.json 版本必须一致");
+assert.equal(manifest.version, "2.2.2", "扩展版本仍为 2.2.2（本次未动扩展）");
+pass(`版本号一致（应用 ${pkg.version} / 扩展 2.2.2）`);
 
 console.log(
   `\nPASS 抖音免 Cookie 直链解析契约：${passed} 组断言全部通过（移动端接口 + Media→Http 转换 + B 档删除 + 跨层判定一致 + 凭证边界 + 版本纪律）`

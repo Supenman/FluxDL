@@ -714,6 +714,11 @@ fn looks_like_media(url: &str) -> bool {
     if fluxdl_engine::is_direct_media_file(url) {
         return false;
     }
+    // HLS / DASH 清单直链（.m3u8 / .mpd）不是整文件，无论域名都交给 yt-dlp
+    // 解析并合并分片，与前端 isHlsManifest 保持一致。
+    if fluxdl_engine::is_hls_manifest(url) {
+        return true;
+    }
     let host = host_of(url);
     const HOSTS: &[&str] = &[
         // 国内

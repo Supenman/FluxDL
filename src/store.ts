@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   EngineOptions,
+  FileCategory,
   Filter,
   LogLine,
   SortKey,
@@ -10,6 +11,7 @@ import type {
   UpdateCheck,
 } from "./lib/types";
 import { uid } from "./lib/format";
+import { readAccent, saveAccent, type AccentColors } from "./lib/theme";
 
 export type Theme = "dark" | "light" | "system";
 export type Tone = "info" | "success" | "error";
@@ -23,7 +25,7 @@ export interface Toast {
 export const defaultEngineOptions: EngineOptions = {
   saveDir: "C:\\Users\\Alex\\Downloads",
   maxActive: 3,
-  connections: 8,
+  connections: 0, // 自动：引擎按文件体积决定连接数
   globalSpeedLimit: null,
   proxy: null,
   userAgent: "FluxDL/0.1 (Windows)",
@@ -48,6 +50,14 @@ function readTheme(): Theme {
   return "dark";
 }
 
+function readCompact(): boolean {
+  try {
+    return localStorage.getItem("fluxdl:compact") === "1";
+  } catch {
+    return false;
+  }
+}
+
 interface AppStore {
   tasks: Task[];
   selectedId: string | null;
@@ -57,6 +67,12 @@ interface AppStore {
   settings: EngineOptions;
   settingsLoaded: boolean;
   theme: Theme;
+  /** 紧凑多列视图：在任务行显示添加时间/来源/平均速度等额外列 */
+  compact: boolean;
+  /** 自定义强调色（预设或导入），null 表示用默认经典蓝 */
+  accent: AccentColors | null;
+  /** 独立进度窗口显示的任务 id */
+  progressId: string | null;
   view: "tasks" | "settings";
   newTaskOpen: boolean;
   newTaskSeed: string;
@@ -81,6 +97,9 @@ interface AppStore {
   setSettings: (patch: Partial<EngineOptions>) => void;
   setSettingsLoaded: (loaded: boolean) => void;
   setTheme: (theme: Theme) => void;
+  setCompact: (compact: boolean) => void;
+  setAccent: (accent: AccentColors | null) => void;
+  setProgressId: (id: string | null) => void;
   setView: (view: "tasks" | "settings") => void;
   setNewTaskOpen: (open: boolean, seed?: string) => void;
   setCommandOpen: (open: boolean) => void;
@@ -112,6 +131,9 @@ export const useStore = create<AppStore>((set) => ({
   settings: defaultEngineOptions,
   settingsLoaded: false,
   theme: readTheme(),
+  compact: readCompact(),
+  accent: readAccent(),
+  progressId: null,
   view: "tasks",
   newTaskOpen: false,
   newTaskSeed: "",
@@ -142,6 +164,7 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => ({
       tasks: state.tasks.filter((t) => t.id !== id),
       selectedId: state.selectedId === id ? null : state.selectedId,
+      progressId: state.progressId === id ? null : state.progressId,
     })),
 
   select: (id) => set({ selectedId: id }),
@@ -161,6 +184,22 @@ export const useStore = create<AppStore>((set) => ({
     }
     set({ theme });
   },
+
+  setCompact: (compact) => {
+    try {
+      localStorage.setItem("fluxdl:compact", compact ? "1" : "0");
+    } catch {
+      // ignore
+    }
+    set({ compact });
+  },
+
+  setAccent: (accent) => {
+    saveAccent(accent);
+    set({ accent });
+  },
+
+  setProgressId: (progressId) => set({ progressId }),
 
   setView: (view) => set({ view, selectedId: null }),
 
@@ -207,6 +246,26 @@ export const useStore = create<AppStore>((set) => ({
     }),
 }));
 
+const EXT_CATEGORY: Record<FileCategory, string[]> = {
+  video: ["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v", "ts", "m3u8", "mpd"],
+  document: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "epub", "mobi"],
+  archive: ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "dmg"],
+  other: [],
+};
+
+/** 按文件名扩展名归类；视频任务（yt-dlp）优先归到 video。 */
+export function fileCategory(task: Task): FileCategory {
+  if (task.kind === "media") return "video";
+  const name = task.filename.toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot < 0 || dot === name.length - 1) return "other";
+  const ext = name.slice(dot + 1);
+  for (const cat of ["video", "document", "archive"] as FileCategory[]) {
+    if (EXT_CATEGORY[cat].includes(ext)) return cat;
+  }
+  return "other";
+}
+
 export function taskMatchesFilter(task: Task, filter: Filter): boolean {
   switch (filter) {
     case "active":
@@ -219,6 +278,14 @@ export function taskMatchesFilter(task: Task, filter: Filter): boolean {
       return task.status === "paused";
     case "failed":
       return task.status === "failed";
+    case "category:video":
+      return fileCategory(task) === "video";
+    case "category:document":
+      return fileCategory(task) === "document";
+    case "category:archive":
+      return fileCategory(task) === "archive";
+    case "category:other":
+      return fileCategory(task) === "other";
     default:
       return true;
   }

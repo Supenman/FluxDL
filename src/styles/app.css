@@ -415,14 +415,42 @@ svg {
    ============================================================ */
 
 .sidebar {
+  position: relative;
   display: flex;
+  flex: none;
   flex-direction: column;
   gap: 10px;
+  width: var(--sidebar-w);
   min-height: 0;
   padding: 16px 12px 12px;
   border-right: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elevated) 62%, transparent);
   overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* 侧栏宽度拖拽把手 */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 4;
+}
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.16s var(--ease);
+}
+.sidebar-resizer:hover::after {
+  background: var(--accent);
 }
 
 .nav {
@@ -502,6 +530,36 @@ svg {
   color: var(--accent-text);
   background: transparent;
   border-color: var(--accent-line);
+}
+
+/* 分类树：分组开关 + 二级子树（MDM 分类树思路） */
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  cursor: pointer;
+}
+.nav-group-toggle .nav-label {
+  flex: 1;
+  text-align: left;
+}
+.group-caret {
+  color: var(--text-3);
+  transform: rotate(-90deg);
+  transition: transform 0.16s var(--ease);
+  margin-right: 8px;
+}
+.group-caret.open {
+  transform: rotate(0deg);
+}
+.nav-subtree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 10px;
+  margin-left: 8px;
+  border-left: 1px solid var(--border);
 }
 
 .sidebar-spacer {
@@ -1184,6 +1242,52 @@ kbd {
   background: rgba(255, 255, 255, 0.5);
 }
 
+/* 分段进度块：多连接时每段一个槽，seg-fill 按该段已下载比例填充。
+   借鉴 MDM「每段独立可见」的信息表达方式，用 FluxDL 自己的 accent 渐变原创实现。 */
+.progress-track.has-segments {
+  height: 6px;
+  overflow: visible;
+}
+
+.progress-track.has-segments .progress-fill {
+  display: none;
+}
+
+.seg-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--panel-3);
+  border-radius: 1px;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.seg-block + .seg-block {
+  box-shadow: -1px 0 0 var(--bg);
+}
+
+.seg-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-active), var(--accent));
+  transition: width 0.3s var(--ease);
+}
+
+.seg-block.is-done .seg-fill {
+  background: var(--accent);
+}
+
+.progress-track.done .seg-fill {
+  background: var(--text-3);
+}
+[data-theme="light"] .progress-track.done .seg-fill {
+  background: var(--text-disabled);
+}
+.progress-track.error .seg-fill {
+  background: var(--danger);
+}
+
 /* 元信息 */
 .task-meta {
   display: flex;
@@ -1225,6 +1329,30 @@ kbd {
 .meta-error {
   color: var(--danger-text);
   max-width: 100%;
+}
+
+/* 紧凑多列视图：任务行底部的额外信息列 */
+.task-compact-cols {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px dashed var(--border);
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.compact-col {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.compact-col svg {
+  opacity: 0.7;
+  flex: none;
 }
 
 /* 行右侧 */
@@ -1349,6 +1477,13 @@ kbd {
   color: var(--warn);
   background: var(--warn-soft);
   border-color: var(--warn-soft);
+}
+
+/* B2：定时等待，与手动暂停同色系但用边框区分 */
+.status-scheduled {
+  color: var(--warn);
+  background: transparent;
+  border-color: var(--warn);
 }
 
 .status-completed {
@@ -1569,6 +1704,10 @@ kbd {
 
 .status-idle {
   color: var(--text-3);
+}
+
+.status-item.status-limit {
+  color: var(--warn);
 }
 
 .kbd-hint {
@@ -3001,6 +3140,46 @@ kbd {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* 强调色预设色板 + 主题导入 */
+.accent-presets {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.accent-swatch {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--swatch);
+  border: 2px solid transparent;
+  outline: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  transition: transform 0.16s var(--ease);
+}
+.accent-swatch:hover {
+  transform: scale(1.08);
+}
+.accent-swatch.active {
+  border-color: var(--bg);
+  outline: 2px solid var(--swatch);
+}
+.accent-import {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+.accent-import:hover {
+  color: var(--text);
+  border-color: var(--accent-line);
+  background: var(--panel);
+}
+
 .setting-row {
   display: flex;
   align-items: center;
@@ -4207,4 +4386,193 @@ kbd {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ============================================================
+   独立进度窗口（借鉴 MDM 每任务独立窗口的信息组织，原创实现）
+   ============================================================ */
+.progress-window-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(2px);
+}
+.progress-window {
+  width: min(560px, 92vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.pw-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.pw-title {
+  min-width: 0;
+}
+.pw-eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.pw-title h3 {
+  margin: 3px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pw-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-xs);
+  color: var(--text-2);
+}
+.pw-close:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+.pw-body {
+  padding: 18px 20px 20px;
+  overflow-y: auto;
+}
+.pw-pct-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.pw-pct {
+  font-size: 34px;
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.pw-bytes {
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.pw-bar {
+  position: relative;
+  height: 12px;
+  border-radius: var(--radius-bar);
+  background: var(--panel-3);
+  overflow: visible;
+}
+.pw-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--radius-bar);
+  background: var(--accent);
+  transition: width 0.3s var(--ease);
+}
+.pw-bar.live .pw-bar-fill {
+  background: linear-gradient(90deg, var(--accent-active), var(--accent));
+}
+.pw-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--panel-3);
+  overflow: hidden;
+  box-shadow: -1px 0 0 var(--bg-elevated);
+}
+.pw-seg-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-active), var(--accent));
+  transition: width 0.3s var(--ease);
+}
+.pw-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 18px;
+}
+.pw-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.pw-stat svg {
+  color: var(--accent-text);
+  margin-bottom: 2px;
+}
+.pw-stat span {
+  font-size: 10px;
+  color: var(--text-3);
+}
+.pw-stat strong {
+  font-size: 12.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.pw-subtitle {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 18px 0 8px;
+}
+.pw-chart {
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 10px 12px 4px;
+}
+.pw-logs {
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+}
+.pw-log-list {
+  max-height: 150px;
+  overflow-y: auto;
+}
+.pw-log-empty {
+  font-size: 11.5px;
+  color: var(--text-3);
+  padding: 6px 0;
+}
+.pw-log-line {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 10.5px;
+  font-family: var(--mono);
+}
+.pw-log-time {
+  color: var(--text-3);
+  flex: none;
+}
+.pw-log-msg {
+  color: var(--text-2);
+  word-break: break-all;
 }

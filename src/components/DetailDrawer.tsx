@@ -283,9 +283,15 @@ export function DetailDrawer() {
                 <div className="stat">
                   <span className="stat-label">当前状态</span>
                   <span className="stat-value">
-                    <StatusBadge status={task.status} />
+                    <StatusBadge status={task.status} scheduledAt={task.scheduledAt} />
                   </span>
                 </div>
+                {task.status === "paused" && task.scheduledAt != null && task.scheduledAt > 0 && (
+                  <div className="stat">
+                    <span className="stat-label">计划开始</span>
+                    <span className="stat-value">{formatDate(task.scheduledAt)}</span>
+                  </div>
+                )}
               </div>
 
               <div className="path-row">

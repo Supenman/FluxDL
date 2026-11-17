@@ -40,6 +40,8 @@ export interface Task {
   format: string | null;
   mime: string | null;
   domain: string;
+  /** B2 定时下载：计划开始的 UTC 毫秒时间戳；到点自动开始后清空。 */
+  scheduledAt: number | null;
 }
 
 export interface NewTaskOptions {
@@ -52,6 +54,8 @@ export interface NewTaskOptions {
   proxy?: string | null;
   headers?: Record<string, string>;
   format?: string | null;
+  /** B2 定时下载：期望开始时间（UTC 毫秒时间戳），仅未来时间生效。 */
+  scheduledAt?: number | null;
 }
 
 export interface EngineOptions {
@@ -115,8 +119,21 @@ export type EngineEvent =
   | { type: "log"; payload: LogLine }
   | { type: "clipboardUrl"; payload: string };
 
-export type Filter = "all" | "active" | "completed" | "media" | "paused" | "failed";
+export type Filter =
+  | "all"
+  | "active"
+  | "completed"
+  | "media"
+  | "paused"
+  | "failed"
+  | "category:video"
+  | "category:document"
+  | "category:archive"
+  | "category:other";
 export type SortKey = "recent" | "name" | "size" | "progress";
+
+/** 按文件扩展名归类（MDM 分类树思路，纯前端展示层） */
+export type FileCategory = "video" | "document" | "archive" | "other";
 
 // ---------------------------------------------------------------------------
 // 版本管理

@@ -7,6 +7,8 @@ import { isTauri } from "../lib/backend";
 export function StatusBar() {
   const tasks = useStore((s) => s.tasks);
   const settings = useStore((s) => s.settings);
+  const selectedId = useStore((s) => s.selectedId);
+  const selected = selectedId ? tasks.find((t) => t.id === selectedId) : undefined;
 
   const { speed, active, transferred } = useMemo(() => {
     let speed = 0;
@@ -23,7 +25,7 @@ export function StatusBar() {
   }, [tasks]);
 
   return (
-    <footer className="statusbar">
+    <footer className="statusbar" role="status" aria-label="下载引擎状态">
       <div className="status-left">
         <span className="status-item">
           <Wifi size={12} className={active > 0 ? "status-live" : "status-idle"} />
@@ -34,8 +36,24 @@ export function StatusBar() {
           <ArrowDownToLine size={12} />
           {formatSpeed(speed)}
         </span>
+        {settings.globalSpeedLimit && settings.globalSpeedLimit > 0 && (
+          <>
+            <span className="status-divider" />
+            <span className="status-item status-limit" title="全局速度限制已开启">
+              限速 {formatSpeed(settings.globalSpeedLimit)}
+            </span>
+          </>
+        )}
         <span className="status-divider" />
         <span className="status-item dim">累计 {formatBytes(transferred)}</span>
+        {selected && (
+          <>
+            <span className="status-divider" />
+            <span className="status-item" title={selected.filename}>
+              已选中 · {selected.filename}
+            </span>
+          </>
+        )}
         <span className="status-divider" />
         <span className="status-item dim">
           <Clipboard size={12} />

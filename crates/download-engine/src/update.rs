@@ -654,9 +654,12 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// 发版闸门：仓库根的更新清单（线上 raw / 镜像源读的就是它）必须与
-    /// 应用版本一致。0.3.3 曾出现清单停在 0.3.0，导致 0.3.3 用户「已是最新」、
-    /// 旧版用户反而装到 0.3.0。任一处漏改都会在这里失败。
+    /// 发版闸门：仓库根的更新清单（线上 raw / 镜像源读的就是它）。
+    /// 0.3.3 曾出现清单停在 0.3.0，导致 0.3.3 用户「已是最新」、
+    /// 旧版用户反而装到 0.3.0。所以：
+    ///   - 已发版版本：严格防护，latest 必须等于应用版本；
+    ///   - 开发线（应用版本尚未进入 history）：允许 latest 指向上一个真实已发版的
+    ///     更旧版本，避免 dev 分支误报「latest 必须等于应用版本」。
     #[test]
     fn repo_manifest_matches_app_version() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -667,10 +670,25 @@ mod tests {
         let app_version = conf["version"].as_str().expect("tauri.conf.json 缺 version");
         let raw = std::fs::read_to_string(root.join("update-manifest.json")).unwrap();
         let manifest = UpdateManifest::parse(&raw).expect("仓库根更新清单无法解析");
-        assert_eq!(
-            manifest.app.latest, app_version,
-            "仓库根 update-manifest.json 的 latest 必须等于 tauri.conf.json 的 version"
-        );
+
+        let published = manifest.history.iter().any(|h| h.version == app_version);
+        if published {
+            assert_eq!(
+                manifest.app.latest, app_version,
+                "仓库根 update-manifest.json 的 latest 必须等于 tauri.conf.json 的 version"
+            );
+        } else {
+            assert!(
+                manifest.app.latest != app_version,
+                "开发线 latest 不应等于未发版的应用版本 {}（会误导用户升级到不存在的版本）",
+                app_version
+            );
+            assert!(
+                manifest.history.iter().any(|h| h.version == manifest.app.latest),
+                "开发线 latest 必须是 history 里真实存在且已发版的版本，当前为 {}",
+                manifest.app.latest
+            );
+        }
     }
 
     fn temp_dir(name: &str) -> PathBuf {

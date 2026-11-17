@@ -146,11 +146,21 @@ export function isDirectMediaFile(url: string): boolean {
   return DIRECT_MEDIA_EXT.test(path);
 }
 
+/** HLS / DASH 清单直链（.m3u8 / .mpd）：不是整文件，需交给 yt-dlp 解析并合并分片。
+ *  与 isDirectMediaFile 互斥：后者只认完整容器文件，清单必须走媒体任务。
+ *  规则须与 Rust 的 is_hls_manifest 保持一致。 */
+export function isHlsManifest(url: string): boolean {
+  const path = url.split(/[?#]/)[0];
+  return /\.(m3u8|mpd)$/i.test(path);
+}
+
 /** 按主机名精确 / 后缀匹配；includes 会把 apex.com、路径里的 x.com 都误判成媒体。 */
 export function isMediaUrl(url: string): boolean {
   // CDN 直链常带站点后缀（如 v2.kuaishou.com/abc.mp4），命中站点名单会被
   // 错建成媒体任务交给 yt-dlp 报 Unsupported URL；必须先短路成普通下载。
   if (isDirectMediaFile(url)) return false;
+  // HLS / DASH 清单直链无论域名都交给 yt-dlp（清单不是整文件，不能被当文本下载）。
+  if (isHlsManifest(url)) return true;
   let host: string | null = null;
   // 用户可能粘贴不带 scheme 的地址（或纯 BV 号补全后的地址）
   for (const candidate of [url, `https://${url}`]) {

@@ -9,11 +9,20 @@ const LABELS: Record<TaskStatus, string> = {
   failed: "失败",
 };
 
-export function StatusBadge({ status }: { status: TaskStatus }) {
+export function StatusBadge({
+  status,
+  scheduledAt,
+}: {
+  status: TaskStatus;
+  scheduledAt?: number | null;
+}) {
+  // B2：暂停 + 有计划时间 = 等待定时触发，单独标注避免与手动暂停混淆。
+  const scheduled = status === "paused" && scheduledAt != null && scheduledAt > 0;
+  const label = scheduled ? "定时等待" : LABELS[status];
   return (
-    <span className={`status-badge status-${status}`}>
+    <span className={`status-badge status-${scheduled ? "scheduled" : status}`}>
       <span className="status-dot" />
-      {LABELS[status]}
+      {label}
     </span>
   );
 }

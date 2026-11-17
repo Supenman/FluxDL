@@ -409,6 +409,109 @@ impl StallWatch {
     }
 }
 
+// --------------------------------------------------------------------------- //
+// 自适应连接数（0.4.0 A1）
+//
+// 借鉴 IDM/MDM 的实测结论：连接数不是越多越好。小文件多连接只增加建连与调度开销；
+// 服务器并发上限低时盲目开高连接反而更慢（MDM benchmark 里 IDM 开 480 连接落败）。
+//
+// 设计纪律：用户显式设置的连接数（1-32）必须完全尊重，引擎不得擅自覆盖；
+// 只有「自动档」（requested == 0）才按文件体积收敛。这样既给了新手省心的默认值，
+// 又保住了高级用户手动调参的确定性，且不破坏既有「用户设几就是几」的契约。
+// 纯函数、无 IO，便于确定性单测。
+// --------------------------------------------------------------------------- //
+
+pub const CONN_CAP_TINY: u8 = 2;   // < 4 MiB
+pub const CONN_CAP_SMALL: u8 = 4;  // < 32 MiB
+pub const CONN_CAP_MEDIUM: u8 = 8; // < 256 MiB
+pub const CONN_CAP_LARGE: u8 = 16; // >= 256 MiB
+
+/// 自动档按体积分档给出连接数；用户显式设置时此函数不被调用。
+pub fn auto_connections(total: u64) -> u8 {
+    const MIB: u64 = 1024 * 1024;
+    if total < 4 * MIB {
+        CONN_CAP_TINY
+    } else if total < 32 * MIB {
+        CONN_CAP_SMALL
+    } else if total < 256 * MIB {
+        CONN_CAP_MEDIUM
+    } else {
+        CONN_CAP_LARGE
+    }
+}
+
+/// 根据「用户设置 + 文件体积 + 服务器 Range 能力」决定实际连接数。
+///
+/// - 不支持 Range 或空文件 → 单连接；
+/// - `requested >= 1`（显式）→ 原样尊重，仅夹到合法区间；
+/// - `requested == 0`（自动）→ 按体积分档收敛。
+pub fn effective_connections(requested: u8, total: u64, ranges: bool) -> u8 {
+    if !ranges || total == 0 {
+        return 1;
+    }
+    if requested >= 1 {
+        return requested.min(32);
+    }
+    auto_connections(total)
+}
+
+// --------------------------------------------------------------------------- //
+// 主动再平衡（0.4.0 A2）
+//
+// 固定分段下载里，某条线路一旦变慢，它负责的区间就会拖住整个任务——即使其它
+// 连接早已空闲。MDM 的「持续再平衡」就是让快连接去分担慢段的剩余区间。
+//
+// FluxDL 的做法：run() 周期性采样各段进度，找出「明显落后且剩余量大」的段，
+// 把它的剩余区间对半切，收缩原段 end、另起一条连接下载后半段。两段写绝对偏移
+// 的不同区间、各自算摘要，回读校验按位置对齐，因此不会互相覆盖。判定逻辑抽成
+// 纯函数，便于确定性单测；IO 与 spawn 留在 http.rs。
+// --------------------------------------------------------------------------- //
+
+/// 慢段判定阈值：落后于最快段至少这么多字节才值得分流。
+pub const REBALANCE_LAG_BYTES: u64 = 8 * 1024 * 1024;
+/// 慢段剩余至少这么多字节，才值得再起一条连接（否则分流开销 > 收益）。
+pub const REBALANCE_MIN_REMAIN: u64 = 16 * 1024 * 1024;
+/// 单个任务最多再平衡次数，防止无限细分导致段数膨胀。
+pub const REBALANCE_MAX_SPLITS: usize = 8;
+/// run() 采样各段进度、判定是否分流的间隔（秒）。
+pub const REBALANCE_TICK_SECS: u64 = 3;
+
+/// 判定是否需要对某段做尾部分流。
+///
+/// `done`/`downloaded`/`length` 是同一组中各分段的快照；返回需要分流的段下标。
+/// 判据：自身未完成、剩余足够大、且比组内「已下载最多」的段落后超过阈值。
+/// 纯函数、无 IO，可确定性单测。
+pub fn rebalance_laggard(
+    downloaded: &[u64],
+    lengths: &[u64],
+    done: &[bool],
+    splits_used: usize,
+) -> Option<usize> {
+    if splits_used >= REBALANCE_MAX_SPLITS || downloaded.len() != lengths.len() {
+        return None;
+    }
+    let leading = downloaded.iter().copied().max().unwrap_or(0);
+    let mut best: Option<(usize, u64)> = None;
+    for i in 0..downloaded.len() {
+        if done[i] {
+            continue;
+        }
+        let remaining = lengths[i].saturating_sub(downloaded[i]);
+        if remaining < REBALANCE_MIN_REMAIN {
+            continue;
+        }
+        let lag = leading.saturating_sub(downloaded[i]);
+        if lag < REBALANCE_LAG_BYTES {
+            continue;
+        }
+        // 选落后最多的那段优先分流。
+        if best.map(|(_, b)| lag > b).unwrap_or(true) {
+            best = Some((i, lag));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 pub fn plan_segments(total: u64, connections: u8) -> Vec<(u64, u64)> {
     if total == 0 {
         return vec![(0, 0)];
@@ -671,6 +774,69 @@ mod tests {
     #[test]
     fn small_file_single_segment() {
         assert_eq!(plan_segments(1000, 8), vec![(0, 999)]);
+    }
+
+    #[test]
+    fn effective_connections_no_range_or_empty_is_single() {
+        // 服务器不支持 Range、或体积未知时，只能用单连接。
+        assert_eq!(effective_connections(16, 100 * 1024 * 1024, false), 1);
+        assert_eq!(effective_connections(16, 0, true), 1);
+    }
+
+    #[test]
+    fn effective_connections_respects_explicit_setting() {
+        let mib = 1024u64 * 1024;
+        // 关键契约：用户设几就是几，引擎不得用体积档位擅自覆盖。
+        assert_eq!(effective_connections(6, 6 * mib, true), 6);
+        assert_eq!(effective_connections(1, 300 * mib, true), 1);
+        assert_eq!(effective_connections(16, 2 * mib, true), 16);
+        // 越界值夹到 32。
+        assert_eq!(effective_connections(255, 100 * mib, true), 32);
+    }
+
+    #[test]
+    fn effective_connections_auto_scales_by_size() {
+        let mib = 1024u64 * 1024;
+        // 自动档（0）才按体积收敛：小文件少连、大文件才用满。
+        assert_eq!(effective_connections(0, 2 * mib, true), CONN_CAP_TINY);
+        assert_eq!(effective_connections(0, 16 * mib, true), CONN_CAP_SMALL);
+        assert_eq!(effective_connections(0, 100 * mib, true), CONN_CAP_MEDIUM);
+        assert_eq!(effective_connections(0, 300 * mib, true), CONN_CAP_LARGE);
+        assert_eq!(auto_connections(300 * mib), CONN_CAP_LARGE);
+    }
+
+    #[test]
+    fn rebalance_picks_laggard_with_large_remaining() {
+        let mib = 1024u64 * 1024;
+        let len = 100 * mib;
+        // 段 0 已下 60M，段 1 只下 10M（落后 50M > 阈值，剩余 90M > 阈值）。
+        let downloaded = [60 * mib, 10 * mib];
+        let lengths = [len, len];
+        let done = [false, false];
+        assert_eq!(rebalance_laggard(&downloaded, &lengths, &done, 0), Some(1));
+    }
+
+    #[test]
+    fn rebalance_skips_small_remaining_and_done() {
+        let mib = 1024u64 * 1024;
+        // 落后段剩余不足阈值 → 不值得分流。
+        let downloaded = [100 * mib, 90 * mib]; // 落后 10M，但剩余只有 10M < 16M
+        let lengths = [100 * mib, 100 * mib];
+        assert_eq!(rebalance_laggard(&downloaded, &lengths, &[false, false], 0), None);
+        // 已完成段即使落后也不参与。
+        let downloaded = [100 * mib, 0];
+        assert_eq!(rebalance_laggard(&downloaded, &lengths, &[false, true], 0), None);
+    }
+
+    #[test]
+    fn rebalance_respects_split_budget() {
+        let mib = 1024u64 * 1024;
+        let downloaded = [100 * mib, 10 * mib];
+        let lengths = [100 * mib, 100 * mib];
+        assert_eq!(
+            rebalance_laggard(&downloaded, &lengths, &[false, false], REBALANCE_MAX_SPLITS),
+            None
+        );
     }
 
     #[test]

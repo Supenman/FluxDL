@@ -129,13 +129,17 @@ assert.match(
 pass("慢连接接入 chunk 循环；换线不丢字节、不耗重试预算、不误判限速任务");
 
 // ------------------------------------------------------------------ //
-section("7) 版本纪律：本次为引擎层增强，不改 crate / 应用版本号");
+section("7) 版本纪律：各版本文件一致（不绑死具体号）");
 // ------------------------------------------------------------------ //
 const pkg = JSON.parse(read("package.json"));
-assert.equal(pkg.version, "0.3.9", "应用版本保持 0.3.9 开发态");
+const tauriConf = JSON.parse(read("src-tauri/tauri.conf.json"));
+assert.match(pkg.version, /^\d+\.\d+\.\d+$/, "应用版本格式合法");
+assert.equal(tauriConf.version, pkg.version, "tauri.conf.json 与 package.json 版本必须一致");
 const manifest = JSON.parse(read("browser-extension/manifest.json"));
 assert.equal(manifest.version, "2.2.2", "扩展版本保持 2.2.2");
-assert.match(cargoSrc, /^version = "0\.3\.9"/m, "engine crate 版本保持 0.3.9");
-pass("版本号 0.3.9 / 扩展 2.2.2 未动");
+const cargoVer = cargoSrc.match(/^version = "([^"]+)"/m);
+assert.ok(cargoVer, "engine Cargo.toml 缺 version 字段");
+assert.equal(cargoVer[1], pkg.version, "engine crate 版本与应用版本必须一致");
+pass(`版本号一致（应用 ${pkg.version} / 扩展 2.2.2）`);
 
 console.log(`\n引擎可靠性契约：${passed} 组断言全部通过 ✅\n`);

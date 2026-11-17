@@ -161,6 +161,7 @@ impl Engine {
             loop {
                 ticker.tick().await;
                 let Some(engine) = weak.upgrade() else { break };
+                engine.trigger_due_schedules().await;
                 engine.tick().await;
             }
         });
@@ -343,10 +344,11 @@ impl Engine {
             reserved.insert(candidate.clone());
             candidate
         };
+        // 0 = 自动档：由 http.rs 按文件体积收敛实际连接数；1-32 = 用户显式值，完全尊重。
         let connections = options
             .connections
             .unwrap_or(engine_options.connections)
-            .clamp(1, 32);
+            .clamp(0, 32);
         let speed_limit = options.speed_limit.filter(|v| *v > 0);
         // 默认值修正：`NewTaskOptions` 是 `#[derive(Default)]`，bool 字段默认 false，
         // 而不带 `#[serde(default)]` 的字段在反序列化时同样落到 bool 默认值。
@@ -376,6 +378,9 @@ impl Engine {
         let domain = url.host_str().unwrap_or("").to_string();
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp_millis();
+        // B2 定时下载：仅未来时间生效。过去/无效时间视为立即下载。
+        let scheduled_at = options.scheduled_at.filter(|&at| at > now);
+        let scheduled = scheduled_at.is_some();
 
         let view = TaskView {
             id: id.clone(),
@@ -390,7 +395,6 @@ impl Engine {
             downloaded_bytes: 0,
             speed_bps: 0,
             eta_seconds: None,
-            status: TaskStatus::Queued,
             error: None,
             created_at: now,
             finished_at: None,
@@ -407,6 +411,9 @@ impl Engine {
             format: options.format.clone(),
             mime: None,
             domain,
+            // 定时任务建好即保持暂停，等 tick 到点自动启动。
+            status: if scheduled { TaskStatus::Paused } else { TaskStatus::Queued },
+            scheduled_at,
         };
 
         let entry = Arc::new(TaskEntry {
@@ -433,7 +440,10 @@ impl Engine {
         self.order.lock().push(id.clone());
         self.emit(EngineEvent::Task(view.clone()));
         self.save().await;
-        self.spawn_runner(id.clone()).await;
+        // B2：定时任务不立即启动，交给 tick 到点触发。
+        if !scheduled {
+            self.spawn_runner(id.clone()).await;
+        }
         Ok(view)
     }
 
@@ -618,6 +628,8 @@ impl Engine {
         if view.status.is_active() || view.status == TaskStatus::Queued {
             view.status = TaskStatus::Paused;
         }
+        // B2：手动暂停视为取消定时，清掉计划时间。
+        view.scheduled_at = None;
         view.speed_bps = 0;
         view.eta_seconds = None;
         drop(view);
@@ -628,10 +640,12 @@ impl Engine {
     pub async fn resume(self: &Arc<Self>, id: &str) {
         let Some(entry) = self.get(id) else { return };
         {
-            let view = entry.view.lock().await;
+            let mut view = entry.view.lock().await;
             if view.status.is_active() || view.status == TaskStatus::Completed {
                 return;
             }
+            // B2：手动恢复视为立即开始，取消原定的定时。
+            view.scheduled_at = None;
         }
         self.spawn_runner(id.to_string()).await;
     }
@@ -643,6 +657,7 @@ impl Engine {
             view.error = None;
             view.status = TaskStatus::Paused;
             view.finished_at = None;
+            view.scheduled_at = None;
         }
         // If the previous attempt never got a byte, segments may be stale.
         if entry.downloaded.load(Ordering::Relaxed) == 0 {
@@ -691,8 +706,10 @@ impl Engine {
     pub async fn resume_all(self: &Arc<Self>) {
         let entries = { self.tasks.read().values().cloned().collect::<Vec<_>>() };
         for entry in entries {
-            let status = entry.view.lock().await.status;
-            if status == TaskStatus::Paused {
+            let is_paused = entry.view.lock().await.status == TaskStatus::Paused;
+            if is_paused {
+                // B2：全部继续也取消定时，避免启动后 UI 仍显示计划时间。
+                entry.view.lock().await.scheduled_at = None;
                 self.spawn_runner(entry.id.clone()).await;
             }
         }
@@ -742,6 +759,34 @@ impl Engine {
         };
         if let Err(err) = store::save(&self.store_path, &store).await {
             self.emit_log("", format!("任务列表保存失败：{err}"));
+        }
+    }
+
+    /// B2 定时下载：扫描到点的定时任务，清空标记并启动。
+    /// 独立方法（非 tick）以便拿到 &Arc<Self> 调用 spawn_runner，
+    /// 同时保持 tick(&self) 签名不变（速度契约脚本按签名文本定位 tick 函数体）。
+    async fn trigger_due_schedules(self: &Arc<Self>) {
+        let wall_now = chrono::Utc::now().timestamp_millis();
+        let all: Vec<Arc<TaskEntry>> = self.tasks.read().values().cloned().collect();
+        for entry in all {
+            let is_due = {
+                let view = entry.view.lock().await;
+                view.status == TaskStatus::Paused
+                    && view.scheduled_at.map(|at| at <= wall_now).unwrap_or(false)
+            };
+            if !is_due {
+                continue;
+            }
+            {
+                let mut view = entry.view.lock().await;
+                // 再次确认仍未被用户手动处理（幂等，防并发 tick）。
+                if view.status != TaskStatus::Paused || view.scheduled_at.is_none() {
+                    continue;
+                }
+                view.scheduled_at = None;
+            }
+            self.emit_log(&entry.id, "定时时间已到，自动开始下载");
+            self.spawn_runner(entry.id.clone()).await;
         }
     }
 

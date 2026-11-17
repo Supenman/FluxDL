@@ -23,6 +23,7 @@ import { backend, isTauri } from "../lib/backend";
 import type { EngineInfo, EngineOptions, ToolProgress } from "../lib/types";
 import { cx, formatBytes, formatSpeed } from "../lib/format";
 import { UpdateSection, ToolVersionPicker, AppVersionPicker } from "./UpdateSection";
+import { ACCENT_PRESETS, parseAccentJSON } from "../lib/theme";
 
 const LIMITS = [
   { value: null, label: "不限速" },
@@ -56,6 +57,8 @@ export function SettingsPage() {
   const settings = useStore((s) => s.settings);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const accent = useStore((s) => s.accent);
+  const setAccent = useStore((s) => s.setAccent);
   const setSettings = useStore((s) => s.setSettings);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -66,6 +69,20 @@ export function SettingsPage() {
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<ToolProgress | null>(null);
   const saveTimer = useRef<number | null>(null);
+  const themeFileRef = useRef<HTMLInputElement | null>(null);
+
+  const importTheme = async (file: File | undefined) => {
+    if (!file) return;
+    const text = await file.text();
+    const result = parseAccentJSON(text);
+    if (!result.ok) {
+      pushToast(`主题导入失败：${result.error}`, "error");
+    } else {
+      setAccent(result.colors);
+      pushToast("主题已应用", "success");
+    }
+    if (themeFileRef.current) themeFileRef.current.value = "";
+  };
 
   useEffect(() => {
     void refreshInfo();
@@ -220,6 +237,60 @@ export function SettingsPage() {
             </button>
           ))}
         </div>
+
+        <div className="setting-row">
+          <div className="setting-copy">
+            <label>强调色</label>
+            <p>预设配色或导入自定义主题（只改品牌色，保持文字对比度）</p>
+          </div>
+          <div className="setting-control wide">
+            <div className="accent-presets">
+              {ACCENT_PRESETS.map((preset) => {
+                const active =
+                  accent?.primary?.toLowerCase() === preset.primary.toLowerCase();
+                return (
+                  <button
+                    key={preset.id}
+                    className={cx("accent-swatch", active && "active")}
+                    style={{ "--swatch": preset.swatch } as CSSProperties}
+                    onClick={() => setAccent({
+                      primary: preset.primary,
+                      hover: preset.hover,
+                      active: preset.active,
+                    })}
+                    title={preset.label}
+                    aria-label={`强调色：${preset.label}`}
+                  >
+                    {active && <Check size={13} />}
+                  </button>
+                );
+              })}
+              <button
+                className="accent-import"
+                onClick={() => themeFileRef.current?.click()}
+                title="导入主题 JSON"
+              >
+                导入
+              </button>
+              {accent && (
+                <button
+                  className="accent-import"
+                  onClick={() => { setAccent(null); pushToast("已恢复默认主题", "info"); }}
+                  title="恢复默认主题"
+                >
+                  重置
+                </button>
+              )}
+              <input
+                ref={themeFileRef}
+                type="file"
+                accept="application/json,.json"
+                hidden
+                onChange={(e) => void importTheme(e.target.files?.[0])}
+              />
+            </div>
+          </div>
+        </div>
       </section>
 
       <section className="settings-section">
@@ -281,20 +352,20 @@ export function SettingsPage() {
             <label>
               <Gauge size={13} /> 每任务连接数
             </label>
-            <p>服务器支持 Range 时会拆成多个并行分片</p>
+            <p>自动会按文件大小选连接数；也可手动固定（服务器支持 Range 才生效）</p>
           </div>
           <div className="setting-control wide">
             <div className="range-row">
               <input
                 type="range"
-                min={1}
+                min={0}
                 max={16}
                 value={settings.connections}
                 onChange={(event) => update({ connections: Number(event.target.value) })}
                 className="slider"
-                style={{ "--fill": `${((settings.connections - 1) / 15) * 100}%` } as CSSProperties}
+                style={{ "--fill": `${(settings.connections / 16) * 100}%` } as CSSProperties}
               />
-              <span className="range-value">{settings.connections}</span>
+              <span className="range-value">{settings.connections === 0 ? "自动" : settings.connections}</span>
             </div>
           </div>
         </div>

@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Check,
   Film,
+  Maximize2,
 } from "lucide-react";
 import type { Task } from "../lib/types";
 import { backend } from "../lib/backend";
@@ -30,11 +31,13 @@ interface TaskRowProps {
   task: Task;
   selected: boolean;
   onSelect: () => void;
+  compact?: boolean;
 }
 
-export function TaskRow({ task, selected, onSelect }: TaskRowProps) {
+export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowProps) {
   const select = useStore((s) => s.select);
   const pushToast = useStore((s) => s.pushToast);
+  const setProgressId = useStore((s) => s.setProgressId);
   const [busy, setBusy] = useState(false);
 
   const style = fileStyle(task);
@@ -98,6 +101,7 @@ export function TaskRow({ task, selected, onSelect }: TaskRowProps) {
       }}
       role="button"
       tabIndex={0}
+      aria-label={`${task.filename}，${pct > 0 ? Math.floor(pct) + "%" : task.status}，${formatSpeed(task.speedBps)}`}
     >
       <div className={`file-tile tone-${style.tone}`}>
         <span className="file-ext">{style.label || "FILE"}</span>
@@ -109,7 +113,7 @@ export function TaskRow({ task, selected, onSelect }: TaskRowProps) {
           <span className="task-name" title={task.filename}>
             {task.filename}
           </span>
-          <StatusBadge status={task.status} />
+          <StatusBadge status={task.status} scheduledAt={task.scheduledAt} />
         </div>
 
         <div className="task-sub">
@@ -121,20 +125,35 @@ export function TaskRow({ task, selected, onSelect }: TaskRowProps) {
           )}
         </div>
 
-        <div className={cx("progress-track", isActive && "live", done && "done", failed && "error")}>
+        <div className={cx(
+          "progress-track",
+          isActive && "live",
+          done && "done",
+          failed && "error",
+          task.segments.length > 1 && task.totalBytes > 0 && "has-segments",
+        )}>
           <div
             className={cx("progress-fill", !task.totalBytes && "indeterminate")}
             style={pct > 0 ? { width: `${pct}%` } : undefined}
           />
+          {/* 分段视图：每段一个块，按自身已下载字节填充；多连接时直观看到各段进度（借鉴 MDM 分段条思路，原创实现） */}
           {task.segments.length > 1 &&
             task.totalBytes > 0 &&
-            task.segments.slice(1).map((seg) => (
-              <span
-                key={seg.index}
-                className="segment-tick"
-                style={{ left: `${(seg.start / task.totalBytes) * 100}%` }}
-              />
-            ))}
+            task.segments.map((seg) => {
+              const left = (seg.start / task.totalBytes) * 100;
+              const width = ((seg.end - seg.start) / task.totalBytes) * 100;
+              const segPct = seg.end > seg.start ? (seg.downloaded / (seg.end - seg.start)) * 100 : 0;
+              return (
+                <span
+                  key={seg.index}
+                  className={cx("seg-block", seg.done && "is-done")}
+                  style={{ left: `${left}%`, width: `${width}%` }}
+                  title={`段 ${seg.index + 1} · ${Math.floor(segPct)}%`}
+                >
+                  <span className="seg-fill" style={{ width: `${segPct}%` }} />
+                </span>
+              );
+            })}
         </div>
 
         <div className="task-meta">
@@ -182,7 +201,33 @@ export function TaskRow({ task, selected, onSelect }: TaskRowProps) {
           )}
           {task.status === "queued" && <span>等待空闲下载槽位…</span>}
           {task.status === "connecting" && <span>正在探测服务器与文件大小…</span>}
+          {task.status === "paused" && task.scheduledAt != null && task.scheduledAt > 0 && (
+            <span>
+              <Clock size={11} /> 计划 {formatDate(task.scheduledAt)} 开始
+            </span>
+          )}
         </div>
+
+        {/* 紧凑多列视图：补充添加时间 / 来源 / 平均速度（复用已有字段） */}
+        {compact && (
+          <div className="task-compact-cols">
+            <span className="compact-col" title="添加时间">
+              <Clock size={10} /> {formatDate(task.createdAt)}
+            </span>
+            <span className="compact-col" title="来源域名">
+              <Globe size={10} /> {task.domain || "本地"}
+            </span>
+            <span className="compact-col" title="平均速度">
+              <Zap size={10} />
+              {task.totalBytes > 0 && task.finishedAt
+                ? formatSpeed(task.totalBytes / Math.max(1, (task.finishedAt - task.createdAt) / 1000))
+                : formatSpeed(task.speedBps)}
+            </span>
+            <span className="compact-col" title="连接数">
+              {task.connections || "自动"} 线程
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="task-right">
@@ -206,6 +251,17 @@ export function TaskRow({ task, selected, onSelect }: TaskRowProps) {
         </div>
 
         <div className="row-actions">
+          <button
+            className="row-button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setProgressId(task.id);
+            }}
+            title="打开独立进度窗口"
+            aria-label="打开独立进度窗口"
+          >
+            <Maximize2 size={14} />
+          </button>
           {done ? (
             <button
               className="row-button"

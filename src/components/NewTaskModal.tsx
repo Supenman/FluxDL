@@ -51,6 +51,7 @@ export function NewTaskModal() {
   const [referer, setReferer] = useState("");
   const [proxy, setProxy] = useState("");
   const [userAgent, setUserAgent] = useState("");
+  const [scheduleLocal, setScheduleLocal] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -67,6 +68,7 @@ export function NewTaskModal() {
     setReferer("");
     setProxy("");
     setUserAgent("");
+    setScheduleLocal("");
     setErrors([]);
     window.setTimeout(() => textareaRef.current?.focus(), 60);
     // Only reset when the modal opens, not when settings change.
@@ -85,7 +87,7 @@ export function NewTaskModal() {
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, submitting, text, mode, saveDir, connections, limit, format, referer, proxy, userAgent]);
+  }, [open, submitting, text, mode, saveDir, connections, limit, format, referer, proxy, userAgent, scheduleLocal]);
 
   const urls = useMemo(() => extractUrls(text), [text]);
 
@@ -121,6 +123,16 @@ export function NewTaskModal() {
 
   async function submit() {
     if (submitting || urls.length === 0) return;
+    // B2 定时下载：解析本地时间输入为 UTC 毫秒时间戳；过去时间直接拒绝，避免静默立即下载。
+    let scheduledAt: number | null = null;
+    if (scheduleLocal) {
+      const parsed = new Date(scheduleLocal).getTime();
+      if (!Number.isFinite(parsed) || parsed <= Date.now()) {
+        setErrors(["定时时间必须是未来的时刻"]);
+        return;
+      }
+      scheduledAt = parsed;
+    }
     setSubmitting(true);
     setErrors([]);
     const groups: Array<{ kind: TaskKind; urls: string[] }> = [];
@@ -148,6 +160,7 @@ export function NewTaskModal() {
           proxy: proxy.trim() || null,
           userAgent: userAgent.trim() || null,
           format: group.kind === "media" ? format : null,
+          scheduledAt,
         });
         added += result.tasks.length;
         if (!firstId && result.tasks[0]) firstId = result.tasks[0].id;
@@ -258,18 +271,18 @@ export function NewTaskModal() {
                 <div className="field">
                   <label>
                     下载线程
-                    <span className="field-value">{connections}</span>
+                    <span className="field-value">{connections === 0 ? "自动" : connections}</span>
                   </label>
                   <input
                     type="range"
-                    min={1}
+                    min={0}
                     max={16}
                     value={connections}
                     onChange={(event) => setConnections(Number(event.target.value))}
                     className="slider"
-                    style={{ "--fill": `${((connections - 1) / 15) * 100}%` } as CSSProperties}
+                    style={{ "--fill": `${(connections / 16) * 100}%` } as CSSProperties}
                   />
-                  <span className="field-hint">服务器支持 Range 时自动拆分</span>
+                  <span className="field-hint">自动按文件大小选线程；0 = 自动</span>
                 </div>
                 <div className="field">
                   <label>任务限速</label>
@@ -313,7 +326,7 @@ export function NewTaskModal() {
           <button className="advanced-toggle" onClick={() => setAdvanced((value) => !value)}>
             <ChevronDown size={14} className={cx("advanced-caret", advanced && "open")} />
             高级选项
-            <span className="advanced-hint">Referer / 代理 / User-Agent</span>
+            <span className="advanced-hint">Referer / 代理 / 定时下载</span>
           </button>
 
           {advanced && (
@@ -344,6 +357,15 @@ export function NewTaskModal() {
                   placeholder="留空则使用全局默认 UA"
                   spellCheck={false}
                 />
+              </div>
+              <div className="field span-2">
+                <label>定时下载</label>
+                <input
+                  type="datetime-local"
+                  value={scheduleLocal}
+                  onChange={(event) => setScheduleLocal(event.target.value)}
+                />
+                <span className="field-hint">留空则立即开始；选择未来时间后任务将等待到点自动下载</span>
               </div>
             </div>
           )}

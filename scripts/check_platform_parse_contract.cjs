@@ -529,12 +529,14 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
-  assert.equal(pkg.version, "0.3.9", "应用版本仍为 0.3.9，不 bump");
-  assert.equal(manifest.version, "2.2.2", "扩展版本仍为 2.2.2，不 bump");
+  const tauriConf = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.conf.json"), "utf8"));
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/, "应用版本格式合法");
+  assert.equal(tauriConf.version, pkg.version, "tauri.conf.json 与 package.json 版本必须一致");
+  assert.equal(manifest.version, "2.2.2", "扩展版本仍为 2.2.2（本次未动扩展）");
   assert.equal(manifest.minimum_chrome_version, "102");
   const main = manifest.content_scripts.find((c) => c.world === "MAIN");
   assert(main && main.js.includes("page-probe.js") && main.all_frames, "MAIN world 探针注入不变");
-  pass("版本纪律：0.3.9 / 2.2.2 不动，manifest 注入结构不变");
+  pass(`版本纪律：应用 ${pkg.version} / 扩展 2.2.2 一致，manifest 注入结构不变`);
 
   console.log("\n" + "=".repeat(64));
   console.log(`PASS 平台结构化解析契约：${results.length} 组断言全部通过`);

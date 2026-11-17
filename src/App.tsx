@@ -3,6 +3,7 @@ import { Download } from "lucide-react";
 import { useStore } from "./store";
 import { backend } from "./lib/backend";
 import { extractUrls, cx } from "./lib/format";
+import { applyAccent } from "./lib/theme";
 import { Titlebar } from "./components/Titlebar";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
@@ -15,10 +16,12 @@ import { SettingsPage } from "./components/SettingsPage";
 import { Toasts } from "./components/Toasts";
 import { ClipboardOffer } from "./components/ClipboardOffer";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { ProgressWindow } from "./components/ProgressWindow";
 
 export function App() {
   const view = useStore((s) => s.view);
   const theme = useStore((s) => s.theme);
+  const accent = useStore((s) => s.accent);
   const setCommandOpen = useStore((s) => s.setCommandOpen);
   const setNewTaskOpen = useStore((s) => s.setNewTaskOpen);
   const [dragging, setDragging] = useState(false);
@@ -120,6 +123,11 @@ export function App() {
       return () => media.removeEventListener("change", apply);
     }
   }, [theme]);
+
+  // Apply custom accent preset / imported theme (brand originals only; WCAG semantic mapping untouched).
+  useEffect(() => {
+    applyAccent(accent);
+  }, [accent]);
 
   // Global shortcuts.
   useEffect(() => {
@@ -228,6 +236,7 @@ export function App() {
       </div>
       <StatusBar />
       <DetailDrawer />
+      <ProgressWindow />
       <NewTaskModal />
       <CommandPalette />
       <Toasts />

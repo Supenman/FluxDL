@@ -2,14 +2,14 @@
 
 一个 Windows 桌面下载器：普通文件直链由 Rust 引擎分段下载，视频网页由 yt-dlp 解析，浏览器扩展可接管下载并识别页面里的媒体资源。
 
-> **最新正式版 `v0.4.0`**（北京时间 2026-11-18 发布） · 浏览器扩展 `v2.2.2` · 官方成品为 **Windows 10/11 x64**
+> **最新正式版 `v0.4.1`**（北京时间 2026-11-23 发布） · 浏览器扩展 `v2.2.2` · 官方成品为 **Windows 10/11 x64**
 > 仓库：<https://github.com/Supenman/FluxDL> · 下载：[Releases](https://github.com/Supenman/FluxDL/releases)
 
 ---
 
 ## dev 开发进度
 
-`dev` 上新增了 HTTP 续传版本校验、任务记录备份恢复、大量历史任务的保存优化，以及 GitHub Actions 检查。这些改动尚未随 v0.4.0 安装包发布。
+v0.4.1 是修复版：HTTP 续传改用强 `ETag` 校验、任务记录逐条容错并加 `.bak` 备份、新增按类型归档下载、任务快照提速，同时补齐 GitHub Actions 检查与发版校验脚本。详见[版本历史](#版本历史)。
 
 ---
 
@@ -34,15 +34,17 @@
 
 ## 当前版本能做什么
 
-本节描述 **v0.4.0 正式版**。本版还增加了紧凑任务视图、独立进度窗口和主题预设。[完整发布说明](https://github.com/Supenman/FluxDL/releases/tag/v0.4.0)
+本节描述 **v0.4.1 正式版**。v0.4.0 带来的紧凑任务视图、独立进度窗口和主题预设继续保留；v0.4.1 另修复了续传一致性与任务记录损坏两个隐蔽缺陷。[完整发布说明](https://github.com/Supenman/FluxDL/releases/tag/v0.4.1)
 
 ### 下载引擎（A 档 · 普通 HTTP / 文件直链）
 
 | 能力 | 说明 |
 |---|---|
 | 多连接分段 | 自动模式按文件大小选取连接数，慢分段可由其他连接分担 |
-| 断点续传 | `.fluxdl-part` 临时文件 + `tasks.json` 进度持久化；下载前校验 part 真实长度，不一致则全量重下 |
+| 断点续传 | `.fluxdl-part` 临时文件 + `tasks.json` 进度持久化；续传前校验 part 真实长度、服务器强 `ETag` 与总长度三者一致，源站内容变更即整体重下，杜绝「长度对但内容坏」 |
 | 任务队列 | 最大并发数、暂停 / 继续 / 删除、终态释放路径占位 |
+| 任务记录容错 | `tasks.json` 逐条解析，单条损坏只跳过该条；另写 `.bak` 备份，主文件不可读时自动回退并在界面提示 |
+| 按类型归档 | 设置中可开启，新任务自动归入 `视频` / `文档` / `压缩包` / `其他` 子文件夹；默认关闭 |
 | 定时下载 | 新建任务时可选择开始时间，应用重启后仍保留定时计划 |
 | 限速 | 全局限速与单任务限速**串联生效**；视频任务同样受「设置」里的限速约束 |
 | 每任务网络参数 | 代理、User-Agent、Referer 可独立设置（扩展接管的链接自动带浏览器 UA，缓解防盗链 403） |
@@ -103,12 +105,12 @@
 
 ## 最快上手：直接用成品包
 
-[v0.4.0 Release](https://github.com/Supenman/FluxDL/releases/tag/v0.4.0) 提供以下文件。
+[v0.4.1 Release](https://github.com/Supenman/FluxDL/releases/tag/v0.4.1) 提供以下文件。
 
 | 包 | 说明 |
 |---|---|
-| `FluxDL-0.4.0-Setup.exe` | NSIS 安装版，单用户安装、不需要管理员权限 |
-| `fluxdl.exe` | 裸主程序（约 9.6 MB），**应用自更新只下载它** |
+| `FluxDL-0.4.1-Setup.exe` | NSIS 安装版，单用户安装、不需要管理员权限 |
+| `fluxdl.exe` | 裸主程序（约 9.7 MB），**应用自更新只下载它** |
 | `SHA256SUMS.txt` / `update-manifest.json` | 校验清单和自更新清单 |
 
 安装包自带 `browser-extension/` 与 `tools/`。
@@ -297,7 +299,7 @@ cargo xwin build --release --target x86_64-pc-windows-msvc
 用 Python 3.11 或更新版本运行。先将 Windows 安装包、`fluxdl.exe`、用 `tools/build-update-manifest.py` 生成的 `update-manifest.json` 和 `SHA256SUMS.txt` 放在同一个发布产物目录。校验清单使用 `sha256sum` 的格式，记录这三个待上传文件的哈希值。
 
 ```sh
-python tools/check-release.py --tag v0.4.0 --artifacts path/to/release
+python tools/check-release.py --tag v0.4.1 --artifacts path/to/release
 ```
 
 将示例标签替换为准备发布的版本。检查核对源码的三个应用版本字段、产物清单版本、预期的 GitHub 下载地址、更新包大小和每个产物的 SHA-256。上传之后，在 Release 页面确认下载链接可用。
@@ -339,7 +341,8 @@ GitHub Actions 在 `dev`、`main` 推送和 PR 时运行：Linux 跑完整引擎
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **0.4.0** | 2026-11-18 | 自适应连接数、慢分段再平衡、定时下载、HLS 支持、紧凑任务视图及独立进度窗口 |
+| **0.4.1** | 2026-11-23 | 修复版。续传改强 `ETag` + `If-Range` 校验，源站内容变更不再复用旧字节；`tasks.json` 逐条容错解析并增加 `.bak` 备份自动回退、恢复时界面提示；服务器泛化文件名不再顶掉已有有意义文件名；新增按类型归档下载（默认关闭）；任务快照读取提速；任务行去掉重复的重试图标；新增 CI 工作流与 `tools/check-release.py` 发版校验 |
+| 0.4.0 | 2026-11-18 | 自适应连接数、慢分段再平衡、定时下载、HLS 支持、紧凑任务视图及独立进度窗口 |
 | 0.3.9 | 2026-11-09 | 修复视频速度恒显示 `—`；抖音改走免 Cookie 移动端接口并真机通过；删除 yt-dlp + Cookie 通道；「本页资源」做扎实（显式 `kind:"http"`、搜索/筛选/批量/探活）；平台结构化正片；A 档分片 SHA-256 回读校验与慢连接换线；正式发版、合并 `main`、建 Release |
 | 0.3.8 | 2026-11-07 | 速度与曲线 EMA 平滑根治锯齿；视频/直链速度来源分离；ETA 自洽 |
 | 0.3.7 | 2026-11-07 | 仓库由 FuxDL 改名 FluxDL 后同步遗留地址；扩展合入 MAIN world 探针（2.2.1） |

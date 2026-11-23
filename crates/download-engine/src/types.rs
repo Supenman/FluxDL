@@ -71,6 +71,8 @@ pub struct TaskView {
     pub proxy: Option<String>,
     pub format: Option<String>,
     pub mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_etag: Option<String>,
     pub domain: String,
     /// B2 定时下载：计划开始的 UTC 毫秒时间戳。有值且任务处于 Paused 时表示
     /// 等待定时触发；触发完成或用户手动 pause/resume 后清空。

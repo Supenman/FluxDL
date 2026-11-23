@@ -14,6 +14,51 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
+#[tokio::test]
+async fn recovers_task_progress_from_backup_and_keeps_backup_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tasks.json");
+    let snapshot = serde_json::json!({
+        "options": { "connections": 4 },
+        "tasks": [{
+            "view": {
+                "id": "partial",
+                "status": "paused",
+                "downloadedBytes": 128,
+                "segments": [{ "index": 0, "start": 0, "end": 255, "downloaded": 128, "done": false }],
+                "resumeEtag": "\"original\""
+            }
+        }]
+    });
+    std::fs::write(&path, snapshot.to_string()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let original = Engine::new(path.clone(), tx.clone());
+    assert!(!original.recovered_tasks());
+    original.save().await;
+    drop(original);
+
+    std::fs::write(&path, "{\"tasks\":").unwrap();
+    let recovered = Engine::new(path.clone(), tx.clone());
+    assert!(recovered.recovered_tasks());
+    let task = recovered.get_task("partial").await.unwrap();
+    assert_eq!(task.downloaded_bytes, 128);
+    assert_eq!(task.segments[0].downloaded, 128);
+    assert_eq!(task.resume_etag.as_deref(), Some("\"original\""));
+    assert_eq!(recovered.options().connections, 4);
+    recovered.set_speed_limit("partial", Some(1024)).await;
+    drop(recovered);
+
+    let repaired = Engine::new(path.clone(), tx.clone());
+    assert!(!repaired.recovered_tasks());
+    assert_eq!(repaired.get_task("partial").await.unwrap().speed_limit, Some(1024));
+    drop(repaired);
+
+    std::fs::remove_file(&path).unwrap();
+    let recovered_again = Engine::new(path, tx);
+    assert!(recovered_again.recovered_tasks());
+    assert_eq!(recovered_again.get_task("partial").await.unwrap().speed_limit, Some(1024));
+}
+
 // ---------------------------------------------------------------- 测试服务器
 
 struct TestServer {

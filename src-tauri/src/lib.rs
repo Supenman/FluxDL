@@ -27,9 +27,19 @@ struct AddResult {
     errors: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskListSnapshot {
+    tasks: Vec<TaskView>,
+    recovered_from_backup: bool,
+}
+
 #[tauri::command]
-async fn get_tasks(state: State<'_, AppState>) -> Result<Vec<TaskView>, String> {
-    Ok(state.engine.tasks().await)
+async fn get_tasks(state: State<'_, AppState>) -> Result<TaskListSnapshot, String> {
+    Ok(TaskListSnapshot {
+        tasks: state.engine.tasks().await,
+        recovered_from_backup: state.engine.recovered_tasks(),
+    })
 }
 
 #[tauri::command]
@@ -1048,6 +1058,8 @@ pub fn run() {
                 let mut options = engine.options();
                 if apply_bundled_tools(&mut options, &bundled, aria2.as_ref()) {
                     engine.set_options(options).await;
+                } else if engine.recovered_tasks() {
+                    engine.save().await;
                 }
                 engine
             });

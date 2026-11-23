@@ -45,8 +45,11 @@ export function App() {
 
     backend
       .getTasks()
-      .then((tasks) => {
-        if (alive) useStore.getState().setTasks(tasks);
+      .then(({ tasks, recoveredFromBackup }) => {
+        if (!alive) return;
+        const state = useStore.getState();
+        state.setTasks(tasks);
+        if (recoveredFromBackup) state.pushToast("已从备份恢复下载任务", "info");
       })
       .catch((error) => {
         if (alive) useStore.getState().pushToast(`读取任务列表失败：${error}`, "error");

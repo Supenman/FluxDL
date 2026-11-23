@@ -3,7 +3,7 @@
   "app": {
     "latest": "0.4.1",
     "minSupported": null,
-    "releasedAt": "2026-11-23T14:46:28Z",
+    "releasedAt": "2026-11-23T16:07:45Z",
     "notes": [
       "修复续传一致性：强 ETag + If-Range 校验，源站内容变更时不再复用不匹配的缓存字节",
       "修复任务列表整表丢失：快照逐条容错解析，并增加 .bak 备份自动回退",
@@ -15,7 +15,7 @@
       "windows-x64": {
         "url": "https://github.com/Supenman/FluxDL/releases/download/v0.4.1/fluxdl.exe",
         "size": 10122240,
-        "sha256": "6dab3ec65b36f4e83fde1e1503196d8d2ff5ddea1254127077c059e02f77a13d"
+        "sha256": "19a047fa0befe426fc8043b4ce20c3f614856e7d6cadad6a5bff424246db4c34"
       }
     }
   },
@@ -32,7 +32,7 @@
   "history": [
     {
       "version": "0.4.1",
-      "releasedAt": "2026-11-23T14:46:28Z",
+      "releasedAt": "2026-11-23T16:07:45Z",
       "channel": "stable",
       "notes": [
         "修复续传一致性：强 ETag + If-Range 校验，源站内容变更时不再复用不匹配的缓存字节",

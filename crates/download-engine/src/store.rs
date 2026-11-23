@@ -1,6 +1,6 @@
 use crate::types::{EngineOptions, NewTaskOptions, TaskStatus, TaskView};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -16,26 +16,40 @@ pub struct StoreFile {
     pub tasks: Vec<PersistedTask>,
 }
 
-pub fn load(path: &Path) -> StoreFile {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return StoreFile::default();
-    };
+pub fn load(path: &Path) -> (StoreFile, bool) {
+    if let Some(store) = read_snapshot(path) {
+        return (store, false);
+    }
+    match read_snapshot(&backup_path(path)) {
+        Some(store) => (store, true),
+        None => (StoreFile::default(), false),
+    }
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".bak");
+    name.into()
+}
+
+fn read_snapshot(path: &Path) -> Option<StoreFile> {
+    let raw = std::fs::read(path).ok()?;
+    let root: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    let tasks = root.get("tasks")?.as_array()?;
     // 逐条解析，而不是整表 from_str：旧版本升级后只要有一条任务缺字段或格式损坏，
     // 整表反序列化就会失败，把所有已完成任务和续传 part 一起丢掉。
     // 这里按字段拆开读，坏条目单独跳过，其余任务照常恢复。
     let mut store = StoreFile::default();
-    let Ok(root) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return store;
-    };
     if let Some(options) = root.get("options") {
         store.options = serde_json::from_value(options.clone()).ok();
     }
-    if let Some(tasks) = root.get("tasks").and_then(|v| v.as_array()) {
-        for item in tasks {
-            if let Ok(task) = serde_json::from_value::<PersistedTask>(item.clone()) {
-                store.tasks.push(task);
-            }
+    for item in tasks {
+        if let Ok(task) = serde_json::from_value::<PersistedTask>(item.clone()) {
+            store.tasks.push(task);
         }
+    }
+    if !tasks.is_empty() && store.tasks.is_empty() {
+        return None;
     }
     // Anything that was mid-flight when the app exited is shown as paused,
     // so we never silently burn bandwidth on startup.
@@ -46,7 +60,7 @@ pub fn load(path: &Path) -> StoreFile {
             task.view.eta_seconds = None;
         }
     }
-    store
+    Some(store)
 }
 
 pub async fn save(path: &Path, store: &StoreFile) -> std::io::Result<()> {
@@ -56,6 +70,12 @@ pub async fn save(path: &Path, store: &StoreFile) -> std::io::Result<()> {
     let raw = serde_json::to_vec_pretty(store)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
+    // Commit the main snapshot first so a failed write leaves the previous backup intact.
+    write_snapshot(path, &raw).await?;
+    write_snapshot(&backup_path(path), &raw).await
+}
+
+async fn write_snapshot(path: &Path, raw: &[u8]) -> std::io::Result<()> {
     // tmp 带 pid，避免多个进程实例互相踩同一个临时文件。
     let mut name = path
         .file_name()

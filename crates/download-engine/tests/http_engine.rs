@@ -1,12 +1,15 @@
 use fluxdl_engine::*;
 use rand::RngCore;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 struct TestServer {
     pub url: String,
+    payload: Arc<Mutex<Arc<Vec<u8>>>>,
+    requested_bytes: Arc<AtomicU64>,
     _handle: tokio::task::JoinHandle<()>,
 }
 
@@ -14,12 +17,17 @@ async fn start_server(payload: Arc<Vec<u8>>, support_ranges: bool) -> TestServer
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{addr}/payload.bin");
+    let payload = Arc::new(Mutex::new(payload));
+    let requested_bytes = Arc::new(AtomicU64::new(0));
+    let shared_payload = payload.clone();
+    let shared_requested_bytes = requested_bytes.clone();
     let handle = tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
                 break;
             };
-            let payload = payload.clone();
+            let payload = shared_payload.clone();
+            let requested_bytes = shared_requested_bytes.clone();
             tokio::spawn(async move {
                 let mut head = Vec::new();
                 {
@@ -35,12 +43,19 @@ async fn start_server(payload: Arc<Vec<u8>>, support_ranges: bool) -> TestServer
                         head.push(line);
                     }
                 }
+                let payload = payload.lock().unwrap().clone();
+                // The replacement fixture flips the first byte as well as changing the body.
+                let etag = format!("\"fixture-{}\"", payload.first().copied().unwrap_or(0));
+                let if_range_matches = head.iter().all(|line| {
+                    let (name, value) = line.split_once(':').unwrap_or(("", ""));
+                    !name.eq_ignore_ascii_case("if-range") || value.trim() == etag
+                });
                 let mut range: Option<(u64, u64)> = None;
                 for line in &head {
                     let lower = line.to_ascii_lowercase();
                     if let Some(value) = lower.strip_prefix("range:") {
                         let value = value.trim().trim_start_matches("bytes=");
-                        if support_ranges {
+                        if support_ranges && if_range_matches {
                             if let Some((a, b)) = value.split_once('-') {
                                 let start = a.parse::<u64>().unwrap_or(0);
                                 let end = if b.is_empty() {
@@ -70,6 +85,7 @@ async fn start_server(payload: Arc<Vec<u8>>, support_ranges: bool) -> TestServer
                     "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"payload.bin\"\r\n",
                     end - start + 1
                 );
+                header.push_str(&format!("ETag: {etag}\r\n"));
                 if support_ranges {
                     header.push_str("Accept-Ranges: bytes\r\n");
                     header.push_str(&format!("Content-Range: bytes {start}-{end}/{total}\r\n"));
@@ -78,6 +94,7 @@ async fn start_server(payload: Arc<Vec<u8>>, support_ranges: bool) -> TestServer
                 if socket.write_all(header.as_bytes()).await.is_err() {
                     return;
                 }
+                requested_bytes.fetch_add(end - start + 1, Ordering::Relaxed);
                 let mut pos = start as usize;
                 while pos <= end as usize {
                     let stop = (pos + 32 * 1024).min(end as usize + 1);
@@ -92,6 +109,8 @@ async fn start_server(payload: Arc<Vec<u8>>, support_ranges: bool) -> TestServer
     });
     TestServer {
         url,
+        payload,
+        requested_bytes,
         _handle: handle,
     }
 }
@@ -197,10 +216,19 @@ async fn server_filename_wins_over_browser_suggestion() {
 
 #[tokio::test]
 async fn pause_then_resume_keeps_bytes() {
+    run_resume_case(false).await;
+}
+
+#[tokio::test]
+async fn pause_then_resume_restarts_if_same_size_resource_changed() {
+    run_resume_case(true).await;
+}
+
+async fn run_resume_case(replace_remote: bool) {
     let dir = tempfile::tempdir().unwrap();
     let mut payload = vec![0u8; 2 * 1024 * 1024];
     rand::thread_rng().fill_bytes(&mut payload);
-    let expected = payload.clone();
+    let mut expected = payload.clone();
     let server = start_server(Arc::new(payload), true).await;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let engine = Engine::new(dir.path().join("tasks.json"), tx);
@@ -229,6 +257,13 @@ async fn pause_then_resume_keeps_bytes() {
     assert!(paused.downloaded_bytes > 100 * 1024, "{paused:?}");
     assert!(dir.path().join("payload.bin.fluxdl-part").exists());
 
+    if replace_remote {
+        for byte in &mut expected {
+            *byte ^= 0xff;
+        }
+        *server.payload.lock().unwrap() = Arc::new(expected.clone());
+    }
+    server.requested_bytes.store(0, Ordering::Relaxed);
     engine.set_speed_limit(&task.id, None).await;
     engine.resume(&task.id).await;
     let finished = wait_until(&engine, &task.id, Duration::from_secs(30), |v| {
@@ -238,6 +273,12 @@ async fn pause_then_resume_keeps_bytes() {
     assert_eq!(finished.status, TaskStatus::Completed, "{finished:?}");
     let bytes = std::fs::read(dir.path().join("payload.bin")).unwrap();
     assert_eq!(bytes, expected);
+    let requested = server.requested_bytes.load(Ordering::Relaxed);
+    if replace_remote {
+        assert_eq!(requested, expected.len() as u64 + 1);
+    } else {
+        assert!(requested < expected.len() as u64 + 1);
+    }
 }
 
 #[tokio::test]

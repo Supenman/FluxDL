@@ -47,8 +47,9 @@ function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 export const backend = {
   isPreview: !isTauri,
 
-  getTasks(): Promise<Task[]> {
-    return isTauri ? call<Task[]>("get_tasks") : mockBackend.getTasks();
+  async getTasks(): Promise<{ tasks: Task[]; recoveredFromBackup: boolean }> {
+    if (isTauri) return call("get_tasks");
+    return { tasks: await mockBackend.getTasks(), recoveredFromBackup: false };
   },
 
   addTasks(

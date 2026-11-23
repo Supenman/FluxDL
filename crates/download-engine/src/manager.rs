@@ -60,6 +60,7 @@ pub struct Engine {
     order: Mutex<Vec<String>>,
     options: RwLock<EngineOptions>,
     store_path: PathBuf,
+    recovered_tasks: bool,
     events: mpsc::UnboundedSender<EngineEvent>,
     global_limiter: Arc<RateLimiter>,
     active: Mutex<usize>,
@@ -89,7 +90,7 @@ impl Drop for SlotGuard {
 
 impl Engine {
     pub fn new(store_path: PathBuf, events: mpsc::UnboundedSender<EngineEvent>) -> Arc<Self> {
-        let stored = store::load(&store_path);
+        let (stored, recovered_tasks) = store::load(&store_path);
         let options = stored.options.clone().unwrap_or_default();
         let global_limiter = Arc::new(RateLimiter::new(options.global_speed_limit));
 
@@ -127,6 +128,7 @@ impl Engine {
             order: Mutex::new(order),
             options: RwLock::new(options),
             store_path,
+            recovered_tasks,
             events,
             global_limiter,
             active: Mutex::new(0),
@@ -194,6 +196,10 @@ impl Engine {
 
     pub fn store_path(&self) -> &PathBuf {
         &self.store_path
+    }
+
+    pub fn recovered_tasks(&self) -> bool {
+        self.recovered_tasks
     }
 
     pub(crate) fn global_limit(&self) -> Arc<RateLimiter> {
@@ -410,6 +416,7 @@ impl Engine {
             proxy: options.proxy.clone().or(engine_options.proxy.clone()),
             format: options.format.clone(),
             mime: None,
+            resume_etag: None,
             domain,
             // 定时任务建好即保持暂停，等 tick 到点自动启动。
             status: if scheduled { TaskStatus::Paused } else { TaskStatus::Queued },

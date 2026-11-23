@@ -31,6 +31,24 @@ impl EngineError {
     }
 }
 
+fn download_category(kind: TaskKind, filename: &str) -> &'static str {
+    if kind == TaskKind::Media {
+        return "视频";
+    }
+    let extension = filename
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "mp4" | "mkv" | "mov" | "avi" | "webm" | "flv" | "wmv" | "m4v" | "ts"
+        | "m3u8" | "mpd" => "视频",
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "rtf"
+        | "epub" | "mobi" | "md" => "文档",
+        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "iso" | "dmg" => "压缩包",
+        _ => "其他",
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Sample {
     pub bytes: u64,
@@ -60,6 +78,7 @@ pub struct Engine {
     order: Mutex<Vec<String>>,
     options: RwLock<EngineOptions>,
     store_path: PathBuf,
+    recovered_tasks: bool,
     events: mpsc::UnboundedSender<EngineEvent>,
     global_limiter: Arc<RateLimiter>,
     active: Mutex<usize>,
@@ -89,7 +108,7 @@ impl Drop for SlotGuard {
 
 impl Engine {
     pub fn new(store_path: PathBuf, events: mpsc::UnboundedSender<EngineEvent>) -> Arc<Self> {
-        let stored = store::load(&store_path);
+        let (stored, recovered_tasks) = store::load(&store_path);
         let options = stored.options.clone().unwrap_or_default();
         let global_limiter = Arc::new(RateLimiter::new(options.global_speed_limit));
 
@@ -127,6 +146,7 @@ impl Engine {
             order: Mutex::new(order),
             options: RwLock::new(options),
             store_path,
+            recovered_tasks,
             events,
             global_limiter,
             active: Mutex::new(0),
@@ -194,6 +214,10 @@ impl Engine {
 
     pub fn store_path(&self) -> &PathBuf {
         &self.store_path
+    }
+
+    pub fn recovered_tasks(&self) -> bool {
+        self.recovered_tasks
     }
 
     pub(crate) fn global_limit(&self) -> Arc<RateLimiter> {
@@ -334,6 +358,11 @@ impl Engine {
                 }
             });
         let dir = PathBuf::from(&save_dir);
+        let dir = if engine_options.organize_by_category {
+            dir.join(download_category(kind, &filename))
+        } else {
+            dir
+        };
         if kind == TaskKind::Http {
             util::ensure_dir(&dir)?;
         }
@@ -410,6 +439,7 @@ impl Engine {
             proxy: options.proxy.clone().or(engine_options.proxy.clone()),
             format: options.format.clone(),
             mime: None,
+            resume_etag: None,
             domain,
             // 定时任务建好即保持暂停，等 tick 到点自动启动。
             status: if scheduled { TaskStatus::Paused } else { TaskStatus::Queued },
@@ -706,11 +736,15 @@ impl Engine {
     pub async fn resume_all(self: &Arc<Self>) {
         let entries = { self.tasks.read().values().cloned().collect::<Vec<_>>() };
         for entry in entries {
-            let is_paused = entry.view.lock().await.status == TaskStatus::Paused;
-            if is_paused {
-                // B2：全部继续也取消定时，避免启动后 UI 仍显示计划时间。
-                entry.view.lock().await.scheduled_at = None;
-                self.spawn_runner(entry.id.clone()).await;
+            let status = entry.view.lock().await.status;
+            match status {
+                TaskStatus::Paused => {
+                    // B2：全部继续也取消定时，避免启动后 UI 仍显示计划时间。
+                    entry.view.lock().await.scheduled_at = None;
+                    self.spawn_runner(entry.id.clone()).await;
+                }
+                TaskStatus::Failed => self.retry(&entry.id).await,
+                _ => {}
             }
         }
     }
@@ -739,19 +773,20 @@ impl Engine {
         // 必须在收集快照之前就持锁：两个 save 若交错写同一个 tmp，
         // 后一个 rename 会找不到 tmp，而目标已被前一个删掉——任务列表直接丢失。
         let _guard = self.save_lock.lock().await;
-        let entries: Vec<Arc<TaskEntry>> = self.tasks.read().values().cloned().collect();
-        let mut tasks = Vec::with_capacity(entries.len());
         let order = self.order.lock().clone();
-        for id in order {
-            if let Some(entry) = entries.iter().find(|e| e.id == id) {
-                let mut view = entry.view.lock().await.clone();
-                view.segments = entry.segments.lock().clone();
-                view.downloaded_bytes = entry.downloaded.load(Ordering::Relaxed);
-                tasks.push(PersistedTask {
-                    view,
-                    options: entry.options.clone(),
-                });
-            }
+        let entries: Vec<Arc<TaskEntry>> = {
+            let tasks = self.tasks.read();
+            order.iter().filter_map(|id| tasks.get(id).cloned()).collect()
+        };
+        let mut tasks = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let mut view = entry.view.lock().await.clone();
+            view.segments = entry.segments.lock().clone();
+            view.downloaded_bytes = entry.downloaded.load(Ordering::Relaxed);
+            tasks.push(PersistedTask {
+                view,
+                options: entry.options.clone(),
+            });
         }
         let store = StoreFile {
             options: Some(self.options.read().clone()),

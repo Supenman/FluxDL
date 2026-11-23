@@ -1,9 +1,15 @@
 # FluxDL · 迅流下载器
 
-一个 Windows 桌面下载器：普通文件直链走 **aria2 多连接**，视频网页走 **yt-dlp 解析**，配合浏览器扩展自动接管网页下载并嗅探页面里的视频直链。
+一个 Windows 桌面下载器：普通文件直链由 Rust 引擎分段下载，视频网页由 yt-dlp 解析，浏览器扩展可接管下载并识别页面里的媒体资源。
 
-> **当前版本 `v0.3.9`**（2026-11-09 正式发布） · 浏览器扩展 `v2.2.2` · 官方成品仅 **Windows 10/11 x64**
+> **最新正式版 `v0.4.0`**（北京时间 2026-11-18 发布） · 浏览器扩展 `v2.2.2` · 官方成品为 **Windows 10/11 x64**
 > 仓库：<https://github.com/Supenman/FluxDL> · 下载：[Releases](https://github.com/Supenman/FluxDL/releases)
+
+---
+
+## dev 开发进度
+
+`dev` 上新增了 HTTP 续传版本校验、任务记录备份恢复、大量历史任务的保存优化，以及 GitHub Actions 检查。这些改动尚未随 v0.4.0 安装包发布。
 
 ---
 
@@ -18,6 +24,7 @@
 - [浏览器扩展](#浏览器扩展)
 - [本地捕获服务协议](#本地捕获服务协议)
 - [自更新与版本管理](#自更新与版本管理)
+- [发布前检查](#发布前检查)
 - [测试](#测试)
 - [安全说明](#安全说明)
 - [版本历史](#版本历史)
@@ -27,15 +34,16 @@
 
 ## 当前版本能做什么
 
-> 本节只列 **v0.3.9 已实现且随正式版发布** 的能力；不包含规划中或已废弃的方案。
+本节描述 **v0.4.0 正式版**。本版还增加了紧凑任务视图、独立进度窗口和主题预设。[完整发布说明](https://github.com/Supenman/FluxDL/releases/tag/v0.4.0)
 
 ### 下载引擎（A 档 · 普通 HTTP / 文件直链）
 
 | 能力 | 说明 |
 |---|---|
-| 多连接分段 | `aria2c -x16 -s16 -k4M`，按 `Content-Length` 规划分段，按偏移 `seek_write` 落盘 |
+| 多连接分段 | 自动模式按文件大小选取连接数，慢分段可由其他连接分担 |
 | 断点续传 | `.fluxdl-part` 临时文件 + `tasks.json` 进度持久化；下载前校验 part 真实长度，不一致则全量重下 |
 | 任务队列 | 最大并发数、暂停 / 继续 / 删除、终态释放路径占位 |
+| 定时下载 | 新建任务时可选择开始时间，应用重启后仍保留定时计划 |
 | 限速 | 全局限速与单任务限速**串联生效**；视频任务同样受「设置」里的限速约束 |
 | 每任务网络参数 | 代理、User-Agent、Referer 可独立设置（扩展接管的链接自动带浏览器 UA，缓解防盗链 403） |
 | 分片写盘校验 | 每个分片写盘时同步算 SHA-256，整任务完成后回读磁盘逐段比对；不一致拒绝生成最终文件，杜绝「大小对但内容坏」 |
@@ -48,6 +56,7 @@
 | 能力 | 说明 |
 |---|---|
 | yt-dlp 整页解析 | 按 27 个站点的主机名名单自动判定；格式 `bv*+ba/b`，ffmpeg 合并为 mp4，`--concurrent-fragments 4` 做分片间并发 |
+| HLS 下载 | 桌面端识别 `.m3u8` 链接并交给 yt-dlp 处理 |
 | 抖音单视频免 Cookie 解析 | 粘贴 `www.douyin.com/video/<id>`、`v.douyin.com` 短链或带 `modal_id` 的精选页链接，桌面端用移动端公开详情接口 `api.amemv.com/aweme/v1/aweme/detail/` 取无水印直链，转成普通 HTTP 任务交给 A 档引擎下载。已由 Windows 真机验证通过 |
 | 「本页资源」探针 | 扩展在 MAIN world hook `fetch` / `XHR` / `Blob`，并补扫 performance 条目、`<video>/<audio>/<source>` 与页面内联脚本，抓出藏在 JSON 响应里的 mp4 直链 |
 | 资源列表 | 搜索、按类型筛选、排序（最新 / 体积 / 名称）、全选、批量下载、复制直链、展开备用地址、探活状态（正常 / 失效 / 未知）、一键刷新校验 |
@@ -64,7 +73,7 @@
 
 ### 自更新
 
-设置页「版本与更新」：启动后静默检查、手动强制检查、增量更新（只下载约 10 MB 的 `fluxdl.exe`，不重下 49 MB 安装包 / 62 MB 便携版）、`sha256` 强制校验（缺失即拒绝更新）、`.bak` 备份与启动自检失败自动回滚、版本库保留历史版本可回退、更新历史时间线。线上清单 `latest = 0.3.9`。
+设置页「版本与更新」：启动后静默检查、手动强制检查、增量更新（只下载约 10 MB 的 `fluxdl.exe`）、SHA-256 强制校验、升级失败自动回滚，以及历史版本管理。
 
 ### 内置工具
 
@@ -94,16 +103,15 @@
 
 ## 最快上手：直接用成品包
 
-[v0.3.9 Release](https://github.com/Supenman/FluxDL/releases/tag/v0.3.9) 提供：
+[v0.4.0 Release](https://github.com/Supenman/FluxDL/releases/tag/v0.4.0) 提供以下文件。
 
 | 包 | 说明 |
 |---|---|
-| `FluxDL-0.3.9-Setup.exe` | NSIS 安装版，单用户安装、不需要管理员权限 |
-| `FluxDL-0.3.9-Windows-便携版.zip` | 解压后双击 `FluxDL/fluxdl.exe`，删文件夹即卸载 |
+| `FluxDL-0.4.0-Setup.exe` | NSIS 安装版，单用户安装、不需要管理员权限 |
 | `fluxdl.exe` | 裸主程序（约 9.6 MB），**应用自更新只下载它** |
-| `SHA256SUMS.txt` / `update-manifest.json` / 源码包 | 校验清单、自更新清单与完整源码 |
+| `SHA256SUMS.txt` / `update-manifest.json` | 校验清单和自更新清单 |
 
-两个包都自带 `browser-extension/` 与 `tools/`。
+安装包自带 `browser-extension/` 与 `tools/`。
 
 **装完只做一件事**：Chrome / Edge 打开 `chrome://extensions` → 开启「开发者模式」 → 「加载已解压的扩展程序」 → 选包里的 `browser-extension` 文件夹。**每次升级扩展后必须重新加载一次并刷新目标网页**，否则浏览器仍运行旧版探针。
 
@@ -119,10 +127,10 @@ B 站等站点：在页面点「解析并下载本页视频」。
 
 ```
 普通整文件直链（.zip/.exe/.mp4 等、CDN 视频直链、抖音解析出的直链）
-        └─► TaskKind::Http ─► aria2c 16 连接 / 16 分片 ─► A 档引擎
-                                                          （SHA-256 回读 / 慢连接换线 / 断点续传）
+        └─► TaskKind::Http ─► Rust HTTP 引擎
+                             （分段下载 / SHA-256 回读 / 慢连接换线 / 断点续传）
 
-视频网页（B 站等站点名单内、非容器直链）
+视频网页（B 站等站点）或桌面端识别的 HLS 清单
         └─► TaskKind::Media ─► yt-dlp 原生下载 ─► ffmpeg 合并 mp4
                                （--concurrent-fragments 4）
 
@@ -280,16 +288,28 @@ cargo xwin build --release --target x86_64-pc-windows-msvc
 
 版本号遵循语义化版本；`update-manifest.json` 是「应用本体 / 工具 / 历史」三合一结构（`schema` / `app` / `tools` / `history`）。`sha256` 是强制的：清单里缺失则该更新直接拒绝（fail-closed）。清单由 `tools/build-update-manifest.py` 生成。
 
-> 本环境的 `git push` / `git ls-remote` 通道被限速阻断，历史发版走 GitHub Git Data API（`/git/blobs` → `/git/trees` → `/git/commits` → `PATCH /git/refs/heads/main`）；`api.github.com` 的 HTTP 读写可用。
+正式发布时使用发布产物目录中的更新清单。开发分支的清单可保留旧版本，直到下一次正式发布。
+
+---
+
+## 发布前检查
+
+用 Python 3.11 或更新版本运行。先将 Windows 安装包、`fluxdl.exe`、用 `tools/build-update-manifest.py` 生成的 `update-manifest.json` 和 `SHA256SUMS.txt` 放在同一个发布产物目录。校验清单使用 `sha256sum` 的格式，记录这三个待上传文件的哈希值。
+
+```sh
+python tools/check-release.py --tag v0.4.0 --artifacts path/to/release
+```
+
+将示例标签替换为准备发布的版本。检查核对源码的三个应用版本字段、产物清单版本、预期的 GitHub 下载地址、更新包大小和每个产物的 SHA-256。上传之后，在 Release 页面确认下载链接可用。
 
 ---
 
 ## 测试
 
 ```bash
-cargo test -p fluxdl-engine            # v0.3.9 发版记录：107 库单测 + 33 集成全绿
+cargo test --locked -p fluxdl-engine   # Linux 跑完整套件
 npm run build                          # tsc --noEmit + vite
-node --check browser-extension/*.js
+for script in browser-extension/*.js; do node --check "$script" || exit 1; done
 node scripts/check_speed_contract.cjs
 node scripts/check_media_parse_contract.cjs
 node scripts/check_extension_contract.cjs
@@ -298,7 +318,7 @@ node scripts/check_platform_parse_contract.cjs
 node scripts/check_engine_reliability_contract.cjs
 ```
 
-6 个契约脚本分别锁定：速度显示一致性、抖音免 Cookie 解析链路与凭证红线、扩展跨层判定、探针分流、平台结构化解析、A 档引擎可靠性。v0.3.9 发版时全部通过，抖音链路另经真实接口连通性测试与 Windows 真机下载验证。
+GitHub Actions 在 `dev`、`main` 推送和 PR 时运行：Linux 跑完整引擎套件，Windows 跑 HTTP、持久化和分段再平衡测试，前端跑构建及六个契约检查。
 
 ---
 
@@ -319,7 +339,8 @@ node scripts/check_engine_reliability_contract.cjs
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **0.3.9** | 2026-11-09 | 修复视频速度恒显示 `—`；抖音改走免 Cookie 移动端接口并真机通过；删除 yt-dlp + Cookie 通道；「本页资源」做扎实（显式 `kind:"http"`、搜索/筛选/批量/探活）；平台结构化正片；A 档分片 SHA-256 回读校验与慢连接换线；正式发版、合并 `main`、建 Release |
+| **0.4.0** | 2026-11-18 | 自适应连接数、慢分段再平衡、定时下载、HLS 支持、紧凑任务视图及独立进度窗口 |
+| 0.3.9 | 2026-11-09 | 修复视频速度恒显示 `—`；抖音改走免 Cookie 移动端接口并真机通过；删除 yt-dlp + Cookie 通道；「本页资源」做扎实（显式 `kind:"http"`、搜索/筛选/批量/探活）；平台结构化正片；A 档分片 SHA-256 回读校验与慢连接换线；正式发版、合并 `main`、建 Release |
 | 0.3.8 | 2026-11-07 | 速度与曲线 EMA 平滑根治锯齿；视频/直链速度来源分离；ETA 自洽 |
 | 0.3.7 | 2026-11-07 | 仓库由 FuxDL 改名 FluxDL 后同步遗留地址；扩展合入 MAIN world 探针（2.2.1） |
 | 0.3.6 | 2026-11-07 | 抖快整页链接提前拦截并给直链指引；主按钮改「下载本页视频（直链）」；噪声过滤；中间目录 RAII 清理 |
@@ -340,7 +361,7 @@ node scripts/check_engine_reliability_contract.cjs
 |---|---|
 | `使用说明.txt` | 面向用户的完整使用说明（成品包内亦含，交付目录 `/workspace/fluxdl-dist/`） |
 | `修复说明-v0.3.9.md` | v0.3.9 逐项修复与验证记录 |
-| `docs/功能清单-v0.3.9.md` | 当前版本功能与能力边界的独立清单 |
+| `docs/功能清单-v0.3.9.md` | v0.3.9 功能与能力边界的历史清单 |
 | `docs/开发进度.md` | 跨会话进度、待办、已知风险 |
 | `docs/版本管理.md` | 版本号规则、增量更新边界、回滚机制 |
 | `docs/B站下载慢-根因定位与修复建议.md` | B 站单连接限速的版本比对与方案评估 |

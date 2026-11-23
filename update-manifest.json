@@ -1,23 +1,21 @@
 {
   "schema": 1,
   "app": {
-    "latest": "0.4.0",
+    "latest": "0.4.1",
     "minSupported": null,
-    "releasedAt": "2026-11-17T23:13:29Z",
+    "releasedAt": "2026-11-23T14:46:28Z",
     "notes": [
-      "引擎 A1 自适应连接数：显式值完全尊重，自动档按文件大小选 2/4/8/16 连接",
-      "引擎 A2 慢段主动再平衡：快连接自动分担落后分段，写盘按绝对区间对齐、逐字节校验",
-      "引擎 A3 启动提速：probe 消费响应体复用 keep-alive 连接，省去一次 TLS 握手",
-      "新增 B2 定时下载：设置未来时间，任务到点自动开始，重启后仍有效",
-      "新增 B3 HLS/m3u8 支持：视频清单链接自动交给 yt-dlp，不再误存成文本文件",
-      "UI 向 MDM 靠齐：侧栏分类树、可拖拽宽度、紧凑多列、独立进度窗口、3 套主题色与自定义导入",
-      "键盘导航与无障碍：方向键/Home/End 移动选中，任务行与状态栏补 aria 语义"
+      "修复续传一致性：强 ETag + If-Range 校验，源站内容变更时不再复用不匹配的缓存字节",
+      "修复任务列表整表丢失：快照逐条容错解析，并增加 .bak 备份自动回退",
+      "新增按类型归档下载：视频/文档/压缩包/其他自动分文件夹",
+      "任务快照提速，任务多时列表刷新更跟手",
+      "新增 CI 工作流与发版校验脚本 check-release.py"
     ],
     "assets": {
       "windows-x64": {
-        "url": "https://github.com/Supenman/FluxDL/releases/download/v0.4.0/fluxdl.exe",
-        "size": 10114048,
-        "sha256": "35be5aa2752173ab48e1e67b2bac52226a45d913387a882b49206e9b0e0c6323"
+        "url": "https://github.com/Supenman/FluxDL/releases/download/v0.4.1/fluxdl.exe",
+        "size": 10122240,
+        "sha256": "6dab3ec65b36f4e83fde1e1503196d8d2ff5ddea1254127077c059e02f77a13d"
       }
     }
   },
@@ -32,6 +30,18 @@
     }
   },
   "history": [
+    {
+      "version": "0.4.1",
+      "releasedAt": "2026-11-23T14:46:28Z",
+      "channel": "stable",
+      "notes": [
+        "修复续传一致性：强 ETag + If-Range 校验，源站内容变更时不再复用不匹配的缓存字节",
+        "修复任务列表整表丢失：快照逐条容错解析，并增加 .bak 备份自动回退",
+        "新增按类型归档下载：视频/文档/压缩包/其他自动分文件夹",
+        "任务快照提速，任务多时列表刷新更跟手",
+        "新增 CI 工作流与发版校验脚本 check-release.py"
+      ]
+    },
     {
       "version": "0.4.0",
       "releasedAt": "2026-11-17T23:13:29Z",

@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    name: Engine tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo +stable test --locked -p fluxdl-engine
+
+  engine-windows:
+    name: HTTP and persistence tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      # Several media fixtures use POSIX shell syntax and run in the Linux job.
+      - run: cargo +stable test --locked -p fluxdl-engine --test http_engine --test regression --test rebalance
+
+  frontend:
+    name: Frontend build and contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Check browser extension JavaScript
+        shell: bash
+        run: |
+          for script in browser-extension/*.js; do
+            node --check "$script"
+          done
+      - name: Check project contracts
+        shell: bash
+        run: |
+          for script in scripts/check_*.cjs; do
+            node "$script"
+          done

@@ -24,6 +24,7 @@ export interface Toast {
 
 export const defaultEngineOptions: EngineOptions = {
   saveDir: "C:\\Users\\Alex\\Downloads",
+  organizeByCategory: false,
   maxActive: 3,
   connections: 0, // 自动：引擎按文件体积决定连接数
   globalSpeedLimit: null,

@@ -287,19 +287,6 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
               {isActive ? <Pause size={15} /> : failed ? <RefreshCw size={14} /> : <Play size={15} />}
             </button>
           )}
-          {failed && (
-            <button
-              className="row-button"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggle();
-              }}
-              title="重试"
-              aria-label="重试"
-            >
-              <RefreshCw size={14} />
-            </button>
-          )}
           <button
             className="row-button danger"
             onClick={(e) => {

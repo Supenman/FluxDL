@@ -4,7 +4,7 @@ use crate::types::*;
 use crate::util;
 use futures_util::StreamExt;
 use reqwest::header::{
-    HeaderName, HeaderValue, ACCEPT_RANGES, CONTENT_LENGTH, RANGE, REFERER,
+    HeaderName, HeaderValue, ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_RANGE, RANGE, REFERER,
 };
 use reqwest::{Client, StatusCode};
 use std::path::{Path, PathBuf};
@@ -21,6 +21,16 @@ struct Probe {
     ranges: bool,
     filename: Option<String>,
     mime: Option<String>,
+    etag: Option<String>,
+}
+
+fn strong_etag(headers: &reqwest::header::HeaderMap) -> Option<&str> {
+    let tag = headers.get(ETAG)?.to_str().ok()?;
+    let opaque = tag.strip_prefix('"')?.strip_suffix('"')?;
+    opaque
+        .bytes()
+        .all(|b| b == b'!' || (b'#'..=b'~').contains(&b))
+        .then_some(tag)
 }
 
 pub(crate) fn build_client(
@@ -142,6 +152,7 @@ async fn probe(
             total,
             ranges,
             filename: util::filename_from_headers(&headers),
+            etag: strong_etag(&headers).map(str::to_owned),
             mime: headers
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
@@ -160,6 +171,7 @@ fn spawn_segment(
     client: &Client,
     file: &Arc<std::fs::File>,
     token: &CancellationToken,
+    etag: Option<&str>,
 ) {
     let seg = seg.clone();
     let client = client.clone();
@@ -168,8 +180,9 @@ fn spawn_segment(
     let token = token.clone();
     let global = engine.global_limit();
     let engine = engine.clone();
+    let etag = etag.map(str::to_owned);
     set.spawn(async move {
-        segment_loop(engine, entry, seg, client, file, token, global).await
+        segment_loop(engine, entry, seg, client, file, token, global, etag).await
     });
 }
 
@@ -182,9 +195,14 @@ pub async fn run(
     let client = build_client(entry, &options)?;
     let probe = probe(&client, entry, &token).await?;
 
-    let (stored_total, conns, stored_path) = {
+    let (stored_total, conns, stored_path, stored_etag) = {
         let view = entry.view.lock().await;
-        (view.total_bytes, view.connections, PathBuf::from(&view.save_path))
+        (
+            view.total_bytes,
+            view.connections,
+            PathBuf::from(&view.save_path),
+            view.resume_etag.clone(),
+        )
     };
 
     let prev_bytes = entry.downloaded.load(Ordering::Relaxed);
@@ -195,7 +213,10 @@ pub async fn run(
         total = stored_total;
     }
     let resumable = probe.ranges && total > 0;
+    // 旧任务没有强 ETag，长度相同也不能确认缓存字节属于当前资源。
     let mut effective_resume = resumable
+        && probe.etag.is_some()
+        && probe.etag == stored_etag
         && stored_total == total
         && prev_bytes > 0
         && !prev_segments.is_empty();
@@ -211,7 +232,7 @@ pub async fn run(
             // 服务器给的名字优先，但不要用一个泛化名替换掉有意义的名字。
             let trusted = (entry.options.filename.is_none() || entry.options.prefer_header_filename)
                 && (!util::looks_generic(name) || util::looks_generic(&current));
-            if trusted {
+            if trusted && name != &current {
                 let dir = save_path.parent().unwrap_or(Path::new("."));
                 let candidate = util::unique_path(dir, name);
                 if candidate != save_path {
@@ -280,26 +301,10 @@ pub async fn run(
         }
     }
 
-    {
-        let mut view = entry.view.lock().await;
-        view.save_path = save_path.to_string_lossy().to_string();
-        view.filename = save_path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| view.filename.clone());
-        view.total_bytes = total;
-        view.mime = probe.mime;
-        view.resumable = resumable;
-        view.connections = segments.len().max(1) as u8;
-        view.status = TaskStatus::Downloading;
-        view.segments = segments.clone();
-    }
-    *entry.segments.lock() = segments.clone();
-    engine.emit_task(entry).await;
-
     let file = {
         let f = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(!effective_resume)
             .read(true)
             .write(true)
             .open(&part_path)?;
@@ -311,6 +316,24 @@ pub async fn run(
         }
         Arc::new(f)
     };
+
+    {
+        let mut view = entry.view.lock().await;
+        view.save_path = save_path.to_string_lossy().to_string();
+        view.filename = save_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| view.filename.clone());
+        view.total_bytes = total;
+        view.mime = probe.mime;
+        view.resume_etag = probe.etag.clone();
+        view.resumable = resumable && probe.etag.is_some();
+        view.connections = segments.len().max(1) as u8;
+        view.status = TaskStatus::Downloading;
+        view.segments = segments.clone();
+        *entry.segments.lock() = segments.clone();
+    }
+    engine.emit_task(entry).await;
 
     if !resumable {
         let (position, digest) = sequential_stream(
@@ -346,7 +369,16 @@ pub async fn run(
         if seg.done || seg.downloaded >= seg.length() {
             continue;
         }
-        spawn_segment(&mut set, seg, &engine, &entry, &client, &file, &token);
+        spawn_segment(
+            &mut set,
+            seg,
+            engine,
+            entry,
+            &client,
+            &file,
+            &token,
+            probe.etag.as_deref(),
+        );
     }
 
     let mut first_error: Option<EngineError> = None;
@@ -417,7 +449,16 @@ pub async fn run(
                 engine.emit_log(&entry.id, format!(
                     "检测到落后分段 #{idx}，已分流一条连接协助下载（第 {splits_used} 次）"
                 ));
-                spawn_segment(&mut set, &split_seg, &engine, &entry, &client, &file, &token);
+                spawn_segment(
+                    &mut set,
+                    &split_seg,
+                    engine,
+                    entry,
+                    &client,
+                    &file,
+                    &token,
+                    probe.etag.as_deref(),
+                );
             }
         }
     }
@@ -453,6 +494,7 @@ async fn segment_loop(
     file: Arc<std::fs::File>,
     token: CancellationToken,
     global: Arc<RateLimiter>,
+    etag: Option<String>,
 ) -> Result<Option<util::SegmentDigest>, EngineError> {
     let index = seg.index;
     let start = seg.start;
@@ -489,8 +531,11 @@ async fn segment_loop(
             return Err(EngineError::Paused);
         }
 
-        let req = apply_headers(client.get(&entry.url), &entry)
+        let mut req = apply_headers(client.get(&entry.url), &entry)
             .header(RANGE, format!("bytes={pos}-{end}"));
+        if let Some(etag) = &etag {
+            req = req.header(IF_RANGE, etag.as_str());
+        }
         let resp = tokio::select! {
             _ = token.cancelled() => return Err(EngineError::Paused),
             r = tokio::time::timeout(Duration::from_secs(30), req.send()) => match r {
@@ -509,12 +554,10 @@ async fn segment_loop(
         let status = resp.status();
         if status != StatusCode::PARTIAL_CONTENT {
             if status == StatusCode::OK {
+                if etag.is_some() {
+                    return Err(EngineError::message("远端文件已变化或服务器不支持条件续传，请重试"));
+                }
                 return Err(EngineError::message("服务器忽略 Range 请求，无法多线程下载"));
-            }
-            if status == StatusCode::RANGE_NOT_SATISFIABLE {
-                // Already at the end (server sees no remaining bytes).
-                mark_segment(&entry, index, end + 1);
-                return Ok(Some(sink.finish(digest_start, pos)));
             }
             let err = EngineError::message(format!("分段请求失败：HTTP {}", status.as_u16()));
             if status.is_client_error() {
@@ -522,6 +565,11 @@ async fn segment_loop(
             }
             last_error = Some(err);
             continue;
+        }
+        if let Some(expected) = etag.as_deref() {
+            if resp.headers().contains_key(ETAG) && strong_etag(resp.headers()) != Some(expected) {
+                return Err(EngineError::message("远端文件已变化，请重试"));
+            }
         }
 
         // 一条连接的 chunk 循环。心跳分支与数据分支在 select 内各自内联处理，

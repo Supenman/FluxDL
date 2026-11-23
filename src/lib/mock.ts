@@ -205,6 +205,7 @@ export class MockBackend {
   private listeners = new Set<(event: EngineEvent) => void>();
   private options: EngineOptions = {
     saveDir: "C:\\Users\\Alex\\Downloads",
+    organizeByCategory: false,
     maxActive: 3,
     connections: 0, // 与真实后端 / store 一致：默认自动档
     globalSpeedLimit: null,

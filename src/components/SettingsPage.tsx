@@ -323,6 +323,17 @@ export function SettingsPage() {
           </div>
         </div>
 
+        <div className="setting-row inline">
+          <div className="setting-copy">
+            <label>按类型归档下载</label>
+            <p>在保存位置下自动放入视频、文档、压缩包或其他子文件夹</p>
+          </div>
+          <Toggle
+            checked={settings.organizeByCategory ?? false}
+            onChange={(next) => update({ organizeByCategory: next })}
+          />
+        </div>
+
         <div className="setting-row">
           <div className="setting-copy">
             <label>最大同时下载</label>

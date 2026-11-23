@@ -1409,6 +1409,12 @@ kbd {
   opacity: 1;
 }
 
+@media (hover: none) {
+  .row-actions {
+    opacity: 1;
+  }
+}
+
 .row-button {
   display: grid;
   place-items: center;

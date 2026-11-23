@@ -60,6 +60,7 @@ export interface NewTaskOptions {
 
 export interface EngineOptions {
   saveDir: string;
+  organizeByCategory?: boolean;
   maxActive: number;
   connections: number;
   globalSpeedLimit: number | null;

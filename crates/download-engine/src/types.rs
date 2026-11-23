@@ -71,6 +71,8 @@ pub struct TaskView {
     pub proxy: Option<String>,
     pub format: Option<String>,
     pub mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_etag: Option<String>,
     pub domain: String,
     /// B2 定时下载：计划开始的 UTC 毫秒时间戳。有值且任务处于 Paused 时表示
     /// 等待定时触发；触发完成或用户手动 pause/resume 后清空。
@@ -106,6 +108,8 @@ pub struct NewTaskOptions {
 #[serde(rename_all = "camelCase", default)]
 pub struct EngineOptions {
     pub save_dir: String,
+    /// Organize new downloads into folders by file type under the selected save directory.
+    pub organize_by_category: bool,
     pub max_active: usize,
     pub connections: u8,
     pub global_speed_limit: Option<u64>,
@@ -133,6 +137,7 @@ impl Default for EngineOptions {
                 .or_else(dirs::home_dir)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| ".".into()),
+            organize_by_category: false,
             max_active: 3,
             connections: 0, // 自动档：由 http.rs 按文件体积收敛；1-32 为用户显式值
             global_speed_limit: None,

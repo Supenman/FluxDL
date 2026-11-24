@@ -42,6 +42,8 @@ export interface Task {
   domain: string;
   /** B2 定时下载：计划开始的 UTC 毫秒时间戳；到点自动开始后清空。 */
   scheduledAt: number | null;
+  /** 下载审核闸门：true 表示这条任务在等用户点「允许」，引擎不会启动它。 */
+  pendingApproval: boolean;
 }
 
 export interface NewTaskOptions {

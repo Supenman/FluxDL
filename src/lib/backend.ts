@@ -74,6 +74,16 @@ export const backend = {
     return isTauri ? call("retry_task", { id }) : mockBackend.retry(id);
   },
 
+  /** 审核通过：批准单条待审核下载并启动。 */
+  approve(id: string): Promise<void> {
+    return isTauri ? call("approve_task", { id }) : mockBackend.approve(id);
+  },
+
+  /** 审核通过：批准当前全部待审核下载。 */
+  approveAll(): Promise<void> {
+    return isTauri ? call("approve_all_tasks") : mockBackend.approveAll();
+  },
+
   remove(id: string, deleteFile: boolean): Promise<void> {
     return isTauri
       ? call("remove_task", { id, deleteFile })
@@ -110,6 +120,30 @@ export const backend = {
     return isTauri
       ? call("set_clipboard_watch", { enabled })
       : mockBackend.setClipboardWatch(enabled);
+  },
+
+  /**
+   * 是否提供「开机自启」开关。后端用 exe 同级的 uninstall.exe 判断 NSIS 安装版，
+   * 便携版与单文件 exe 返回 false，前端据此隐藏或禁用该开关。
+   */
+  autostartAvailable(): Promise<boolean> {
+    return isTauri
+      ? call<boolean>("autostart_available")
+      : mockBackend.autostartAvailable();
+  },
+
+  /** 读取系统里真实的自启状态（Windows 为 HKCU Run 项），重启后仍有效。 */
+  autostartEnabled(): Promise<boolean> {
+    return isTauri
+      ? call<boolean>("autostart_enabled")
+      : mockBackend.autostartEnabled();
+  },
+
+  /** 打开 / 关闭自启，返回改动后的真实状态；便携版会拒绝。 */
+  setAutostart(enabled: boolean): Promise<boolean> {
+    return isTauri
+      ? call<boolean>("set_autostart", { enabled })
+      : mockBackend.setAutostart(enabled);
   },
 
   engineInfo(): Promise<EngineInfo> {

@@ -410,6 +410,7 @@ impl Engine {
         // B2 定时下载：仅未来时间生效。过去/无效时间视为立即下载。
         let scheduled_at = options.scheduled_at.filter(|&at| at > now);
         let scheduled = scheduled_at.is_some();
+        let require_approval = options.require_approval;
 
         let view = TaskView {
             id: id.clone(),
@@ -441,9 +442,15 @@ impl Engine {
             mime: None,
             resume_etag: None,
             domain,
-            // 定时任务建好即保持暂停，等 tick 到点自动启动。
-            status: if scheduled { TaskStatus::Paused } else { TaskStatus::Queued },
+            // 下载审核闸门：入口强制 require_approval 时任务停在待审核、不自动下载；
+            // 否则保持原语义（定时任务暂停等 tick，普通任务入队立即下载）。
+            status: if require_approval || scheduled {
+                TaskStatus::Paused
+            } else {
+                TaskStatus::Queued
+            },
             scheduled_at,
+            pending_approval: require_approval,
         };
 
         let entry = Arc::new(TaskEntry {
@@ -470,8 +477,8 @@ impl Engine {
         self.order.lock().push(id.clone());
         self.emit(EngineEvent::Task(view.clone()));
         self.save().await;
-        // B2：定时任务不立即启动，交给 tick 到点触发。
-        if !scheduled {
+        // 待审核任务与定时任务都不在此处启动：前者等 approve，后者等 tick 到点。
+        if !require_approval && !scheduled {
             self.spawn_runner(id.clone()).await;
         }
         Ok(view)
@@ -526,6 +533,11 @@ impl Engine {
         {
             let view = entry.view.lock().await;
             if view.status == TaskStatus::Completed {
+                return;
+            }
+            // 下载审核闸门：所有启动路径（add/resume/retry/resume_all/定时触发）
+            // 都经过这里。未批准的任务一律不启动——这是唯一且最终的拦截点。
+            if view.pending_approval {
                 return;
             }
         }
@@ -674,10 +686,61 @@ impl Engine {
             if view.status.is_active() || view.status == TaskStatus::Completed {
                 return;
             }
+            // 待审核任务不能被「继续」绕过，也不能在此清掉定时标记。
+            if view.pending_approval {
+                self.emit_log(id, "该下载仍在等待审核，请先点「允许」".to_string());
+                return;
+            }
             // B2：手动恢复视为立即开始，取消原定的定时。
             view.scheduled_at = None;
         }
         self.spawn_runner(id.to_string()).await;
+    }
+
+    /// 审核通过：清除待审核标记并启动下载。
+    /// 定时任务批准后若计划时间仍在未来，则保持暂停交给 tick 到点触发，
+    /// 否则立即开始。这是唯一能把 pending_approval 从 true 翻成 false 的入口。
+    pub async fn approve(self: &Arc<Self>, id: &str) {
+        let Some(entry) = self.get(id) else { return };
+        let due_now = {
+            let mut view = entry.view.lock().await;
+            if !view.pending_approval {
+                return;
+            }
+            view.pending_approval = false;
+            // 定时任务：计划时间已过则立即开始，未来则保留等待 tick。
+            let due = view
+                .scheduled_at
+                .map(|at| at <= chrono::Utc::now().timestamp_millis())
+                .unwrap_or(true);
+            if due {
+                view.scheduled_at = None;
+            }
+            view.status = TaskStatus::Paused;
+            due
+        };
+        self.emit_task(&entry).await;
+        if due_now {
+            self.spawn_runner(id.to_string()).await;
+        }
+        self.save().await;
+    }
+
+    /// 一次批准当前全部待审核任务。
+    pub async fn approve_all(self: &Arc<Self>) {
+        let ids: Vec<String> = {
+            let entries = self.tasks.read().values().cloned().collect::<Vec<_>>();
+            let mut ids = Vec::new();
+            for entry in entries {
+                if entry.view.lock().await.pending_approval {
+                    ids.push(entry.id.clone());
+                }
+            }
+            ids
+        };
+        for id in ids {
+            self.approve(&id).await;
+        }
     }
 
     pub async fn retry(self: &Arc<Self>, id: &str) {
@@ -739,8 +802,15 @@ impl Engine {
             let status = entry.view.lock().await.status;
             match status {
                 TaskStatus::Paused => {
-                    // B2：全部继续也取消定时，避免启动后 UI 仍显示计划时间。
-                    entry.view.lock().await.scheduled_at = None;
+                    {
+                        let mut view = entry.view.lock().await;
+                        // 待审核任务不能被「全部继续」批量放行，也不清定时标记。
+                        if view.pending_approval {
+                            continue;
+                        }
+                        // B2：全部继续也取消定时，避免启动后 UI 仍显示计划时间。
+                        view.scheduled_at = None;
+                    }
                     self.spawn_runner(entry.id.clone()).await;
                 }
                 TaskStatus::Failed => self.retry(&entry.id).await,
@@ -807,6 +877,7 @@ impl Engine {
             let is_due = {
                 let view = entry.view.lock().await;
                 view.status == TaskStatus::Paused
+                    && !view.pending_approval
                     && view.scheduled_at.map(|at| at <= wall_now).unwrap_or(false)
             };
             if !is_due {

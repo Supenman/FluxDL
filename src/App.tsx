@@ -16,6 +16,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { Toasts } from "./components/Toasts";
 import { ClipboardOffer } from "./components/ClipboardOffer";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { ApprovalBanner } from "./components/ApprovalBanner";
 import { ProgressWindow } from "./components/ProgressWindow";
 
 export function App() {
@@ -228,6 +229,7 @@ export function App() {
             <SettingsPage />
           ) : (
             <>
+              <ApprovalBanner />
               <UpdateBanner />
               <Toolbar />
               <div className="list-scroll">

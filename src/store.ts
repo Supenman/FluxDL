@@ -276,7 +276,7 @@ export function taskMatchesFilter(task: Task, filter: Filter): boolean {
     case "media":
       return task.kind === "media";
     case "paused":
-      return task.status === "paused";
+      return task.status === "paused" && !task.pendingApproval;
     case "failed":
       return task.status === "failed";
     case "category:video":

@@ -83,11 +83,15 @@ export function DetailDrawer() {
   const done = task.status === "completed";
   const failed = task.status === "failed";
   const paused = task.status === "paused";
+  const pending = task.pendingApproval === true;
   const taskLogs = logs[task.id] ?? [];
 
   const primary = async () => {
     try {
-      if (done) {
+      if (pending) {
+        await backend.approve(task.id);
+        pushToast("已允许，开始下载", "success");
+      } else if (done) {
         await backend.openFile(task.savePath);
       } else if (isActive) {
         await backend.pause(task.id);
@@ -131,15 +135,17 @@ export function DetailDrawer() {
     }
   };
 
-  const primaryLabel = done
-    ? "打开文件"
-    : isActive
-      ? "暂停下载"
-      : failed
-        ? "重试下载"
-        : paused
-          ? "继续下载"
-          : "暂停";
+  const primaryLabel = pending
+    ? "允许下载"
+    : done
+      ? "打开文件"
+      : isActive
+        ? "暂停下载"
+        : failed
+          ? "重试下载"
+          : paused
+            ? "继续下载"
+            : "暂停";
 
   const primaryIcon = done ? (
     <ExternalLink size={15} />

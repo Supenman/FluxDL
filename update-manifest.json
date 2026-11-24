@@ -1,21 +1,19 @@
 {
   "schema": 1,
   "app": {
-    "latest": "0.4.1",
+    "latest": "0.4.2",
     "minSupported": null,
-    "releasedAt": "2026-11-23T16:07:45Z",
+    "releasedAt": "2026-11-24T04:20:46Z",
     "notes": [
-      "修复续传一致性：强 ETag + If-Range 校验，源站内容变更时不再复用不匹配的缓存字节",
-      "修复任务列表整表丢失：快照逐条容错解析，并增加 .bak 备份自动回退",
-      "新增按类型归档下载：视频/文档/压缩包/其他自动分文件夹",
-      "任务快照提速，任务多时列表刷新更跟手",
-      "新增 CI 工作流与发版校验脚本 check-release.py"
+      "新增下载审核闸门：所有新下载默认需要手动批准后才开始，防止浏览器扩展或剪贴板静默灌入任务",
+      "新增开机自启开关：仅安装版可用、默认关闭，可在设置-使用体验中开启",
+      "修复 Windows 安装包误打包 Linux 版工具二进制的问题，安装包体积回到约 49MB"
     ],
     "assets": {
       "windows-x64": {
-        "url": "https://github.com/Supenman/FluxDL/releases/download/v0.4.1/fluxdl.exe",
-        "size": 10122240,
-        "sha256": "19a047fa0befe426fc8043b4ce20c3f614856e7d6cadad6a5bff424246db4c34"
+        "url": "https://github.com/Supenman/FluxDL/releases/download/v0.4.2/fluxdl.exe",
+        "size": 10231296,
+        "sha256": "0d3b3c22c2e094362b8b49b48171b51ff070bd50731c0c18f2995c10f192fc71"
       }
     }
   },
@@ -30,6 +28,16 @@
     }
   },
   "history": [
+    {
+      "version": "0.4.2",
+      "releasedAt": "2026-11-24T04:20:46Z",
+      "channel": "stable",
+      "notes": [
+        "新增下载审核闸门：所有新下载默认需要手动批准后才开始，防止浏览器扩展或剪贴板静默灌入任务",
+        "新增开机自启开关：仅安装版可用、默认关闭，可在设置-使用体验中开启",
+        "修复 Windows 安装包误打包 Linux 版工具二进制的问题，安装包体积回到约 49MB"
+      ]
+    },
     {
       "version": "0.4.1",
       "releasedAt": "2026-11-23T16:07:45Z",

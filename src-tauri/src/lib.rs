@@ -9,6 +9,7 @@ use tokio::net::TcpStream;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 mod appversion;
 mod capture_guard;
@@ -55,6 +56,10 @@ async fn add_tasks(
     };
     let mut tasks = Vec::new();
     let mut errors = Vec::new();
+    // 下载审核闸门：手动/剪贴板/命令面板入口一律强制要求用户批准后才下载。
+    // 不接受前端传入的值，避免绕过。
+    let mut options = options;
+    options.require_approval = true;
     for url in urls {
         let url = url.trim().to_string();
         if url.is_empty() {
@@ -83,6 +88,20 @@ async fn resume_task(state: State<'_, AppState>, id: String) -> Result<(), Strin
 #[tauri::command]
 async fn retry_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.engine.retry(&id).await;
+    Ok(())
+}
+
+/// 审核通过：批准单条待审核下载并启动。
+#[tauri::command]
+async fn approve_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.engine.approve(&id).await;
+    Ok(())
+}
+
+/// 审核通过：批准当前全部待审核下载。
+#[tauri::command]
+async fn approve_all_tasks(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine.approve_all().await;
     Ok(())
 }
 
@@ -153,6 +172,59 @@ async fn set_clipboard_watch(
         state.engine.set_options(options).await;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 开机自启（仅 NSIS 安装版）
+// ---------------------------------------------------------------------------
+
+/// NSIS 安装版一定会在 exe 同级放一个 `uninstall.exe`；便携版解压目录和
+/// 「单独一个 exe」都没有。用这个做安装版判据，而不是 `tools/` 目录：
+/// 安装版资源里也带 tools/，用它判断会把安装版误认成便携版。
+/// 抽成纯函数，便于单测锁死这条契约。
+fn has_install_marker(exe: &Path) -> bool {
+    exe.parent()
+        .map(|dir| dir.join("uninstall.exe").is_file())
+        .unwrap_or(false)
+}
+
+/// 前端据此决定是否显示「开机自启」开关。
+///
+/// 便携版必须隐藏：绿软的核心承诺是「删掉文件夹就等于卸载」，
+/// 一旦往注册表写自启项，文件夹删了还会残留一个指向空路径的启动项。
+/// 默认关闭也由此保证——我们从不主动调 enable，注册表里就不会有这一项。
+#[tauri::command]
+fn autostart_available() -> bool {
+    let installed = std::env::current_exe()
+        .map(|exe| has_install_marker(&exe))
+        .unwrap_or(false);
+    // 目前只出 Windows 包；非 Windows 编译态（CI / 本地 Linux）一律不提供。
+    cfg!(windows) && installed
+}
+
+/// 读取当前自启状态。插件把状态存在系统里（Windows 是 HKCU Run 项），
+/// 重启应用后仍然有效，不需要我们额外落盘。
+#[tauri::command]
+fn autostart_enabled(app: AppHandle) -> Result<bool, String> {
+    if !autostart_available() {
+        return Ok(false);
+    }
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// 打开 / 关闭自启；返回改动后的**真实**状态（以系统为准，不盲信传入值）。
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    if !autostart_available() {
+        return Err("便携版不支持开机自启，请使用安装版".into());
+    }
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())?;
+    } else {
+        manager.disable().map_err(|e| e.to_string())?;
+    }
+    manager.is_enabled().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -885,6 +957,8 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
         prefer_header_filename: true,
         referer: payload.referer,
         user_agent: payload.user_agent,
+        // 下载审核闸门：网页捕获的下载一律待审核，绝不静默开始。
+        require_approval: true,
         ..Default::default()
     };
 
@@ -1024,6 +1098,13 @@ fn start_clipboard_watcher(app: AppHandle, enabled: Arc<AtomicBool>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // macOS 用 LaunchAgent（比 AppleScript 稳定）；args 传 None，
+        // 自启时就是一次普通的冷启动，不需要额外命令行参数。
+        // 只在 setup 里构造 AutoLaunchManager，不主动 enable —— 默认关闭。
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             // 启动自检：这次跑的是不是"刚换上来、还没验证过"的版本？
             // 是就记一次尝试；连续失败达阈值会自动回退到上一版本，
@@ -1116,6 +1197,8 @@ pub fn run() {
             pause_task,
             resume_task,
             retry_task,
+            approve_task,
+            approve_all_tasks,
             remove_task,
             pause_all,
             resume_all,
@@ -1123,6 +1206,9 @@ pub fn run() {
             get_engine_options,
             set_engine_options,
             set_clipboard_watch,
+            autostart_available,
+            autostart_enabled,
+            set_autostart,
             engine_info,
             install_tools,
             version::app_version_info,
@@ -1317,5 +1403,38 @@ mod contract_tests {
         assert!(looks_like_media(
             "https://www.douyin.com/jingxuan?modal_id=7702008165390421263"
         ));
+    }
+}
+
+/// 自启可用性判据的回归测试：只有 exe 同级存在 uninstall.exe 才算安装版。
+/// 便携版解压目录、单独一个 exe、以及 tools/ 目录都不能当成安装版标记。
+#[cfg(test)]
+mod autostart_tests {
+    use super::has_install_marker;
+
+    #[test]
+    fn only_install_dir_with_uninstall_exe_is_eligible() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fluxdl.exe");
+        std::fs::write(&exe, b"exe").unwrap();
+
+        // 只有主程序：单 exe / 便携目录，不给自启开关
+        assert!(!has_install_marker(&exe));
+
+        // 便携版常见的 tools/ 与 browser-extension/ 不能算安装标记
+        std::fs::create_dir(dir.path().join("tools")).unwrap();
+        std::fs::create_dir(dir.path().join("browser-extension")).unwrap();
+        std::fs::write(dir.path().join("portable.flag"), b"").unwrap();
+        assert!(!has_install_marker(&exe), "便携版不应被当成安装版");
+
+        // NSIS 安装版一定带 uninstall.exe
+        std::fs::write(dir.path().join("uninstall.exe"), b"uninst").unwrap();
+        assert!(has_install_marker(&exe), "安装版应识别为可自启");
+
+        // 标记必须在 exe 同级，放到子目录不算
+        let nested = dir.path().join("sub");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("fluxdl.exe"), b"exe").unwrap();
+        assert!(!has_install_marker(&nested.join("fluxdl.exe")));
     }
 }

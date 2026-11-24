@@ -1435,6 +1435,15 @@ kbd {
   color: var(--danger-text);
 }
 
+/* 审核闸门：允许按钮 */
+.row-button.approve {
+  color: var(--success);
+}
+.row-button.approve:hover {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
 /* 状态徽标 */
 .status-badge {
   display: inline-flex;
@@ -1490,6 +1499,14 @@ kbd {
   color: var(--warn);
   background: transparent;
   border-color: var(--warn);
+}
+
+/* 审核闸门：待审核，区别于普通暂停 */
+.status-pending {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  font-weight: 600;
 }
 
 .status-completed {
@@ -3984,6 +4001,16 @@ kbd {
 .update-banner.ready {
   background: linear-gradient(90deg, var(--blue-soft), transparent 72%);
   border-bottom-color: var(--accent-line);
+}
+
+/* 审核闸门横幅：待审核任务 > 0 时置顶显示 */
+.approval-banner {
+  background: linear-gradient(90deg, var(--warn-soft), transparent 78%);
+  border-bottom-color: var(--warn-soft);
+}
+.approval-banner .approval-count {
+  color: var(--warn);
+  font-weight: 600;
 }
 
 .update-banner-icon {

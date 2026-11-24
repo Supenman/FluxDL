@@ -89,6 +89,7 @@ function seedTasks(): Task[] {
       mime: kind === "media" ? "video/mp4" : "application/octet-stream",
       domain: new URL(url).hostname.replace(/^www\./, ""),
       scheduledAt: null,
+      pendingApproval: false,
       ...extra,
     };
   };
@@ -203,6 +204,8 @@ function filenameFromUrl(url: string, kind: TaskKind): string {
 export class MockBackend {
   private tasks: Task[] = seedTasks();
   private listeners = new Set<(event: EngineEvent) => void>();
+  /** 预览模式下自启开关不可用，这里存一个状态仅为接口行为完整。 */
+  private autostartEnabledState = false;
   private options: EngineOptions = {
     saveDir: "C:\\Users\\Alex\\Downloads",
     organizeByCategory: false,
@@ -327,18 +330,20 @@ export class MockBackend {
         mime: kind === "media" ? "video/mp4" : null,
         domain: new URL(url).hostname.replace(/^www\./, ""),
         scheduledAt: opts.scheduledAt ?? null,
+        pendingApproval: true,
       };
       this.tasks.unshift(task);
       tasks.push(task);
       this.emit({ type: "task", payload: { ...task } });
       window.setTimeout(() => {
+        if (task.pendingApproval) return;
         task.status = "connecting";
         task.totalBytes = total;
         task.segments = segments(total, 0, task.connections);
         this.emit({ type: "task", payload: { ...task } });
       }, 350);
       window.setTimeout(() => {
-        if (task.status === "paused") return;
+        if (task.pendingApproval || task.status === "paused") return;
         task.status = "downloading";
         task.speedBps = Math.round((1.5 + Math.random() * 2.5) * MB);
         this.emit({ type: "task", payload: { ...task } });
@@ -358,16 +363,39 @@ export class MockBackend {
 
   async resume(id: string) {
     const task = this.tasks.find((t) => t.id === id);
-    if (!task || ["downloading", "connecting", "completed"].includes(task.status)) return;
+    if (!task || task.pendingApproval || ["downloading", "connecting", "completed"].includes(task.status)) return;
     task.status = "downloading";
     task.error = null;
     task.speedBps = Math.round((1.5 + Math.random() * 2.5) * MB);
     this.emit({ type: "task", payload: { ...task } });
   }
 
+  async approve(id: string) {
+    const task = this.tasks.find((t) => t.id === id);
+    if (!task || !task.pendingApproval) return;
+    task.pendingApproval = false;
+    task.scheduledAt = null;
+    task.status = "connecting";
+    task.totalBytes = Math.round((60 + Math.random() * 300) * MB);
+    task.segments = segments(task.totalBytes, 0, task.connections);
+    this.emit({ type: "task", payload: { ...task } });
+    window.setTimeout(() => {
+      if (task.status !== "connecting") return;
+      task.status = "downloading";
+      task.speedBps = Math.round((1.5 + Math.random() * 2.5) * MB);
+      this.emit({ type: "task", payload: { ...task } });
+    }, 800);
+  }
+
+  async approveAll() {
+    for (const task of this.tasks) {
+      if (task.pendingApproval) await this.approve(task.id);
+    }
+  }
+
   async retry(id: string) {
     const task = this.tasks.find((t) => t.id === id);
-    if (!task) return;
+    if (!task || task.pendingApproval) return;
     task.error = null;
     task.status = "downloading";
     task.speedBps = Math.round((1.5 + Math.random() * 2.5) * MB);
@@ -392,7 +420,7 @@ export class MockBackend {
 
   async resumeAll() {
     for (const task of this.tasks) {
-      if (task.status === "paused" || task.status === "failed") {
+      if (!task.pendingApproval && (task.status === "paused" || task.status === "failed")) {
         task.status = "downloading";
         task.error = null;
         task.speedBps = Math.round((1.5 + Math.random() * 2.5) * MB);
@@ -419,6 +447,20 @@ export class MockBackend {
 
   async setClipboardWatch(enabled: boolean) {
     this.options.clipboardWatch = enabled;
+  }
+
+  async autostartAvailable(): Promise<boolean> {
+    // 浏览器预览不是 NSIS 安装版，与真实便携版一样不提供自启开关。
+    return false;
+  }
+
+  async autostartEnabled(): Promise<boolean> {
+    return this.autostartEnabledState;
+  }
+
+  async setAutostart(enabled: boolean): Promise<boolean> {
+    this.autostartEnabledState = enabled;
+    return this.autostartEnabledState;
   }
 
   async engineInfo(): Promise<EngineInfo> {

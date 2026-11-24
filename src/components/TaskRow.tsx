@@ -47,6 +47,7 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
   const done = task.status === "completed";
   const failed = task.status === "failed";
   const paused = task.status === "paused";
+  const pending = task.pendingApproval === true;
 
   const run = async (action: () => Promise<void>, success?: string) => {
     if (busy) return;
@@ -76,7 +77,14 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
     void run(async () => {
       await backend.remove(task.id, false);
       if (selected) select(null);
-      pushToast("已移出列表，本地文件仍保留", "info");
+      pushToast(pending ? "已拒绝该下载" : "已移出列表，本地文件仍保留", "info");
+    });
+  };
+
+  const approve = () => {
+    void run(async () => {
+      await backend.approve(task.id);
+      pushToast("已允许，开始下载", "success");
     });
   };
 
@@ -113,7 +121,7 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
           <span className="task-name" title={task.filename}>
             {task.filename}
           </span>
-          <StatusBadge status={task.status} scheduledAt={task.scheduledAt} />
+          <StatusBadge status={task.status} scheduledAt={task.scheduledAt} pendingApproval={pending} />
         </div>
 
         <div className="task-sub">
@@ -199,6 +207,13 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
               </span>
             </>
           )}
+          {pending && (
+            <>
+              <span className="meta-strong">等待你的允许</span>
+              <span className="meta-dot" />
+              <span>允许后才开始下载</span>
+            </>
+          )}
           {task.status === "queued" && <span>等待空闲下载槽位…</span>}
           {task.status === "connecting" && <span>正在探测服务器与文件大小…</span>}
           {task.status === "paused" && task.scheduledAt != null && task.scheduledAt > 0 && (
@@ -262,7 +277,19 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
           >
             <Maximize2 size={14} />
           </button>
-          {done ? (
+          {pending ? (
+            <button
+              className="row-button approve"
+              onClick={(e) => {
+                e.stopPropagation();
+                approve();
+              }}
+              title="允许下载"
+              aria-label="允许下载"
+            >
+              <Check size={16} />
+            </button>
+          ) : done ? (
             <button
               className="row-button"
               onClick={(e) => {
@@ -293,8 +320,8 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
               e.stopPropagation();
               remove();
             }}
-            title="移出列表（保留文件）"
-            aria-label="移出列表"
+            title={pending ? "拒绝该下载" : "移出列表（保留文件）"}
+            aria-label={pending ? "拒绝下载" : "移出列表"}
           >
             <Trash2 size={14} />
           </button>

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FluxDL",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "identifier": "com.fluxdl.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -43,8 +43,13 @@
     ],
     "resources": {
       "../browser-extension": "browser-extension/",
-      "../tools": "tools/",
-      "../tools/aria2c.exe": "tools/aria2c.exe"
+      "../tools/README.md": "tools/README.md",
+      "../tools/build-update-manifest.py": "tools/build-update-manifest.py",
+      "../tools/check-release.py": "tools/check-release.py",
+      "../tools/fetch-tools.sh": "tools/fetch-tools.sh",
+      "../tools/aria2c.exe": "tools/aria2c.exe",
+      "../tools/ffmpeg.exe": "tools/ffmpeg.exe",
+      "../tools/yt-dlp.exe": "tools/yt-dlp.exe"
     },
     "shortDescription": "更顺手的桌面下载器",
     "longDescription": "FluxDL 迅流下载器：多线程 HTTP 下载、断点续传、队列、限速、视频下载与命令面板。",

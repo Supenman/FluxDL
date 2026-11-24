@@ -40,7 +40,7 @@ export function Toolbar() {
     (t) => t.status === "downloading" || t.status === "connecting",
   ).length;
   const pausedCount = tasks.filter(
-    (t) => t.status === "paused" || t.status === "failed",
+    (t) => (t.status === "paused" && !t.pendingApproval) || t.status === "failed",
   ).length;
   const completedCount = tasks.filter((t) => t.status === "completed").length;
 

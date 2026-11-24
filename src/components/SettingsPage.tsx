@@ -64,6 +64,11 @@ export function SettingsPage() {
 
   const [info, setInfo] = useState<EngineInfo | null>(null);
   const [appVersion, setAppVersion] = useState<string>("");
+  // 自启可用性由后端按「是否安装版」判定；null 表示还没探测完，先不渲染这一行。
+  const [autostart, setAutostart] = useState<{
+    available: boolean;
+    enabled: boolean;
+  } | null>(null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(true);
   const [installing, setInstalling] = useState(false);
@@ -91,6 +96,14 @@ export function SettingsPage() {
       .appVersionInfo()
       .then((v) => setAppVersion(v.appVersion))
       .catch(() => setAppVersion(""));
+    // 开机自启：只有 NSIS 安装版才显示可用开关；默认关闭由后端保证。
+    void backend
+      .autostartAvailable()
+      .then(async (available) => {
+        const enabled = available ? await backend.autostartEnabled() : false;
+        setAutostart({ available, enabled });
+      })
+      .catch(() => setAutostart({ available: false, enabled: false }));
     return () => {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
@@ -140,6 +153,23 @@ export function SettingsPage() {
       setChecking(false);
     }
   }
+
+  /** 开机自启开关：写系统自启项，不经过普通设置的延迟保存通道。 */
+  const toggleAutostart = async (next: boolean) => {
+    try {
+      const actual = await backend.setAutostart(next);
+      setAutostart({ available: true, enabled: actual });
+      pushToast(actual ? "已开启开机自启" : "已关闭开机自启", "success");
+    } catch (error) {
+      pushToast(`设置开机自启失败：${error}`, "error");
+      // 失败时以系统真实状态回滚开关，避免界面与实际不一致
+      try {
+        setAutostart({ available: true, enabled: await backend.autostartEnabled() });
+      } catch {
+        /* 读状态也失败时保留原界面，错误提示已经给出 */
+      }
+    }
+  };
 
   const update = (patch: Partial<EngineOptions>) => {
     setSettings(patch);
@@ -629,6 +659,29 @@ export function SettingsPage() {
             <p>这些开关只影响本机行为，不会上传任何数据。</p>
           </div>
         </div>
+
+        {autostart && (
+          <div className="setting-row inline">
+            <div className="setting-copy">
+              <label>
+                <Power size={13} /> 开机自启
+              </label>
+              <p>
+                {autostart.available
+                  ? "登录 Windows 后自动在后台启动 FluxDL，默认关闭"
+                  : "仅安装版支持；便携版解压即用，不会往系统里写启动项"}
+              </p>
+            </div>
+            {autostart.available ? (
+              <Toggle
+                checked={autostart.enabled}
+                onChange={(next) => void toggleAutostart(next)}
+              />
+            ) : (
+              <span className="muted">仅安装版</span>
+            )}
+          </div>
+        )}
 
         <div className="setting-row inline">
           <div className="setting-copy">

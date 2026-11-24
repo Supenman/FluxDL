@@ -104,7 +104,7 @@ export function Sidebar() {
       active,
       completed: tasks.filter((t) => t.status === "completed").length,
       media: tasks.filter((t) => t.kind === "media").length,
-      paused: tasks.filter((t) => t.status === "paused").length,
+      paused: tasks.filter((t) => t.status === "paused" && !t.pendingApproval).length,
       failed: tasks.filter((t) => t.status === "failed").length,
       "category:video": byCat.video,
       "category:document": byCat.document,

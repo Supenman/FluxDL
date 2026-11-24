@@ -133,7 +133,19 @@ export type Filter =
   | "category:document"
   | "category:archive"
   | "category:other";
-export type SortKey = "recent" | "name" | "size" | "progress";
+export type SortKey =
+  | "recent"
+  | "name"
+  | "size"
+  | "progress"
+  | "status"
+  | "rate"
+  | "eta"
+  | "added"
+  | "domain";
+
+/** 任务列表的呈现方式：卡片（默认，舒适/紧凑两态）或 MDM 式多列数据表。 */
+export type ViewMode = "card" | "table";
 
 /** 按文件扩展名归类（MDM 分类树思路，纯前端展示层） */
 export type FileCategory = "video" | "document" | "archive" | "other";

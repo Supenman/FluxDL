@@ -2,6 +2,7 @@ import { useMemo, useEffect } from "react";
 import { useStore, sortTasks, taskMatchesFilter } from "../store";
 import type { TaskStatus } from "../lib/types";
 import { TaskRow } from "./TaskRow";
+import { TaskTable } from "./TaskTable";
 import { EmptyState } from "./EmptyState";
 
 const GROUPS: Array<{ label: string; statuses: TaskStatus[] }> = [
@@ -19,6 +20,7 @@ export function TaskList() {
   const selectedId = useStore((s) => s.selectedId);
   const select = useStore((s) => s.select);
   const compact = useStore((s) => s.compact);
+  const viewMode = useStore((s) => s.viewMode);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -70,6 +72,18 @@ export function TaskList() {
       <EmptyState mode="search" query={query.trim()} />
     ) : (
       <EmptyState mode="filter" />
+    );
+  }
+
+  if (viewMode === "table") {
+    return (
+      <div className="task-table-wrap">
+        <TaskTable
+          tasks={filtered}
+          selectedId={selectedId}
+          onSelect={(id) => select(selectedId === id ? null : id)}
+        />
+      </div>
     );
   }
 

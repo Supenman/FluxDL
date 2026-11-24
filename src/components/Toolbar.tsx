@@ -1,4 +1,4 @@
-import { Search, Plus, Pause, Play, X, ChevronDown, Trash2, Columns3, LayoutList } from "lucide-react";
+import { Search, Plus, Pause, Play, X, ChevronDown, Trash2, Columns3, LayoutList, Grid3x3, List } from "lucide-react";
 import { useStore } from "../store";
 import { backend } from "../lib/backend";
 import type { Filter, SortKey } from "../lib/types";
@@ -22,6 +22,11 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
   { value: "name", label: "文件名" },
   { value: "size", label: "文件大小" },
   { value: "progress", label: "完成度" },
+  { value: "status", label: "状态" },
+  { value: "rate", label: "速度" },
+  { value: "eta", label: "剩余时间" },
+  { value: "added", label: "添加时间" },
+  { value: "domain", label: "来源" },
 ];
 
 export function Toolbar() {
@@ -33,6 +38,8 @@ export function Toolbar() {
   const setSort = useStore((s) => s.setSort);
   const compact = useStore((s) => s.compact);
   const setCompact = useStore((s) => s.setCompact);
+  const viewMode = useStore((s) => s.viewMode);
+  const setViewMode = useStore((s) => s.setViewMode);
   const setNewTaskOpen = useStore((s) => s.setNewTaskOpen);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -77,15 +84,35 @@ export function Toolbar() {
       </div>
 
       <div className="toolbar-actions">
-        <button
-          className="ghost-button view-toggle"
-          onClick={() => setCompact(!compact)}
-          title={compact ? "切换到舒适视图" : "切换到紧凑多列视图"}
-          aria-pressed={compact}
-        >
-          {compact ? <LayoutList size={14} /> : <Columns3 size={14} />}
-          <span>{compact ? "舒适" : "紧凑"}</span>
-        </button>
+        <div className="view-switch" role="group" aria-label="视图方式">
+          <button
+            className={cx("view-switch-btn", viewMode === "card" && "active")}
+            onClick={() => setViewMode("card")}
+            title="卡片视图"
+            aria-pressed={viewMode === "card"}
+          >
+            <Grid3x3 size={14} />
+          </button>
+          <button
+            className={cx("view-switch-btn", viewMode === "table" && "active")}
+            onClick={() => setViewMode("table")}
+            title="多列数据表视图"
+            aria-pressed={viewMode === "table"}
+          >
+            <List size={14} />
+          </button>
+        </div>
+        {viewMode === "card" && (
+          <button
+            className="ghost-button view-toggle"
+            onClick={() => setCompact(!compact)}
+            title={compact ? "切换到舒适视图" : "切换到紧凑多列视图"}
+            aria-pressed={compact}
+          >
+            {compact ? <LayoutList size={14} /> : <Columns3 size={14} />}
+            <span>{compact ? "舒适" : "紧凑"}</span>
+          </button>
+        )}
         <div className={cx("search-box", query && "has-value")}>
           <Search size={15} className="search-icon" />
           <input

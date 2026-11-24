@@ -9,6 +9,7 @@ import type {
   Task,
   TaskStatus,
   UpdateCheck,
+  ViewMode,
 } from "./lib/types";
 import { uid } from "./lib/format";
 import { readAccent, saveAccent, type AccentColors } from "./lib/theme";
@@ -59,6 +60,14 @@ function readCompact(): boolean {
   }
 }
 
+function readViewMode(): ViewMode {
+  try {
+    return localStorage.getItem("fluxdl:viewMode") === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
 interface AppStore {
   tasks: Task[];
   selectedId: string | null;
@@ -70,6 +79,8 @@ interface AppStore {
   theme: Theme;
   /** 紧凑多列视图：在任务行显示添加时间/来源/平均速度等额外列 */
   compact: boolean;
+  /** 任务列表呈现方式：卡片（默认）或 MDM 式多列数据表 */
+  viewMode: ViewMode;
   /** 自定义强调色（预设或导入），null 表示用默认经典蓝 */
   accent: AccentColors | null;
   /** 独立进度窗口显示的任务 id */
@@ -99,6 +110,7 @@ interface AppStore {
   setSettingsLoaded: (loaded: boolean) => void;
   setTheme: (theme: Theme) => void;
   setCompact: (compact: boolean) => void;
+  setViewMode: (mode: ViewMode) => void;
   setAccent: (accent: AccentColors | null) => void;
   setProgressId: (id: string | null) => void;
   setView: (view: "tasks" | "settings") => void;
@@ -133,6 +145,7 @@ export const useStore = create<AppStore>((set) => ({
   settingsLoaded: false,
   theme: readTheme(),
   compact: readCompact(),
+  viewMode: readViewMode(),
   accent: readAccent(),
   progressId: null,
   view: "tasks",
@@ -193,6 +206,15 @@ export const useStore = create<AppStore>((set) => ({
       // ignore
     }
     set({ compact });
+  },
+
+  setViewMode: (mode) => {
+    try {
+      localStorage.setItem("fluxdl:viewMode", mode);
+    } catch {
+      // ignore
+    }
+    set({ viewMode: mode });
   },
 
   setAccent: (accent) => {
@@ -305,6 +327,19 @@ export function sortTasks(tasks: Task[], sort: SortKey): Task[] {
         const pb = b.totalBytes ? b.downloadedBytes / b.totalBytes : 0;
         return pb - pa;
       }
+      case "status":
+        return statusOrder[a.status] - statusOrder[b.status];
+      case "rate":
+        return b.speedBps - a.speedBps;
+      case "eta": {
+        const ea = a.etaSeconds ?? Number.MAX_SAFE_INTEGER;
+        const eb = b.etaSeconds ?? Number.MAX_SAFE_INTEGER;
+        return ea - eb;
+      }
+      case "added":
+        return b.createdAt - a.createdAt;
+      case "domain":
+        return a.domain.localeCompare(b.domain, "en");
       default: {
         const activeA = statusOrder[a.status];
         const activeB = statusOrder[b.status];

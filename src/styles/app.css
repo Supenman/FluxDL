@@ -881,6 +881,195 @@ kbd {
   box-shadow: none;
 }
 
+/* ============================================================
+   视图切换：卡片 / 多列数据表（借鉴 MDM 表格式扫视，原创实现）
+   ============================================================ */
+.view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+.view-switch-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  border-radius: var(--radius-xs);
+  color: var(--text-3);
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.view-switch-btn:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.view-switch-btn.active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+/* ---- MDM 式多列数据表 ---- */
+.task-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: auto;
+}
+.task-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+.task-table col.col-name { width: auto; min-width: 220px; }
+.task-table col.col-status { width: 88px; }
+.task-table col.col-size { width: 84px; }
+.task-table col.col-progress { width: 132px; }
+.task-table col.col-eta { width: 92px; }
+.task-table col.col-rate { width: 92px; }
+.task-table col.col-added { width: 104px; }
+.task-table col.col-domain { width: 168px; }
+.task-table col.col-actions { width: 44px; }
+.task-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 34px;
+  padding: 0 12px;
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-3);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+  user-select: none;
+}
+.task-table thead th.sortable { cursor: pointer; }
+.task-table thead th.sortable:hover { color: var(--text); }
+.task-table thead th.sorted { color: var(--accent-text); }
+.sort-arrow { margin-left: 3px; font-size: 9px; }
+.task-table thead th.col-actions { padding: 0; }
+.task-table tbody td {
+  height: 46px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.task-table tbody tr:last-child td { border-bottom: 0; }
+.task-table tbody tr { transition: background 0.14s ease; cursor: pointer; }
+.task-table tbody tr:hover { background: var(--panel-2); }
+.task-table tbody tr.is-selected { background: var(--accent-soft); }
+.task-table tbody tr.is-done .c-name-text { opacity: 0.62; }
+.task-table td.num { font-variant-numeric: tabular-nums; }
+.task-table td.c-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-weight: 520;
+}
+.table-file-tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-xs);
+  background: var(--panel-3);
+  color: var(--accent-text);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+.c-name-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.c-name-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table-mini-track {
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--panel-3);
+  overflow: hidden;
+  max-width: 220px;
+}
+.table-mini-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s var(--ease);
+}
+.c-status .status-badge { font-size: 9.5px; }
+.c-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.table-progress {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+.table-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent-active), var(--accent));
+  transition: width 0.3s var(--ease);
+}
+.table-progress-pct { color: var(--text-3); min-width: 30px; text-align: right; }
+.c-rate.live { color: var(--accent-text); font-weight: 600; }
+.c-domain { display: flex; align-items: center; gap: 6px; color: var(--text-3); }
+.c-domain svg { flex: none; opacity: 0.7; }
+.c-domain span { overflow: hidden; text-overflow: ellipsis; }
+.table-tag {
+  flex: none;
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.table-action {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+  color: var(--text-2);
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.table-action:hover { background: var(--panel-3); color: var(--text); }
+.task-table tbody tr.is-selected .table-action:hover { background: var(--panel); }
+
+@media (max-width: 1140px) {
+  .task-table col.col-added,
+  .task-table th:nth-child(7),
+  .task-table td.c-added { display: none; }
+  .task-table col.col-domain,
+  .task-table th:nth-child(8),
+  .task-table td.c-domain { display: none; }
+}
+
 .primary-button.small,
 .ghost-button.small,
 .danger-button.small {
@@ -1004,7 +1193,7 @@ kbd {
 /* 任务行 */
 .task-row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) 148px;
+  grid-template-columns: 42px minmax(0, 1fr) 206px;
   align-items: center;
   gap: 14px;
   padding: 11px 14px;
@@ -1368,7 +1557,10 @@ kbd {
   flex-direction: column;
   align-items: flex-end;
   gap: 1px;
-  min-width: 86px;
+  /* 不被 row-actions 挤压；给「160 MB / 277 MB」这类长文本足够宽度，
+     否则 flex-end 右对齐时左端「1」会溢出被裁，看起来像 60 MB。 */
+  flex: 0 0 auto;
+  min-width: 104px;
 }
 
 .percent-value {

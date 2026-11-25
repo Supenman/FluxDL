@@ -34,7 +34,7 @@ export function Toasts() {
   const dismiss = useStore((s) => s.dismissToast);
 
   return (
-    <div className="toast-stack">
+    <div className="toast-stack" role="status" aria-live="polite" aria-atomic="false">
       {toasts.map((toast) => (
         <ToastItem key={toast.id} toast={toast} onClose={() => dismiss(toast.id)} />
       ))}

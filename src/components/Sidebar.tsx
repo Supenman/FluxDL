@@ -13,10 +13,13 @@ import {
   Package,
   Files,
   ChevronDown,
+  Layers,
+  Plus,
 } from "lucide-react";
 import { useStore, fileCategory } from "../store";
 import { formatSpeed } from "../lib/format";
 import { cx } from "../lib/format";
+import { newQueue, tasksInQueue } from "../lib/queues";
 import type { Filter } from "../lib/types";
 
 interface NavItem {
@@ -61,7 +64,13 @@ export function Sidebar() {
   const view = useStore((s) => s.view);
   const setFilter = useStore((s) => s.setFilter);
   const setView = useStore((s) => s.setView);
+  const queues = useStore((s) => s.queues);
+  const setQueues = useStore((s) => s.setQueues);
+  const queueFilter = useStore((s) => s.queueFilter);
+  const setQueueFilter = useStore((s) => s.setQueueFilter);
+  const pushToast = useStore((s) => s.pushToast);
   const [typesOpen, setTypesOpen] = useState(true);
+  const [queuesOpen, setQueuesOpen] = useState(true);
   const [width, setWidth] = useState<number>(readWidth);
 
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -123,6 +132,12 @@ export function Sidebar() {
     setFilter(next);
   };
 
+  const selectQueue = (id: string | null) => {
+    setView("tasks");
+    setFilter("all");
+    setQueueFilter(id);
+  };
+
   const renderItem = ({ id, label, icon: Icon }: NavItem) => {
     const count = counts[id] ?? 0;
     const active = view === "tasks" && filter === id;
@@ -155,6 +170,56 @@ export function Sidebar() {
           <ChevronDown size={13} className={cx("group-caret", typesOpen && "open")} />
         </button>
         {typesOpen && <div className="nav-subtree">{TYPE_NAV.map(renderItem)}</div>}
+
+        <button
+          className="nav-group-toggle"
+          onClick={() => setQueuesOpen((v) => !v)}
+          aria-expanded={queuesOpen}
+        >
+          <span className="nav-label">队列</span>
+          <ChevronDown size={13} className={cx("group-caret", queuesOpen && "open")} />
+        </button>
+        {queuesOpen && (
+          <div className="nav-subtree queue-subtree">
+            <button
+              className={cx("nav-item nav-queue", queueFilter === null && "active")}
+              onClick={() => selectQueue(null)}
+              aria-current={queueFilter === null ? "true" : undefined}
+            >
+              <Layers size={16} className="nav-icon" />
+              <span className="nav-text">全部队列</span>
+              <span className="nav-count">{tasks.length}</span>
+            </button>
+            {queues.queues.map((q) => {
+              const inQ = tasksInQueue(queues, tasks, q.id);
+              const active = queueFilter === q.id;
+              return (
+                <button
+                  key={q.id}
+                  className={cx("nav-item nav-queue", active && "active", !q.enabled && "queue-disabled")}
+                  onClick={() => selectQueue(q.id)}
+                  title={`${q.name}${q.enabled ? "" : "（已停用）"}`}
+                  aria-current={active ? "true" : undefined}
+                >
+                  <span className="queue-dot" style={{ background: q.color }} />
+                  <span className="nav-text">{q.name}</span>
+                  {inQ.length > 0 && <span className="nav-count">{inQ.length}</span>}
+                </button>
+              );
+            })}
+            <button
+              className="queue-add"
+              onClick={() => {
+                const q = newQueue(`队列 ${queues.queues.length}`, queues.queues);
+                setQueues({ ...queues, queues: [...queues.queues, q] });
+                pushToast(`已创建队列「${q.name}」，可在设置中编辑`, "success");
+              }}
+              title="新建队列"
+            >
+              <Plus size={13} /> 新建队列
+            </button>
+          </div>
+        )}
       </nav>
 
       <div className="sidebar-spacer" />

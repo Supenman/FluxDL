@@ -4,6 +4,7 @@ import { useStore } from "./store";
 import { backend } from "./lib/backend";
 import { extractUrls, cx } from "./lib/format";
 import { applyAccent } from "./lib/theme";
+import { useQueueScheduler } from "./hooks/useQueueScheduler";
 import { Titlebar } from "./components/Titlebar";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
@@ -23,9 +24,13 @@ export function App() {
   const view = useStore((s) => s.view);
   const theme = useStore((s) => s.theme);
   const accent = useStore((s) => s.accent);
+  const uiScale = useStore((s) => s.uiScale);
   const setCommandOpen = useStore((s) => s.setCommandOpen);
   const setNewTaskOpen = useStore((s) => s.setNewTaskOpen);
   const [dragging, setDragging] = useState(false);
+
+  // 队列调度器：按时启停 / 并发上限 / 失败重试（默认队列无约束时不干预）。
+  useQueueScheduler();
 
   // Initial load + engine event stream.
   useEffect(() => {
@@ -128,10 +133,15 @@ export function App() {
     }
   }, [theme]);
 
-  // Apply custom accent preset / imported theme (brand originals only; WCAG semantic mapping untouched).
+  // Apply custom accent preset / imported theme (OKLab derived, WCAG-safe for both themes).
   useEffect(() => {
     applyAccent(accent);
   }, [accent]);
+
+  // 无障碍：界面缩放作用于整个外壳（Chromium/WebView2 支持 zoom，200% 不裁切）。
+  useEffect(() => {
+    document.documentElement.style.zoom = String(uiScale);
+  }, [uiScale]);
 
   // Global shortcuts.
   useEffect(() => {
@@ -142,12 +152,41 @@ export function App() {
         target?.tagName === "INPUT" ||
         target?.tagName === "TEXTAREA" ||
         target?.isContentEditable;
+      const state = useStore.getState();
       if (mod && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setCommandOpen(!useStore.getState().commandOpen);
+        setCommandOpen(!state.commandOpen);
       } else if (mod && event.key.toLowerCase() === "n" && !typing) {
         event.preventDefault();
         setNewTaskOpen(true);
+      } else if (mod && (event.key === "=" || event.key === "+")) {
+        // Ctrl+= / Ctrl++：放大（无障碍缩放）
+        event.preventDefault();
+        state.setUiScale(Math.min(2, state.uiScale + 0.25));
+      } else if (mod && event.key === "-") {
+        event.preventDefault();
+        state.setUiScale(Math.max(1, state.uiScale - 0.25));
+      } else if (mod && event.key === "0") {
+        event.preventDefault();
+        state.setUiScale(1);
+      } else if (event.key === "/" && !typing && !state.commandOpen) {
+        // /：聚焦搜索框（与工具栏提示一致）
+        const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索任务"]');
+        if (search) {
+          event.preventDefault();
+          search.focus();
+          search.select();
+        }
+      } else if (event.code === "Space" && !typing && !state.commandOpen && !state.newTaskOpen) {
+        // 空格：切换选中任务的 暂停/继续（与列表焦点导航配套）
+        const id = state.selectedId;
+        if (!id) return;
+        const task = state.tasks.find((t) => t.id === id);
+        if (!task) return;
+        event.preventDefault();
+        const active = task.status === "downloading" || task.status === "connecting";
+        void (active ? backend.pause(id) : task.pendingApproval ? backend.approve(id) : backend.resume(id))
+          .catch((e) => state.pushToast(String(e), "error"));
       }
     };
     window.addEventListener("keydown", onKey);

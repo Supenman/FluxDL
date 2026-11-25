@@ -13,6 +13,11 @@ import type {
 } from "./lib/types";
 import { uid } from "./lib/format";
 import { readAccent, saveAccent, type AccentColors } from "./lib/theme";
+import {
+  readQueuesConfig,
+  saveQueuesConfig,
+  type QueuesConfig,
+} from "./lib/queues";
 
 export type Theme = "dark" | "light" | "system";
 export type Tone = "info" | "success" | "error";
@@ -69,6 +74,18 @@ function readViewMode(): ViewMode {
   }
 }
 
+/** 界面缩放：允许 100%~200%，夹取并量化到 25% 档，异常回退 1。 */
+export function readUiScale(): number {
+  try {
+    const raw = localStorage.getItem("fluxdl:uiScale");
+    const n = raw ? Number(raw) : 1;
+    if (Number.isFinite(n) && n >= 1 && n <= 2) return Math.round(n * 4) / 4;
+  } catch {
+    // ignore
+  }
+  return 1;
+}
+
 interface AppStore {
   tasks: Task[];
   selectedId: string | null;
@@ -84,6 +101,14 @@ interface AppStore {
   viewMode: ViewMode;
   /** 自定义强调色（预设或导入），null 表示用默认经典蓝 */
   accent: AccentColors | null;
+  /** 界面缩放倍率（无障碍：支持到 200%），作用于整个应用外壳 */
+  uiScale: number;
+  /** 多队列配置 + 任务归属 */
+  queues: QueuesConfig;
+  /** 当前队列筛选（null = 全部队列） */
+  queueFilter: string | null;
+  /** 调度器暂停集合：调度器只恢复自己暂停的任务，不碰用户手动暂停 */
+  scheduleHeld: string[];
   /** 独立进度窗口显示的任务 id */
   progressId: string | null;
   view: "tasks" | "settings";
@@ -113,6 +138,11 @@ interface AppStore {
   setCompact: (compact: boolean) => void;
   setViewMode: (mode: ViewMode) => void;
   setAccent: (accent: AccentColors | null) => void;
+  setUiScale: (scale: number) => void;
+  setQueues: (cfg: QueuesConfig) => void;
+  setQueueFilter: (id: string | null) => void;
+  assignTaskQueue: (taskId: string, queueId: string) => void;
+  setScheduleHeld: (ids: string[]) => void;
   setProgressId: (id: string | null) => void;
   setView: (view: "tasks" | "settings") => void;
   setNewTaskOpen: (open: boolean, seed?: string) => void;
@@ -148,6 +178,10 @@ export const useStore = create<AppStore>((set) => ({
   compact: readCompact(),
   viewMode: readViewMode(),
   accent: readAccent(),
+  uiScale: readUiScale(),
+  queues: readQueuesConfig(),
+  queueFilter: null,
+  scheduleHeld: [],
   progressId: null,
   view: "tasks",
   newTaskOpen: false,
@@ -222,6 +256,32 @@ export const useStore = create<AppStore>((set) => ({
     saveAccent(accent);
     set({ accent });
   },
+
+  setUiScale: (scale) => {
+    const safe = Math.min(2, Math.max(1, Math.round(scale * 4) / 4));
+    try {
+      localStorage.setItem("fluxdl:uiScale", String(safe));
+    } catch {
+      // ignore
+    }
+    set({ uiScale: safe });
+  },
+
+  setQueues: (queues) => {
+    saveQueuesConfig(queues);
+    set({ queues });
+  },
+  setQueueFilter: (queueFilter) => set({ queueFilter }),
+  assignTaskQueue: (taskId, queueId) =>
+    set((state) => {
+      const queues = {
+        ...state.queues,
+        assignment: { ...state.queues.assignment, [taskId]: queueId },
+      };
+      saveQueuesConfig(queues);
+      return { queues };
+    }),
+  setScheduleHeld: (scheduleHeld) => set({ scheduleHeld }),
 
   setProgressId: (progressId) => set({ progressId }),
 

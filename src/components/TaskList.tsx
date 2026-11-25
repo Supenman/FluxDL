@@ -1,5 +1,6 @@
 import { useMemo, useEffect } from "react";
 import { useStore, sortTasks, taskMatchesFilter } from "../store";
+import { queueOfTask } from "../lib/queues";
 import type { TaskStatus } from "../lib/types";
 import { TaskRow } from "./TaskRow";
 import { TaskTable } from "./TaskTable";
@@ -21,10 +22,13 @@ export function TaskList() {
   const select = useStore((s) => s.select);
   const compact = useStore((s) => s.compact);
   const viewMode = useStore((s) => s.viewMode);
+  const queues = useStore((s) => s.queues);
+  const queueFilter = useStore((s) => s.queueFilter);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const matched = tasks.filter((task) => {
+      if (queueFilter && queueOfTask(queues, task.id) !== queueFilter) return false;
       if (!taskMatchesFilter(task, filter)) return false;
       if (!q) return true;
       return (
@@ -34,7 +38,7 @@ export function TaskList() {
       );
     });
     return sortTasks(matched, sort);
-  }, [tasks, filter, query, sort]);
+  }, [tasks, filter, query, sort, queues, queueFilter]);
 
   // 键盘导航：↑/↓ 在当前筛选结果中移动选中项（抽屉随之更新），Home/End 跳首尾。
   // 输入框聚焦或命令面板打开时不接管，避免与打字冲突。
@@ -77,13 +81,11 @@ export function TaskList() {
 
   if (viewMode === "table") {
     return (
-      <div className="task-table-wrap">
-        <TaskTable
-          tasks={filtered}
-          selectedId={selectedId}
-          onSelect={(id) => select(selectedId === id ? null : id)}
-        />
-      </div>
+      <TaskTable
+        tasks={filtered}
+        selectedId={selectedId}
+        onSelect={(id) => select(selectedId === id ? null : id)}
+      />
     );
   }
 

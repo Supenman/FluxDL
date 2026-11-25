@@ -23,6 +23,7 @@ import { backend, isTauri } from "../lib/backend";
 import type { EngineInfo, EngineOptions, ToolProgress } from "../lib/types";
 import { cx, formatBytes, formatSpeed } from "../lib/format";
 import { UpdateSection, ToolVersionPicker, AppVersionPicker } from "./UpdateSection";
+import { QueueManager } from "./QueueManager";
 import { ACCENT_PRESETS, parseAccentJSON } from "../lib/theme";
 
 const LIMITS = [
@@ -59,6 +60,8 @@ export function SettingsPage() {
   const setTheme = useStore((s) => s.setTheme);
   const accent = useStore((s) => s.accent);
   const setAccent = useStore((s) => s.setAccent);
+  const uiScale = useStore((s) => s.uiScale);
+  const setUiScale = useStore((s) => s.setUiScale);
   const setSettings = useStore((s) => s.setSettings);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -271,7 +274,7 @@ export function SettingsPage() {
         <div className="setting-row">
           <div className="setting-copy">
             <label>强调色</label>
-            <p>预设配色或导入自定义主题（只改品牌色，保持文字对比度）</p>
+            <p>选预设，或导入主题 JSON（支持 OKLab 种子色 / pywal / Base16，自动派生色阶并保证文字对比度）</p>
           </div>
           <div className="setting-control wide">
             <div className="accent-presets">
@@ -298,7 +301,7 @@ export function SettingsPage() {
               <button
                 className="accent-import"
                 onClick={() => themeFileRef.current?.click()}
-                title="导入主题 JSON"
+                title="导入主题 JSON（pywal / Base16 / { primary }）"
               >
                 导入
               </button>
@@ -318,6 +321,27 @@ export function SettingsPage() {
                 hidden
                 onChange={(e) => void importTheme(e.target.files?.[0])}
               />
+            </div>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-copy">
+            <label>界面缩放</label>
+            <p>放大整个界面以便阅读，最高 200%（快捷键 Ctrl + / Ctrl - / Ctrl 0）</p>
+          </div>
+          <div className="setting-control wide">
+            <div className="scale-picker" role="group" aria-label="界面缩放">
+              {[1, 1.25, 1.5, 1.75, 2].map((s) => (
+                <button
+                  key={s}
+                  className={cx("scale-option", uiScale === s && "active")}
+                  onClick={() => setUiScale(s)}
+                  aria-pressed={uiScale === s}
+                >
+                  {Math.round(s * 100)}%
+                </button>
+              ))}
             </div>
           </div>
         </div>
@@ -767,6 +791,8 @@ export function SettingsPage() {
           />
         </div>
       </section>
+
+      <QueueManager />
 
       <UpdateSection />
 

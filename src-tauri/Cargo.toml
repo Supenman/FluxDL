@@ -5,6 +5,7 @@ description = "FluxDL · 迅流下载器"
 authors = ["FluxDL"]
 edition = "2021"
 rust-version = "1.77"
+license = "GPL-3.0-or-later"
 
 [workspace]
 

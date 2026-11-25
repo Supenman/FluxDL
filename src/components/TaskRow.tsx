@@ -30,11 +30,20 @@ import { StatusBadge } from "./StatusBadge";
 interface TaskRowProps {
   task: Task;
   selected: boolean;
+  focused?: boolean;
   onSelect: () => void;
   compact?: boolean;
+  onContextMenu?: (event: React.MouseEvent, task: Task) => void;
 }
 
-export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowProps) {
+export function TaskRow({
+  task,
+  selected,
+  focused = false,
+  onSelect,
+  compact = false,
+  onContextMenu,
+}: TaskRowProps) {
   const select = useStore((s) => s.select);
   const pushToast = useStore((s) => s.pushToast);
   const setProgressId = useStore((s) => s.setProgressId);
@@ -97,13 +106,17 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
       className={cx(
         "task-row",
         selected && "is-selected",
+        focused && "is-focused",
         isActive && "is-active",
         failed && "is-failed",
       )}
       onClick={onSelect}
+      onMouseDown={() => useStore.getState().setFocus(task.id)}
+      onContextMenu={onContextMenu ? (event) => onContextMenu(event, task) : undefined}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
+          useStore.getState().setFocus(task.id);
           onSelect();
         }
       }}

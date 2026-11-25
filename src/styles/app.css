@@ -968,6 +968,15 @@ kbd {
 .task-table tbody tr { transition: background 0.14s ease; cursor: pointer; }
 .task-table tbody tr:hover { background: var(--panel-2); }
 .task-table tbody tr.is-selected { background: var(--accent-soft); }
+/* 键盘焦点行（↑/↓ 移动）：只画左侧竖条 + 细描边，与「选中=抽屉已打开」区分开 */
+.task-table tbody tr.is-focused {
+  background: var(--panel-2);
+  box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px var(--accent-line);
+}
+[dir="rtl"] .task-table tbody tr.is-focused {
+  box-shadow: inset -3px 0 0 var(--accent), inset 0 0 0 1px var(--accent-line);
+}
+.task-table tbody tr.is-focused.is-selected { background: var(--accent-soft); }
 .task-table tbody tr.is-done .c-name-text { opacity: 0.62; }
 .task-table td.num { font-variant-numeric: tabular-nums; }
 .task-table td.c-name {
@@ -1348,6 +1357,12 @@ kbd {
 .task-row.is-selected {
   border-color: var(--accent-line);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 键盘焦点行：比选中更轻，仅表示「光标在这」，按 Enter 才打开详情 */
+.task-row.is-focused:not(.is-selected) {
+  border-color: var(--accent-line);
+  background: var(--panel-2);
 }
 
 .task-row.is-failed {
@@ -5133,3 +5148,44 @@ kbd {
 [dir="rtl"] .lucide-chevron-left,
 [dir="rtl"] .lucide-arrow-right,
 [dir="rtl"] .lucide-arrow-left { transform: scaleX(-1); }
+
+/* ============================================================
+   任务右键菜单（IDM/MDM 式上下文操作）
+   ============================================================ */
+.context-menu {
+  position: fixed;
+  z-index: 900;
+  min-width: 210px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38), 0 2px 6px rgba(0, 0, 0, 0.2);
+  outline: none;
+  animation: context-menu-in 0.1s var(--ease, ease-out);
+}
+@keyframes context-menu-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: start;
+  cursor: default;
+}
+.context-menu-item.is-active:not(:disabled) { background: var(--accent-soft); color: var(--accent-text); }
+.context-menu-item.is-danger.is-active:not(:disabled) { background: var(--danger-soft); color: var(--danger-text); }
+.context-menu-item:disabled { opacity: 0.4; }
+.context-menu-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-menu-hint { font-size: 10.5px; color: var(--text-3); }

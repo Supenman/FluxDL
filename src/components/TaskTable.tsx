@@ -45,11 +45,19 @@ const CATEGORY_LABEL: Record<FileCategory, string> = {
 interface TaskTableProps {
   tasks: Task[];
   selectedId: string | null;
+  focusedId?: string | null;
   onSelect: (id: string) => void;
+  onContextMenu?: (event: React.MouseEvent, task: Task) => void;
 }
 
 /** MDM 式多列数据表：列可显隐/排序/调宽/重排/过滤，配置持久化。原创实现。 */
-export function TaskTable({ tasks, selectedId, onSelect }: TaskTableProps) {
+export function TaskTable({
+  tasks,
+  selectedId,
+  focusedId = null,
+  onSelect,
+  onContextMenu,
+}: TaskTableProps) {
   const sort = useStore((s) => s.sort);
   const setSort = useStore((s) => s.setSort);
   const pushToast = useStore((s) => s.pushToast);
@@ -301,13 +309,17 @@ export function TaskTable({ tasks, selectedId, onSelect }: TaskTableProps) {
                   className={cx(
                     "task-table-row",
                     selectedId === task.id && "is-selected",
+                    focusedId === task.id && "is-focused",
                     done && "is-done",
                   )}
                   onClick={() => onSelect(task.id)}
+                  onMouseDown={() => useStore.getState().setFocus(task.id)}
+                  onContextMenu={onContextMenu ? (event) => onContextMenu(event, task) : undefined}
                   tabIndex={0}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
+                      useStore.getState().setFocus(task.id);
                       onSelect(task.id);
                     }
                   }}

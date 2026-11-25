@@ -1111,6 +1111,8 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        // 桌面通知：下载完成/失败时提醒（应用在托盘或后台时尤其有用）。
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 启动自检：这次跑的是不是"刚换上来、还没验证过"的版本？
             // 是就记一次尝试；连续失败达阈值会自动回退到上一版本，

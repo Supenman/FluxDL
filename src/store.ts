@@ -66,6 +66,17 @@ function readCompact(): boolean {
   }
 }
 
+function readBool(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+  } catch {
+    // ignore
+  }
+  return fallback;
+}
+
 function readDirection(): "ltr" | "rtl" {
   try {
     return localStorage.getItem("fluxdl:direction") === "rtl" ? "rtl" : "ltr";
@@ -77,10 +88,13 @@ function readDirection(): "ltr" | "rtl" {
 
 function readViewMode(): ViewMode {
   try {
-    return localStorage.getItem("fluxdl:viewMode") === "table" ? "table" : "card";
+    const saved = localStorage.getItem("fluxdl:viewMode");
+    // 用户显式选过就尊重；新装用户默认多列数据表（更接近 IDM/MDM 的信息密度）。
+    if (saved === "table" || saved === "card") return saved;
   } catch {
-    return "card";
+    // ignore
   }
+  return "table";
 }
 
 /** 界面缩放：允许 100%~200%，夹取并量化到 25% 档，异常回退 1。 */
@@ -114,6 +128,10 @@ interface AppStore {
   uiScale: number;
   /** 界面方向：ltr（默认）/ rtl（镜像布局，适配从右到左语言） */
   direction: "ltr" | "rtl";
+  /** 下载完成/失败时弹系统通知（应用在后台或托盘时尤其有用） */
+  notifyOnFinish: boolean;
+  /** 下载完成时播放提示音 */
+  soundOnFinish: boolean;
   /** 多队列配置 + 任务归属 */
   queues: QueuesConfig;
   /** 当前队列筛选（null = 全部队列） */
@@ -140,6 +158,12 @@ interface AppStore {
   upsertTask: (task: Task) => void;
   removeTask: (id: string) => void;
   select: (id: string | null) => void;
+  /**
+   * 「键盘光标」与 selectedId 分离：列表用 ↑/↓ 移动光标只改焦点，
+   * 按 Enter 才打开详情抽屉。这样才有 IDM/资源管理器式的列表浏览手感。
+   */
+  focusedId: string | null;
+  setFocus: (id: string | null) => void;
   setFilter: (filter: Filter) => void;
   setQuery: (query: string) => void;
   setSort: (sort: SortKey) => void;
@@ -151,6 +175,8 @@ interface AppStore {
   setAccent: (accent: AccentColors | null) => void;
   setUiScale: (scale: number) => void;
   setDirection: (direction: "ltr" | "rtl") => void;
+  setNotifyOnFinish: (on: boolean) => void;
+  setSoundOnFinish: (on: boolean) => void;
   setQueues: (cfg: QueuesConfig) => void;
   setQueueFilter: (id: string | null) => void;
   assignTaskQueue: (taskId: string, queueId: string) => void;
@@ -181,6 +207,7 @@ const statusOrder: Record<TaskStatus, number> = {
 export const useStore = create<AppStore>((set) => ({
   tasks: [],
   selectedId: null,
+  focusedId: null,
   filter: "all",
   query: "",
   sort: "recent",
@@ -192,6 +219,8 @@ export const useStore = create<AppStore>((set) => ({
   accent: readAccent(),
   uiScale: readUiScale(),
   direction: readDirection(),
+  notifyOnFinish: readBool("fluxdl:notifyOnFinish", true),
+  soundOnFinish: readBool("fluxdl:soundOnFinish", true),
   queues: readQueuesConfig(),
   queueFilter: null,
   scheduleHeld: [],
@@ -226,10 +255,12 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => ({
       tasks: state.tasks.filter((t) => t.id !== id),
       selectedId: state.selectedId === id ? null : state.selectedId,
+      focusedId: state.focusedId === id ? null : state.focusedId,
       progressId: state.progressId === id ? null : state.progressId,
     })),
 
   select: (id) => set({ selectedId: id }),
+  setFocus: (id) => set({ focusedId: id }),
   setFilter: (filter) => set({ filter }),
   setQuery: (query) => set({ query }),
   setSort: (sort) => set({ sort }),
@@ -289,6 +320,24 @@ export const useStore = create<AppStore>((set) => ({
     set({ direction });
   },
 
+  setNotifyOnFinish: (on) => {
+    try {
+      localStorage.setItem("fluxdl:notifyOnFinish", on ? "1" : "0");
+    } catch {
+      // ignore
+    }
+    set({ notifyOnFinish: on });
+  },
+
+  setSoundOnFinish: (on) => {
+    try {
+      localStorage.setItem("fluxdl:soundOnFinish", on ? "1" : "0");
+    } catch {
+      // ignore
+    }
+    set({ soundOnFinish: on });
+  },
+
   setQueues: (queues) => {
     saveQueuesConfig(queues);
     set({ queues });
@@ -307,7 +356,7 @@ export const useStore = create<AppStore>((set) => ({
 
   setProgressId: (progressId) => set({ progressId }),
 
-  setView: (view) => set({ view, selectedId: null }),
+  setView: (view) => set({ view, selectedId: null, focusedId: null }),
 
   setNewTaskOpen: (open, seed) =>
     set({

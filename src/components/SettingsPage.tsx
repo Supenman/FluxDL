@@ -62,6 +62,10 @@ export function SettingsPage() {
   const setAccent = useStore((s) => s.setAccent);
   const uiScale = useStore((s) => s.uiScale);
   const setUiScale = useStore((s) => s.setUiScale);
+  const notifyOnFinish = useStore((s) => s.notifyOnFinish);
+  const setNotifyOnFinish = useStore((s) => s.setNotifyOnFinish);
+  const soundOnFinish = useStore((s) => s.soundOnFinish);
+  const setSoundOnFinish = useStore((s) => s.setSoundOnFinish);
   const direction = useStore((s) => s.direction);
   const setDirection = useStore((s) => s.setDirection);
   const setSettings = useStore((s) => s.setSettings);
@@ -815,6 +819,22 @@ export function SettingsPage() {
             checked={settings.openFolderAfter}
             onChange={(next) => update({ openFolderAfter: next })}
           />
+        </div>
+
+        <div className="setting-row inline">
+          <div className="setting-copy">
+            <label>完成时弹系统通知</label>
+            <p>应用在后台或最小化到托盘时提醒；前台可见时不打扰</p>
+          </div>
+          <Toggle checked={notifyOnFinish} onChange={setNotifyOnFinish} />
+        </div>
+
+        <div className="setting-row inline">
+          <div className="setting-copy">
+            <label>完成时播放提示音</label>
+            <p>下载完成一声轻提示，失败为低沉提示音</p>
+          </div>
+          <Toggle checked={soundOnFinish} onChange={setSoundOnFinish} />
         </div>
       </section>
 

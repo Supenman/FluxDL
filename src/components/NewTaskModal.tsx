@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 import {
   X,
   Link2,
@@ -55,6 +56,8 @@ export function NewTaskModal() {
   const [errors, setErrors] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(open, modalRef);
 
   useEffect(() => {
     if (!open) return;
@@ -187,7 +190,7 @@ export function NewTaskModal() {
         if (event.target === event.currentTarget && !submitting) setNewTaskOpen(false);
       }}
     >
-      <div className="modal new-task-modal" role="dialog" aria-modal="true" aria-label="新建下载">
+      <div ref={modalRef} className="modal new-task-modal" role="dialog" aria-modal="true" aria-label="新建下载">
         <header className="modal-head">
           <div className="modal-title">
             <div className="modal-icon">

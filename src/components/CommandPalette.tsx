@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 import {
   Search,
   Plus,
@@ -49,6 +50,8 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const paletteRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(open, paletteRef);
 
   useEffect(() => {
     if (open) {
@@ -250,7 +253,7 @@ export function CommandPalette() {
     <div className="modal-backdrop command-backdrop" onMouseDown={(e) => {
       if (e.target === e.currentTarget) close();
     }}>
-      <div className="command-palette" role="dialog" aria-modal="true" aria-label="命令面板">
+      <div ref={paletteRef} className="command-palette" role="dialog" aria-modal="true" aria-label="命令面板">
         <div className="command-input">
           <Search size={16} className="command-search-icon" />
           <input

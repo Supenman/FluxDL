@@ -133,13 +133,21 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
           )}
         </div>
 
-        <div className={cx(
-          "progress-track",
-          isActive && "live",
-          done && "done",
-          failed && "error",
-          task.segments.length > 1 && task.totalBytes > 0 && "has-segments",
-        )}>
+        <div
+          className={cx(
+            "progress-track",
+            isActive && "live",
+            done && "done",
+            failed && "error",
+            task.segments.length > 1 && task.totalBytes > 0 && "has-segments",
+          )}
+          role="progressbar"
+          aria-label={`${task.filename} 下载进度`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.floor(pct)}
+          aria-valuetext={`${Math.floor(pct)}%，${formatSpeed(task.speedBps)}`}
+        >
           <div
             className={cx("progress-fill", !task.totalBytes && "indeterminate")}
             style={pct > 0 ? { width: `${pct}%` } : undefined}
@@ -155,7 +163,7 @@ export function TaskRow({ task, selected, onSelect, compact = false }: TaskRowPr
                 <span
                   key={seg.index}
                   className={cx("seg-block", seg.done && "is-done")}
-                  style={{ left: `${left}%`, width: `${width}%` }}
+                  style={{ insetInlineStart: `${left}%`, width: `${width}%` }}
                   title={`段 ${seg.index + 1} · ${Math.floor(segPct)}%`}
                 >
                   <span className="seg-fill" style={{ width: `${segPct}%` }} />

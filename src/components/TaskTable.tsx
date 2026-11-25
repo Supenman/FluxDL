@@ -402,11 +402,19 @@ function renderCell(
       return task.totalBytes ? formatBytes(task.totalBytes) : "—";
     case "progress":
       return (
-        <span className="c-progress">
+        <span
+          className="c-progress"
+          role="progressbar"
+          aria-label={`${task.filename} 下载进度`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={task.totalBytes ? Math.floor(pct) : 0}
+          aria-valuetext={task.totalBytes ? `${Math.floor(pct)}%` : "大小未知"}
+        >
           <span className="table-progress" aria-hidden="true">
             <span className="table-progress-fill" style={{ width: `${pct}%` }} />
           </span>
-          <span className="table-progress-pct num">
+          <span className="table-progress-pct num" aria-hidden="true">
             {task.totalBytes ? `${Math.floor(pct)}%` : "—"}
           </span>
         </span>

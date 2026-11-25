@@ -66,6 +66,15 @@ function readCompact(): boolean {
   }
 }
 
+function readDirection(): "ltr" | "rtl" {
+  try {
+    return localStorage.getItem("fluxdl:direction") === "rtl" ? "rtl" : "ltr";
+  } catch {
+    // ignore
+  }
+  return "ltr";
+}
+
 function readViewMode(): ViewMode {
   try {
     return localStorage.getItem("fluxdl:viewMode") === "table" ? "table" : "card";
@@ -103,6 +112,8 @@ interface AppStore {
   accent: AccentColors | null;
   /** 界面缩放倍率（无障碍：支持到 200%），作用于整个应用外壳 */
   uiScale: number;
+  /** 界面方向：ltr（默认）/ rtl（镜像布局，适配从右到左语言） */
+  direction: "ltr" | "rtl";
   /** 多队列配置 + 任务归属 */
   queues: QueuesConfig;
   /** 当前队列筛选（null = 全部队列） */
@@ -139,6 +150,7 @@ interface AppStore {
   setViewMode: (mode: ViewMode) => void;
   setAccent: (accent: AccentColors | null) => void;
   setUiScale: (scale: number) => void;
+  setDirection: (direction: "ltr" | "rtl") => void;
   setQueues: (cfg: QueuesConfig) => void;
   setQueueFilter: (id: string | null) => void;
   assignTaskQueue: (taskId: string, queueId: string) => void;
@@ -179,6 +191,7 @@ export const useStore = create<AppStore>((set) => ({
   viewMode: readViewMode(),
   accent: readAccent(),
   uiScale: readUiScale(),
+  direction: readDirection(),
   queues: readQueuesConfig(),
   queueFilter: null,
   scheduleHeld: [],
@@ -265,6 +278,15 @@ export const useStore = create<AppStore>((set) => ({
       // ignore
     }
     set({ uiScale: safe });
+  },
+
+  setDirection: (direction) => {
+    try {
+      localStorage.setItem("fluxdl:direction", direction);
+    } catch {
+      // ignore
+    }
+    set({ direction });
   },
 
   setQueues: (queues) => {

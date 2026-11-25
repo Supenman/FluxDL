@@ -25,6 +25,7 @@ export function App() {
   const theme = useStore((s) => s.theme);
   const accent = useStore((s) => s.accent);
   const uiScale = useStore((s) => s.uiScale);
+  const direction = useStore((s) => s.direction);
   const setCommandOpen = useStore((s) => s.setCommandOpen);
   const setNewTaskOpen = useStore((s) => s.setNewTaskOpen);
   const [dragging, setDragging] = useState(false);
@@ -143,6 +144,11 @@ export function App() {
     document.documentElement.style.zoom = String(uiScale);
   }, [uiScale]);
 
+  // RTL：dir 作用于根元素，所有逻辑属性（inset-inline / margin-inline / text-align:start）自动镜像。
+  useEffect(() => {
+    document.documentElement.dir = direction;
+  }, [direction]);
+
   // Global shortcuts.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -260,10 +266,12 @@ export function App() {
 
   return (
     <div className={cx("app", dragging && "is-dragging")}>
+      {/* 屏幕阅读器：跳过重复的标题栏/侧栏，直达主内容 */}
+      <a className="skip-link" href="#main-content">跳到主内容</a>
       <Titlebar />
       <div className="shell">
         <Sidebar />
-        <main className="main">
+        <main className="main" id="main-content" tabIndex={-1}>
           {view === "settings" ? (
             <SettingsPage />
           ) : (

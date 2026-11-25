@@ -62,6 +62,8 @@ export function SettingsPage() {
   const setAccent = useStore((s) => s.setAccent);
   const uiScale = useStore((s) => s.uiScale);
   const setUiScale = useStore((s) => s.setUiScale);
+  const direction = useStore((s) => s.direction);
+  const setDirection = useStore((s) => s.setDirection);
   const setSettings = useStore((s) => s.setSettings);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -340,6 +342,30 @@ export function SettingsPage() {
                   aria-pressed={uiScale === s}
                 >
                   {Math.round(s * 100)}%
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-copy">
+            <label>界面方向</label>
+            <p>从右到左布局（RTL），适配阿拉伯语/希伯来语等阅读习惯；默认从左到右</p>
+          </div>
+          <div className="setting-control wide">
+            <div className="scale-picker" role="group" aria-label="界面方向">
+              {([
+                ["ltr", "从左到右"],
+                ["rtl", "从右到左"],
+              ] as const).map(([dir, label]) => (
+                <button
+                  key={dir}
+                  className={cx("scale-option", direction === dir && "active")}
+                  onClick={() => setDirection(dir)}
+                  aria-pressed={direction === dir}
+                >
+                  {label}
                 </button>
               ))}
             </div>

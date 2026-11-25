@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 import { X, Zap, Clock, Activity, Cpu } from "lucide-react";
 import { useStore } from "../store";
 import { formatBytes, formatEta, formatSpeed, percent } from "../lib/format";
@@ -13,6 +14,8 @@ export function ProgressWindow() {
   const tasks = useStore((s) => s.tasks);
   const logMap = useStore((s) => s.logs);
   const task = progressId ? tasks.find((t) => t.id === progressId) ?? null : null;
+  const winRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(Boolean(progressId), winRef);
   const logs = progressId ? logMap[progressId] ?? EMPTY_LOGS : EMPTY_LOGS;
 
   useEffect(() => {
@@ -35,7 +38,7 @@ export function ProgressWindow() {
 
   return (
     <div className="progress-window-backdrop" onClick={() => setProgressId(null)}>
-      <div className="progress-window" role="dialog" aria-label={`进度：${task.filename}`} onClick={(e) => e.stopPropagation()}>
+      <div ref={winRef} className="progress-window" role="dialog" aria-modal="true" aria-label={`进度：${task.filename}`} onClick={(e) => e.stopPropagation()}>
         <header className="pw-head">
           <div className="pw-title">
             <span className="pw-eyebrow">下载进度</span>
@@ -54,14 +57,22 @@ export function ProgressWindow() {
             </span>
           </div>
 
-          <div className={`pw-bar ${isActive ? "live" : ""}`}>
+          <div
+            className={`pw-bar ${isActive ? "live" : ""}`}
+            role="progressbar"
+            aria-label={`${task.filename} 下载进度`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.floor(pct)}
+            aria-valuetext={`${Math.floor(pct)}%，${formatSpeed(task.speedBps)}`}
+          >
             <div className="pw-bar-fill" style={{ width: `${pct}%` }} />
             {segs.length > 1 && task.totalBytes > 0 && segs.map((seg) => {
               const left = (seg.start / task.totalBytes) * 100;
               const width = ((seg.end - seg.start) / task.totalBytes) * 100;
               const sp = seg.end > seg.start ? (seg.downloaded / (seg.end - seg.start)) * 100 : 0;
               return (
-                <span key={seg.index} className="pw-seg" style={{ left: `${left}%`, width: `${width}%` }} title={`段 ${seg.index + 1} · ${Math.floor(sp)}%`}>
+                <span key={seg.index} className="pw-seg" style={{ insetInlineStart: `${left}%`, width: `${width}%` }} title={`段 ${seg.index + 1} · ${Math.floor(sp)}%`}>
                   <span className="pw-seg-fill" style={{ width: `${sp}%` }} />
                 </span>
               );

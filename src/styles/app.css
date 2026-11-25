@@ -315,7 +315,7 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: 4px;
+  margin-inline-start: 4px;
   height: 21px;
   padding: 0 9px;
   font-size: 10.5px;
@@ -388,7 +388,7 @@ svg {
 .window-controls {
   display: flex;
   height: 100%;
-  margin-left: 8px;
+  margin-inline-start: 8px;
 }
 
 .window-button {
@@ -423,7 +423,7 @@ svg {
   width: var(--sidebar-w);
   min-height: 0;
   padding: 16px 12px 12px;
-  border-right: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elevated) 62%, transparent);
   overflow-y: auto;
   overflow-x: hidden;
@@ -433,7 +433,7 @@ svg {
 .sidebar-resizer {
   position: absolute;
   top: 0;
-  right: -3px;
+  inset-inline-end: -3px;
   bottom: 0;
   width: 6px;
   cursor: col-resize;
@@ -444,7 +444,7 @@ svg {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 2px;
+  inset-inline-start: 2px;
   width: 2px;
   background: transparent;
   transition: background 0.16s var(--ease);
@@ -478,7 +478,7 @@ svg {
   padding: 0 10px;
   border-radius: var(--radius-sm);
   color: var(--text-2);
-  text-align: left;
+  text-align: start;
   transition: background 0.16s var(--ease), color 0.16s var(--ease);
 }
 
@@ -495,7 +495,7 @@ svg {
 .nav-item.active::before {
   content: "";
   position: absolute;
-  left: -1px;
+  inset-inline-start: -1px;
   top: 8px;
   bottom: 8px;
   width: 2px;
@@ -542,13 +542,13 @@ svg {
 }
 .nav-group-toggle .nav-label {
   flex: 1;
-  text-align: left;
+  text-align: start;
 }
 .group-caret {
   color: var(--text-3);
   transform: rotate(-90deg);
   transition: transform 0.16s var(--ease);
-  margin-right: 8px;
+  margin-inline-end: 8px;
 }
 .group-caret.open {
   transform: rotate(0deg);
@@ -557,9 +557,9 @@ svg {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-left: 10px;
-  margin-left: 8px;
-  border-left: 1px solid var(--border);
+  padding-inline-start: 10px;
+  margin-inline-start: 8px;
+  border-inline-start: 1px solid var(--border);
 }
 
 .sidebar-spacer {
@@ -606,7 +606,7 @@ svg {
   font-size: 11px;
   font-weight: 500;
   color: var(--text-3);
-  margin-left: 1px;
+  margin-inline-start: 1px;
 }
 
 .session-meta {
@@ -661,8 +661,8 @@ svg {
 .settings-nav::after {
   content: "";
   position: absolute;
-  left: 0;
-  right: 0;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
   top: -1px;
   height: 1px;
 }
@@ -832,7 +832,7 @@ kbd {
 
 .select-caret {
   position: absolute;
-  right: 10px;
+  inset-inline-end: 10px;
   color: var(--text-3);
   pointer-events: none;
 }
@@ -939,7 +939,7 @@ kbd {
   z-index: 2;
   height: 34px;
   padding: 0 12px;
-  text-align: left;
+  text-align: start;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.3px;
@@ -952,7 +952,7 @@ kbd {
 .task-table thead th.sortable { cursor: pointer; }
 .task-table thead th.sortable:hover { color: var(--text); }
 .task-table thead th.sorted { color: var(--accent-text); }
-.sort-arrow { margin-left: 3px; font-size: 9px; }
+.sort-arrow { margin-inline-start: 3px; font-size: 9px; }
 .task-table thead th.col-actions { padding: 0; }
 .task-table tbody td {
   height: 46px;
@@ -1036,7 +1036,7 @@ kbd {
   background: linear-gradient(90deg, var(--accent-active), var(--accent));
   transition: width 0.3s var(--ease);
 }
-.table-progress-pct { color: var(--text-3); min-width: 30px; text-align: right; }
+.table-progress-pct { color: var(--text-3); min-width: 30px; text-align: end; }
 .c-rate.live { color: var(--accent-text); font-weight: 600; }
 .c-domain { display: flex; align-items: center; gap: 6px; color: var(--text-3); }
 .c-domain svg { flex: none; opacity: 0.7; }
@@ -1097,7 +1097,7 @@ kbd {
 .table-column-menu {
   position: absolute;
   top: 34px;
-  right: 0;
+  inset-inline-end: 0;
   z-index: 20;
   width: 208px;
   padding: 6px;
@@ -1127,7 +1127,7 @@ kbd {
   display: flex; align-items: center; gap: 9px;
   width: 100%; height: 30px; padding: 0 8px;
   border-radius: var(--radius-xs);
-  font-size: 12px; color: var(--text-2); text-align: left;
+  font-size: 12px; color: var(--text-2); text-align: start;
 }
 .tcm-item:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
 .tcm-item:disabled { opacity: 0.6; cursor: default; }
@@ -1139,17 +1139,17 @@ kbd {
   color: #fff;
 }
 .tcm-check.on { background: var(--accent); border-color: var(--accent); }
-.tcm-lock { margin-left: auto; font-size: 9.5px; color: var(--text-3); }
+.tcm-lock { margin-inline-start: auto; font-size: 9.5px; color: var(--text-3); }
 .tcm-clear-filter {
   width: 100%; margin-top: 4px; padding: 7px 8px;
   border-top: 1px solid var(--border);
-  font-size: 11px; color: var(--accent-text); text-align: left;
+  font-size: 11px; color: var(--accent-text); text-align: start;
 }
 .tcm-clear-filter:hover { background: var(--panel-2); }
 
 /* 表头：过滤输入 + 调宽手柄 */
-.task-table thead th { position: sticky; padding-right: 14px; }
-.task-table thead th.align-right { text-align: right; }
+.task-table thead th { position: sticky; padding-inline-end: 14px; }
+.task-table thead th.align-right { text-align: end; }
 .task-table thead th.align-right .th-label { justify-content: flex-end; }
 .th-label { display: inline-flex; align-items: center; gap: 3px; }
 .th-filter {
@@ -1171,7 +1171,7 @@ kbd {
 .task-table thead th { height: auto; padding-top: 6px; padding-bottom: 5px; }
 .col-resizer {
   position: absolute;
-  top: 0; right: 0; bottom: 0;
+  top: 0; inset-inline-end: 0; bottom: 0;
   width: 7px;
   cursor: col-resize;
   z-index: 3;
@@ -1179,7 +1179,7 @@ kbd {
 .col-resizer::after {
   content: "";
   position: absolute;
-  top: 6px; bottom: 6px; right: 2px;
+  top: 6px; bottom: 6px; inset-inline-end: 2px;
   width: 2px;
   border-radius: 1px;
   background: transparent;
@@ -1374,7 +1374,7 @@ kbd {
 .file-tile::after {
   content: "";
   position: absolute;
-  right: -6px;
+  inset-inline-end: -6px;
   top: -12px;
   width: 26px;
   height: 26px;
@@ -1946,19 +1946,19 @@ kbd {
 }
 
 .line-one {
-  left: -6px;
+  inset-inline-start: -6px;
   top: 52px;
   width: 42px;
 }
 
 .line-two {
-  right: -2px;
+  inset-inline-end: -2px;
   top: 88px;
   width: 34px;
 }
 
 .line-three {
-  left: 8px;
+  inset-inline-start: 8px;
   bottom: 30px;
   width: 26px;
 }
@@ -2079,7 +2079,7 @@ kbd {
   width: min(468px, 100vw);
   height: 100%;
   background: var(--bg-elevated);
-  border-left: 1px solid var(--border);
+  border-inline-start: 1px solid var(--border);
   box-shadow: var(--shadow);
   animation: drawer-in 0.28s var(--ease);
   overflow: hidden;
@@ -2180,7 +2180,7 @@ kbd {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-3);
-  margin-left: 1px;
+  margin-inline-start: 1px;
 }
 
 .ring-caption {
@@ -2334,8 +2334,8 @@ kbd {
 
 .chart-empty {
   position: absolute;
-  left: 0;
-  right: 0;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
   bottom: 28px;
   text-align: center;
   font-size: 10px;
@@ -2871,7 +2871,7 @@ kbd {
 
 .paste-button {
   position: absolute;
-  right: 8px;
+  inset-inline-end: 8px;
   bottom: 8px;
   display: inline-flex;
   align-items: center;
@@ -3030,7 +3030,7 @@ kbd {
   width: 32px;
   height: 32px;
   color: var(--text-3);
-  border-left: 1px solid var(--border);
+  border-inline-start: 1px solid var(--border);
   flex: none;
 }
 
@@ -3228,7 +3228,7 @@ kbd {
   width: 100%;
   padding: 8px 9px;
   border-radius: var(--radius-sm);
-  text-align: left;
+  text-align: start;
   transition: background 0.12s ease;
 }
 
@@ -3346,7 +3346,7 @@ kbd {
 }
 
 .command-theme-hint {
-  margin-left: auto;
+  margin-inline-start: auto;
   color: var(--accent-text);
 }
 
@@ -3659,7 +3659,7 @@ kbd {
 
 .range-value {
   width: 22px;
-  text-align: right;
+  text-align: end;
   font-size: 12px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -3783,7 +3783,7 @@ kbd {
 .switch-thumb {
   position: absolute;
   top: 3px;
-  left: 3px;
+  inset-inline-start: 3px;
   width: 13px;
   height: 13px;
   border-radius: 50%;
@@ -3850,7 +3850,7 @@ kbd {
 
 .toast-stack {
   position: fixed;
-  right: 16px;
+  inset-inline-end: 16px;
   bottom: calc(var(--statusbar-h) + 14px);
   z-index: 100;
   display: flex;
@@ -3916,7 +3916,7 @@ kbd {
 
 .clipboard-offer {
   position: fixed;
-  right: 16px;
+  inset-inline-end: 16px;
   bottom: calc(var(--statusbar-h) + 14px);
   z-index: 90;
   display: flex;
@@ -4296,7 +4296,7 @@ kbd {
 
   .clipboard-offer {
     width: calc(100vw - 24px);
-    right: 12px;
+    inset-inline-end: 12px;
   }
 
   .status-right {
@@ -4526,7 +4526,7 @@ kbd {
 
 .update-notes {
   margin: 8px 0 0;
-  padding-left: 18px;
+  padding-inline-start: 18px;
   color: var(--text-2);
   font-size: 12.5px;
   line-height: 1.8;
@@ -4651,7 +4651,7 @@ kbd {
 }
 
 .history-count {
-  margin-left: 2px;
+  margin-inline-start: 2px;
   padding: 0 6px;
   border-radius: var(--radius-pill);
   background: var(--panel-3);
@@ -4660,14 +4660,14 @@ kbd {
 }
 
 .history-toggle svg:last-child {
-  margin-left: auto;
+  margin-inline-start: auto;
 }
 
 .update-history {
   margin: 10px 0 0;
   padding: 0 0 0 14px;
   list-style: none;
-  border-left: 1px solid var(--border);
+  border-inline-start: 1px solid var(--border);
 }
 
 .update-history > li {
@@ -4680,7 +4680,7 @@ kbd {
 .update-history > li::before {
   content: "";
   position: absolute;
-  left: -4px;
+  inset-inline-start: -4px;
   top: 5px;
   width: 7px;
   height: 7px;
@@ -4711,7 +4711,7 @@ kbd {
 
 .update-history ul {
   margin: 0;
-  padding-left: 16px;
+  padding-inline-start: 16px;
   line-height: 1.75;
 }
 
@@ -5070,7 +5070,7 @@ kbd {
 .queue-task-row {
   display: flex; align-items: center; gap: 8px;
   width: 100%; min-height: 30px; padding: 0 10px;
-  font-size: 11.5px; color: var(--text-2); text-align: left;
+  font-size: 11.5px; color: var(--text-2); text-align: start;
   border-bottom: 1px solid var(--border);
 }
 .queue-task-row:last-child { border-bottom: 0; }
@@ -5098,3 +5098,38 @@ kbd {
   font-size: 12px;
 }
 .queue-new:hover { color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft); }
+
+/* ============================================================
+   RTL / 屏幕阅读器深度适配（MDM 路线 A）
+   ============================================================ */
+/* 键盘用户第一个 Tab 停靠点：跳过标题栏与侧栏直达主内容 */
+.skip-link {
+  position: fixed;
+  top: 6px;
+  inset-inline-start: 6px;
+  z-index: 9999;
+  padding: 8px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-180%);
+  transition: transform 0.16s ease;
+}
+.skip-link:focus {
+  transform: translateY(0);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 开关滑块：inset-inline-start 已把起点镜像到右侧，滑块滑动方向也要反过来 */
+[dir="rtl"] .switch.on .switch-thumb { transform: translateX(-17px); }
+
+/* 方向性图标镜像；上下箭头（ChevronDown）无需处理 */
+[dir="rtl"] .lucide-chevron-right,
+[dir="rtl"] .lucide-chevron-left,
+[dir="rtl"] .lucide-arrow-right,
+[dir="rtl"] .lucide-arrow-left { transform: scaleX(-1); }

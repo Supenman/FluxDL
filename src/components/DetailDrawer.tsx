@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 import {
   X,
   Pause,
@@ -55,6 +56,8 @@ export function DetailDrawer() {
 
   const task = tasks.find((t) => t.id === selectedId) ?? null;
   const [tab, setTab] = useState<Tab>("overview");
+  const drawerRef = useRef<HTMLElement>(null);
+  useFocusTrap(Boolean(task), drawerRef);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteFile, setDeleteFile] = useState(false);
 
@@ -160,8 +163,11 @@ export function DetailDrawer() {
   return (
     <div className="drawer-backdrop" onClick={() => select(null)}>
       <aside
+        ref={drawerRef}
         className="detail-drawer"
         onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
         aria-label="任务详情"
       >
         <header className="drawer-head">

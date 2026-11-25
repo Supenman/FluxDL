@@ -295,12 +295,14 @@ fn emit_tool_progress(app: &AppHandle, tool: &str, phase: &str, downloaded: u64,
 }
 
 #[cfg(windows)]
-fn install_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
+fn install_client(proxy: Option<&str>, use_system_proxy: bool) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .user_agent("FluxDL/0.1.0")
         .connect_timeout(std::time::Duration::from_secs(20));
     if let Some(proxy) = proxy.filter(|p| !p.trim().is_empty()) {
         builder = builder.proxy(reqwest::Proxy::all(proxy.trim()).map_err(|e| e.to_string())?);
+    } else if !use_system_proxy {
+        builder = builder.no_proxy();
     }
     builder.build().map_err(|e| e.to_string())
 }
@@ -442,7 +444,11 @@ async fn install_tools(
             .await
             .map_err(|e| format!("创建工具目录失败：{e}"))?;
 
-        let client = install_client(state.engine.options().proxy.as_deref())?;
+        let install_opts = state.engine.options();
+        let client = install_client(
+            install_opts.proxy.as_deref(),
+            install_opts.use_system_proxy,
+        )?;
 
         let yt_dlp = dir.join("yt-dlp.exe");
         download_tool(&app, &client, "yt-dlp", YT_DLP_URL, &yt_dlp).await?;

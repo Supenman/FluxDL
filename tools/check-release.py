@@ -33,8 +33,8 @@ def read_checksums(path: Path) -> dict[str, str]:
 
 
 def check_release(directory: Path, tag: str) -> None:
-    if not re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", tag):
-        raise ValueError("正式发布标签应为 vMAJOR.MINOR.PATCH")
+    if not re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?", tag):
+        raise ValueError("发布标签应为 vMAJOR.MINOR.PATCH，可带预发布后缀（如 -beta.2）")
     version = tag[1:]
     manifest_path = directory / "update-manifest.json"
     manifest = read_json(manifest_path)

@@ -530,7 +530,7 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
   const tauriConf = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.conf.json"), "utf8"));
-  assert.match(pkg.version, /^\d+\.\d+\.\d+$/, "应用版本格式合法");
+  assert.match(pkg.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, "应用版本格式合法");
   assert.equal(tauriConf.version, pkg.version, "tauri.conf.json 与 package.json 版本必须一致");
   assert.equal(manifest.version, "2.2.2", "扩展版本仍为 2.2.2（本次未动扩展）");
   assert.equal(manifest.minimum_chrome_version, "102");

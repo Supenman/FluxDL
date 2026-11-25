@@ -67,6 +67,8 @@ export interface EngineOptions {
   connections: number;
   globalSpeedLimit: number | null;
   proxy: string | null;
+  /** 跟随系统代理（Clash/V2Ray 等）。代理字段留空时生效；默认开启。 */
+  useSystemProxy?: boolean;
   userAgent: string;
   ytDlpPath: string;
   ffmpegPath: string | null;

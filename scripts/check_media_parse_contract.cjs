@@ -215,7 +215,7 @@ section("6) 版本纪律：各版本文件一致（不绑死具体号）");
 const pkg = JSON.parse(read("package.json"));
 const manifest = JSON.parse(read("browser-extension/manifest.json"));
 const tauriConf = JSON.parse(read("src-tauri/tauri.conf.json"));
-assert.match(pkg.version, /^\d+\.\d+\.\d+$/, "应用版本格式合法");
+assert.match(pkg.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, "应用版本格式合法");
 assert.equal(tauriConf.version, pkg.version, "tauri.conf.json 与 package.json 版本必须一致");
 assert.equal(manifest.version, "2.2.2", "扩展版本仍为 2.2.2（本次未动扩展）");
 pass(`版本号一致（应用 ${pkg.version} / 扩展 2.2.2）`);

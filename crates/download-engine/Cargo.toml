@@ -1,6 +1,6 @@
 [package]
 name = "fluxdl-engine"
-version = "0.4.3-beta.1"
+version = "0.4.3-beta.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "FluxDL download engine: multi-connection HTTP, resume, rate limiting, yt-dlp integration"
@@ -8,7 +8,7 @@ description = "FluxDL download engine: multi-connection HTTP, resume, rate limit
 [dependencies]
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs", "sync", "time", "process", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "deflate", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "deflate", "json", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }

@@ -30,6 +30,7 @@ export const defaultEngineOptions: EngineOptions = {
   connections: 0, // 自动：引擎按文件体积决定连接数
   globalSpeedLimit: null,
   proxy: null,
+  useSystemProxy: true,
   userAgent: "FluxDL/0.1 (Windows)",
   ytDlpPath: "yt-dlp",
   ffmpegPath: null,

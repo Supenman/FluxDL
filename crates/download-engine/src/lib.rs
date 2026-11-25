@@ -4,6 +4,7 @@ mod http;
 mod limit;
 mod manager;
 mod media;
+pub mod planner;
 mod store;
 mod types;
 pub mod update;

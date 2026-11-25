@@ -112,6 +112,12 @@ pub struct NewTaskOptions {
     pub aria2: bool,
 }
 
+/// serde 默认值 helper：struct 级 `#[serde(default)]` 会用字段类型的 Default
+/// （bool 即 false），因此「默认开启」的开关必须显式指定，旧配置缺字段时才为 true。
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EngineOptions {
@@ -122,6 +128,10 @@ pub struct EngineOptions {
     pub connections: u8,
     pub global_speed_limit: Option<u64>,
     pub proxy: Option<String>,
+    /// 自动读取系统代理（Windows 注册表 / 环境变量 + Clash、V2Ray 等）。
+    /// 仅当 `proxy` 为空时生效；显式 proxy 优先级最高。默认开启，关掉即强制直连。
+    #[serde(default = "default_true")]
+    pub use_system_proxy: bool,
     pub user_agent: String,
     pub yt_dlp_path: String,
     pub ffmpeg_path: Option<String>,
@@ -150,6 +160,7 @@ impl Default for EngineOptions {
             connections: 0, // 自动档：由 http.rs 按文件体积收敛；1-32 为用户显式值
             global_speed_limit: None,
             proxy: None,
+            use_system_proxy: true,
             user_agent: "FluxDL/0.1 (Windows)".into(),
             yt_dlp_path: "yt-dlp".into(),
             ffmpeg_path: None,

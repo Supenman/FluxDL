@@ -33,16 +33,47 @@ const MANIFEST_URLS: &[&str] = &[
     "https://ghfast.top/https://raw.githubusercontent.com/Supenman/FluxDL/main/update-manifest.json",
 ];
 
-fn http_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
+fn http_client(
+    proxy: Option<&str>,
+    use_system_proxy: bool,
+    total_timeout_secs: u64,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(30));
+        .timeout(Duration::from_secs(total_timeout_secs));
     if let Some(proxy) = proxy.filter(|p| !p.trim().is_empty()) {
-        builder = builder
-            .proxy(reqwest::Proxy::all(proxy.trim()).map_err(|e| e.to_string())?)
+        builder = builder.proxy(reqwest::Proxy::all(proxy.trim()).map_err(|e| e.to_string())?);
+    } else if !use_system_proxy {
+        builder = builder.no_proxy();
     }
+    // proxy 为空且 use_system_proxy=true 时不设任何代理：reqwest 的 system-proxy
+    // feature 自动读 Windows 系统代理，修复「开了 Clash 但更新器直连超时」。
     builder.build().map_err(|e| e.to_string())
+}
+
+/// GitHub Release 直链在国内常超时。给出一组镜像候选：把原始 URL 交回网络层顺序尝试，
+/// 任一成功即停。镜像只做「GitHub releases/download」路径的前缀替换，不改文件名/版本，
+/// 因此每个候选下载的内容完全相同，最终仍由 SHA-256 校验兜底。
+fn asset_mirror_urls(primary: &str) -> Vec<String> {
+    const PREFIXES: &[&str] = &[
+        "", // 原始 GitHub 直链优先
+        "https://ghfast.top/",
+        "https://gh-proxy.com/",
+        "https://ghproxy.net/",
+    ];
+    let mut out = Vec::with_capacity(PREFIXES.len());
+    for prefix in PREFIXES {
+        let url = if prefix.is_empty() {
+            primary.to_string()
+        } else {
+            format!("{prefix}{primary}")
+        };
+        if !out.contains(&url) {
+            out.push(url);
+        }
+    }
+    out
 }
 
 fn cache_path(app: &AppHandle) -> PathBuf {
@@ -86,6 +117,7 @@ fn write_cache(app: &AppHandle, cache: &CachedManifest) {
 async fn load_manifest(
     app: &AppHandle,
     proxy: Option<&str>,
+    use_system_proxy: bool,
     force: bool,
 ) -> Result<(UpdateManifest, String), String> {
     let cache = read_cache(app);
@@ -96,7 +128,7 @@ async fn load_manifest(
         }
     }
 
-    let client = http_client(proxy)?;
+    let client = http_client(proxy, use_system_proxy, 30)?;
     let mut last_error = String::from("所有更新源都不可达");
     for url in MANIFEST_URLS {
         match client.get(*url).send().await {
@@ -208,8 +240,14 @@ pub async fn check_app_update(
     force: Option<bool>,
 ) -> Result<UpdateCheck, String> {
     let current = app.package_info().version.to_string();
-    let proxy = state.engine.options().proxy;
-    let result = load_manifest(&app, proxy.as_deref(), force.unwrap_or(false)).await;
+    let opts = state.engine.options();
+    let result = load_manifest(
+        &app,
+        opts.proxy.as_deref(),
+        opts.use_system_proxy,
+        force.unwrap_or(false),
+    )
+    .await;
 
     match result {
         Ok((manifest, source)) => {
@@ -252,8 +290,8 @@ pub async fn app_update_history(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<HistoryItem>, String> {
-    let proxy = state.engine.options().proxy;
-    match load_manifest(&app, proxy.as_deref(), false).await {
+    let opts = state.engine.options();
+    match load_manifest(&app, opts.proxy.as_deref(), opts.use_system_proxy, false).await {
         Ok((manifest, _)) => Ok(history_of(&manifest)),
         Err(_) => Ok(history_of(&read_cache(&app).manifest.unwrap_or_default())),
     }
@@ -286,8 +324,11 @@ pub async fn download_app_update(
     use futures_util::StreamExt;
 
     let current = app.package_info().version.to_string();
-    let proxy = state.engine.options().proxy;
-    let (manifest, _) = load_manifest(&app, proxy.as_deref(), false).await?;
+    let opts = state.engine.options();
+    let proxy = opts.proxy.clone();
+    let use_system_proxy = opts.use_system_proxy;
+    drop(opts);
+    let (manifest, _) = load_manifest(&app, proxy.as_deref(), use_system_proxy, false).await?;
     if !manifest.is_app_newer(&current) {
         return Err("当前已是最新版本".into());
     }
@@ -301,54 +342,93 @@ pub async fn download_app_update(
     let staged = slot.join("fluxdl.exe.download");
     let _ = std::fs::remove_file(&staged);
 
-    let client = http_client(proxy.as_deref())?;
-    let resp = client
-        .get(&asset.url)
-        .send()
-        .await
-        .map_err(|e| format!("下载更新失败：{e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("下载更新失败：HTTP {}", resp.status().as_u16()));
-    }
-    let total = resp.content_length().or(asset.size).unwrap_or(0);
-    let mut file = tokio::fs::File::create(&staged)
-        .await
-        .map_err(|e| format!("创建暂存文件失败：{e}"))?;
+    // exe 约 10MB，慢网/镜像下 30s 总超时容易误杀；这里放宽到 5 分钟。
+    let client = http_client(proxy.as_deref(), use_system_proxy, 300)?;
+    let candidates = asset_mirror_urls(&asset.url);
+    let mut last_error = String::from("所有下载源都不可用");
     let mut downloaded = 0u64;
-    let mut last_emit = std::time::Instant::now();
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("下载中断：{e}"))?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-            .await
-            .map_err(|e| format!("写入暂存文件失败：{e}"))?;
-        downloaded += chunk.len() as u64;
-        if last_emit.elapsed().as_millis() >= 150 {
-            last_emit = std::time::Instant::now();
+
+    // GitHub 直链与镜像逐个尝试：任一源「下载成功 + SHA-256 校验通过」才算完成。
+    // 每个候选都从零重建暂存文件，避免上一个源的半截字节污染下一个。
+    for (idx, url) in candidates.iter().enumerate() {
+        if idx > 0 {
             let _ = app.emit(
                 "update:progress",
                 UpdateProgress {
-                    phase: "download".into(),
-                    downloaded,
-                    total,
+                    phase: "retry".into(),
+                    downloaded: 0,
+                    total: asset.size.unwrap_or(0),
                 },
             );
         }
-    }
-    drop(file);
-    let _ = app.emit(
-        "update:progress",
-        UpdateProgress {
-            phase: "verify".into(),
-            downloaded,
-            total: total.max(downloaded),
-        },
-    );
-
-    // 校验不过立刻删掉暂存文件：绝不能留下一个「八成对」的 exe 等着被换上去。
-    if let Err(err) = update::verify_file(&staged, &asset) {
         let _ = std::fs::remove_file(&staged);
-        return Err(err);
+
+        let attempt = async {
+            let resp = client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| format!("连接失败：{e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("HTTP {}", resp.status().as_u16()));
+            }
+            let total = resp.content_length().or(asset.size).unwrap_or(0);
+            let mut file = tokio::fs::File::create(&staged)
+                .await
+                .map_err(|e| format!("创建暂存文件失败：{e}"))?;
+            let mut got = 0u64;
+            let mut last_emit = std::time::Instant::now();
+            let mut stream = resp.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| format!("下载中断：{e}"))?;
+                tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                    .await
+                    .map_err(|e| format!("写入暂存文件失败：{e}"))?;
+                got += chunk.len() as u64;
+                if last_emit.elapsed().as_millis() >= 150 {
+                    last_emit = std::time::Instant::now();
+                    let _ = app.emit(
+                        "update:progress",
+                        UpdateProgress {
+                            phase: "download".into(),
+                            downloaded: got,
+                            total,
+                        },
+                    );
+                }
+            }
+            drop(file);
+            Ok::<u64, String>(got)
+        }
+        .await;
+
+        match attempt {
+            Ok(got) => {
+                downloaded = got;
+                let _ = app.emit(
+                    "update:progress",
+                    UpdateProgress {
+                        phase: "verify".into(),
+                        downloaded: got,
+                        total: got.max(asset.size.unwrap_or(0)),
+                    },
+                );
+                match update::verify_file(&staged, &asset) {
+                    Ok(()) => {
+                        let _ = idx;
+                        break; // 校验通过，采用该源
+                    }
+                    Err(err) => last_error = format!("{url} 校验失败：{err}"),
+                }
+            }
+            Err(err) => last_error = format!("{url} {err}"),
+        }
+    }
+
+    // 循环结束仍未通过校验：此时 staged 里是最后一个源的失败产物，必须删掉。
+    if update::verify_file(&staged, &asset).is_err() {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("下载更新失败：{last_error}"));
     }
 
     // 校验通过才登记成版本，并把 pending 指向它；真正的替换发生在用户点「更新」时。

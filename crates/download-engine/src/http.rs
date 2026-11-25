@@ -1,5 +1,6 @@
 use crate::limit::RateLimiter;
 use crate::manager::{Engine, EngineError, TaskEntry};
+use crate::planner::{self, SegmentSnapshot};
 use crate::types::*;
 use crate::util;
 use futures_util::StreamExt;
@@ -43,7 +44,13 @@ pub(crate) fn build_client(
         .connect_timeout(Duration::from_secs(20))
         .pool_max_idle_per_host(24);
     if let Some(proxy) = proxy.filter(|p| !p.trim().is_empty()) {
+        // 显式代理优先级最高；reqwest 在显式 .proxy() 后不再用系统代理。
         builder = builder.proxy(reqwest::Proxy::all(proxy.trim())?);
+    } else if !options.use_system_proxy {
+        // 未填显式代理且用户关闭了「跟随系统代理」→ 强制直连。
+        // 否则什么都不设：reqwest 的 system-proxy feature 会自动读注册表/环境变量
+        // （Clash、V2Ray 开启系统代理后写的位置），这正是开代理却下不动的根因修复。
+        builder = builder.no_proxy();
     }
     Ok(builder.build()?)
 }
@@ -390,12 +397,17 @@ pub async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tick.tick().await; // 消费首拍，从现在开始计时
 
+    // 动态分段触发来源：
+    // - 周期 tick：主动发现拖尾巴的大段并切分（对标 MDM 的持续再平衡）；
+    // - 连接完成：立即补一条连接去啃剩余最大的段（空闲连接接管），不必等下一个 tick。
+    // 两者都只在「无主动限速」时启用——限速下低吞吐是人为的。
     while !set.is_empty() {
         tokio::select! {
             joined = set.join_next() => {
+                let mut completed = false;
                 match joined {
-                    Some(Ok(Ok(Some(d)))) => digests.push(d),
-                    Some(Ok(Ok(None))) => {}
+                    Some(Ok(Ok(Some(d)))) => { digests.push(d); completed = true; }
+                    Some(Ok(Ok(None))) => { completed = true; }
                     Some(Ok(Err(err))) => {
                         first_error = Some(err);
                         set.abort_all();
@@ -408,57 +420,36 @@ pub async fn run(
                     }
                     None => {}
                 }
+                // 空闲接管：一条连接刚完成，立刻看是否还有值得分流的大段。
+                if completed && rebalance_enabled {
+                    if let Some((new_seg, target)) =
+                        apply_dynamic_split(engine, entry, splits_used)
+                    {
+                        splits_used += 1;
+                        engine.emit_log(&entry.id, format!(
+                            "空闲连接接管：从分段 #{target} 分流一条连接协助下载（第 {splits_used} 次）"
+                        ));
+                        spawn_segment(
+                            &mut set, &new_seg, engine, entry, &client, &file, &token,
+                            probe.etag.as_deref(),
+                        );
+                    }
+                }
             }
             _ = tick.tick(), if rebalance_enabled => {
-                // 采样各段快照，判定是否有明显落后的段。
-                let laggard = {
-                    let segs = entry.segments.lock();
-                    let downloaded: Vec<u64> = segs.iter().map(|s| s.downloaded).collect();
-                    let lengths: Vec<u64> = segs.iter().map(|s| s.length()).collect();
-                    let done: Vec<bool> = segs.iter().map(|s| s.done).collect();
-                    util::rebalance_laggard(&downloaded, &lengths, &done, splits_used)
-                };
-                let Some(idx) = laggard else { continue };
-                // 收缩慢段 end 到「已下载位置 + 剩余的一半」，把后半段交给新连接。
-                let split_seg = {
-                    let mut segs = entry.segments.lock();
-                    let seg = &mut segs[idx];
-                    let start = seg.start;
-                    let pos = start.saturating_add(seg.downloaded);
-                    let old_end = seg.end;
-                    if old_end <= pos || seg.done {
-                        continue;
-                    }
-                    let mid = pos.saturating_add((old_end - pos) / 2);
-                    if mid >= old_end {
-                        continue;
-                    }
-                    seg.end = mid; // 原段只负责到 mid
-                    let new_index = segs.len();
-                    let new_seg = SegmentView {
-                        index: new_index,
-                        start: mid.saturating_add(1),
-                        end: old_end,
-                        downloaded: 0,
-                        done: false,
-                    };
-                    segs.push(new_seg.clone());
+                // 周期再平衡：挑剩余最大的段对半拆，切点 4096 对齐。
+                if let Some((new_seg, target)) =
+                    apply_dynamic_split(engine, entry, splits_used)
+                {
                     splits_used += 1;
-                    new_seg
-                };
-                engine.emit_log(&entry.id, format!(
-                    "检测到落后分段 #{idx}，已分流一条连接协助下载（第 {splits_used} 次）"
-                ));
-                spawn_segment(
-                    &mut set,
-                    &split_seg,
-                    engine,
-                    entry,
-                    &client,
-                    &file,
-                    &token,
-                    probe.etag.as_deref(),
-                );
+                    engine.emit_log(&entry.id, format!(
+                        "检测到分段 #{target} 拖尾，已分流一条连接协助下载（第 {splits_used} 次）"
+                    ));
+                    spawn_segment(
+                        &mut set, &new_seg, engine, entry, &client, &file, &token,
+                        probe.etag.as_deref(),
+                    );
+                }
             }
         }
     }
@@ -664,6 +655,55 @@ fn mark_segment(entry: &TaskEntry, index: usize, downloaded: u64) {
         seg.downloaded = downloaded.min(len);
         seg.done = downloaded >= len;
     }
+}
+
+/// 动态分段：读分段快照 → 交规划器决策 → 原子提交切分。
+///
+/// 返回切出的新段（调用方负责为它 spawn 一条连接），或 None（无需切分）。
+/// 收缩原段 end 与追加新段在同一把锁内完成（claim/commit），两条连接写绝对偏移的
+/// 不同区间：原段 [start, cut]、新段 [cut+1, old_end]，摘要各自计算，回读按位置对齐。
+fn apply_dynamic_split(
+    engine: &Engine,
+    entry: &TaskEntry,
+    splits_used: usize,
+) -> Option<(SegmentView, usize)> {
+    let plan = {
+        let segs = entry.segments.lock();
+        let snapshots: Vec<SegmentSnapshot> = segs
+            .iter()
+            .map(|s| SegmentSnapshot {
+                index: s.index,
+                start: s.start,
+                end: s.end,
+                downloaded: s.downloaded,
+                done: s.done,
+            })
+            .collect();
+        planner::pick_split(&snapshots, splits_used)
+    }?;
+
+    let new_seg = {
+        let mut segs = entry.segments.lock();
+        let target = plan.target;
+        let seg = segs.get_mut(target)?;
+        // 双重校验：规划后到提交前，段可能已被另一条切分路径改动。
+        let pos = seg.start.saturating_add(seg.downloaded);
+        if seg.done || plan.cut < pos || plan.cut >= seg.end {
+            return None;
+        }
+        seg.end = plan.cut;
+        let new_seg = SegmentView {
+            index: plan.new_index,
+            start: plan.new_start,
+            end: plan.new_end,
+            downloaded: 0,
+            done: false,
+        };
+        segs.push(new_seg.clone());
+        new_seg
+    };
+    let _ = engine; // 保留参数位，便于将来在规划里引入连接数等运行时信息。
+    Some((new_seg, plan.target))
 }
 
 async fn sequential_stream(

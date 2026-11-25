@@ -1,6 +1,6 @@
 [package]
 name = "fluxdl"
-version = "0.4.3-beta.1"
+version = "0.4.3-beta.2"
 description = "FluxDL · 迅流下载器"
 authors = ["FluxDL"]
 edition = "2021"
@@ -27,7 +27,7 @@ rfd = "0.15"
 arboard = "3.4"
 opener = "0.7"
 chrono = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "system-proxy"] }
 futures-util = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 

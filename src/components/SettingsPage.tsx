@@ -448,10 +448,21 @@ export function SettingsPage() {
             <input
               value={settings.proxy ?? ""}
               onChange={(event) => update({ proxy: event.target.value.trim() || null })}
-              placeholder="留空则直连"
+              placeholder="留空则跟随系统代理"
               spellCheck={false}
             />
           </div>
+        </div>
+
+        <div className="setting-row inline">
+          <div className="setting-copy">
+            <label>跟随系统代理</label>
+            <p>上面留空时自动使用 Windows 系统代理（Clash / V2Ray 开启的系统代理），关闭则强制直连</p>
+          </div>
+          <Toggle
+            checked={settings.useSystemProxy ?? true}
+            onChange={(next) => update({ useSystemProxy: next })}
+          />
         </div>
       </section>
 

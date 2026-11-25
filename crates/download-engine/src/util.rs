@@ -481,6 +481,10 @@ pub const REBALANCE_TICK_SECS: u64 = 3;
 /// `done`/`downloaded`/`length` 是同一组中各分段的快照；返回需要分流的段下标。
 /// 判据：自身未完成、剩余足够大、且比组内「已下载最多」的段落后超过阈值。
 /// 纯函数、无 IO，可确定性单测。
+///
+/// 注：运行时的动态分段已由 `planner::pick_split`（剩余优先 + 4096 对齐）接管。
+/// 本函数保留作为「按落后判定」的历史判据与其单测，不再被主循环调用。
+#[allow(dead_code)]
 pub fn rebalance_laggard(
     downloaded: &[u64],
     lengths: &[u64],

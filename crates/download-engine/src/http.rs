@@ -23,6 +23,9 @@ struct Probe {
     filename: Option<String>,
     mime: Option<String>,
     etag: Option<String>,
+    /// 阶段一 #4：服务器声明的 sha-256 摘要（Digest/Content-Digest/Repr-Digest）。
+    /// 仅当服务器明确给出且可解析时有值；HTTP 普遍没有，故多数情况为 None。
+    integrity: Option<crate::verify::IntegrityExpectation>,
 }
 
 fn strong_etag(headers: &reqwest::header::HeaderMap) -> Option<&str> {
@@ -160,6 +163,9 @@ async fn probe(
             ranges,
             filename: util::filename_from_headers(&headers),
             etag: strong_etag(&headers).map(str::to_owned),
+            // 阶段一 #4：仅在服务器明确给出可解析的 sha-256 时期望校验；
+            // 解析失败一律当 None，绝不臆造校验导致误判。
+            integrity: crate::verify::expectation_from_headers(&headers),
             mime: headers
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
@@ -271,6 +277,11 @@ pub async fn run(
     if resumable && (segments.is_empty() || !effective_resume) {
         // A1 自适应：conns 是用户上限，按体积收敛后规划分段；续传沿用历史分段数不改。
         let effective = util::effective_connections(conns, total, probe.ranges);
+        // 阶段一 #5：再受"该主机历史承压能力"约束。无失败记录时原样返回，行为不变；
+        // 只有该主机出现过 429/5xx 才会收敛，避免高并发被服务器封禁。
+        let effective = engine
+            .suggest_connections(&entry.url, effective as usize)
+            .clamp(1, u8::MAX as usize) as u8;
         segments = util::plan_segments(total, effective)
             .into_iter()
             .enumerate()
@@ -352,6 +363,8 @@ pub async fn run(
             total,
         )
         .await?;
+        // 阶段一 #4：先做服务器真实性校验（若有 Repr-Digest），再做写盘回读校验。
+        ensure_server_integrity(&entry, &file, &part_path, probe.integrity.as_ref(), total).await?;
         // 不可续传的单流同样做写后回读校验，校验通过才落成最终文件。
         finalize_verified(&entry, &file, &part_path, &save_path, &[digest]).await?;
         let mut view = entry.view.lock().await;
@@ -468,8 +481,10 @@ pub async fn run(
         )));
     }
 
-    // 所有分段写盘完毕后、落成最终文件之前，逐段回读重算 SHA-256 比对。
-    // 任何不一致都拒绝产出最终文件（见 finalize_verified）。
+    // 所有分段写盘完毕后、落成最终文件之前：
+    // 1) 阶段一 #4 服务器真实性校验（若有 Repr-Digest）；
+    // 2) 逐段回读重算 SHA-256 比对（任何不一致都拒绝产出最终文件）。
+    ensure_server_integrity(&entry, &file, &part_path, probe.integrity.as_ref(), total).await?;
     finalize_verified(&entry, &file, &part_path, &save_path, &digests).await?;
     let mut view = entry.view.lock().await;
     view.downloaded_bytes = total;
@@ -550,6 +565,12 @@ async fn segment_loop(
                 }
                 return Err(EngineError::message("服务器忽略 Range 请求，无法多线程下载"));
             }
+            // 阶段一 #5：服务器明确的限流/过载信号 → 收敛该主机连接数。
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                engine.note_host_failure(&entry.url, crate::host_limit::FailureKind::TooManyRequests);
+            } else if status.is_server_error() {
+                engine.note_host_failure(&entry.url, crate::host_limit::FailureKind::ServerError);
+            }
             let err = EngineError::message(format!("分段请求失败：HTTP {}", status.as_u16()));
             if status.is_client_error() {
                 return Err(err);
@@ -620,6 +641,8 @@ async fn segment_loop(
 
         if pos > end {
             mark_segment(&entry, index, pos - start);
+            // 阶段一 #5：段成功完成 → 主机上限缓慢回升（加性增，封顶硬上限）。
+            engine.note_host_success(&entry.url);
             return Ok(Some(sink.finish(digest_start, pos)));
         }
         if swapped {
@@ -809,6 +832,43 @@ fn restart_stream(
     entry.downloaded.store(0, Ordering::Relaxed);
     file.set_len(0)?;
     *sink = util::DigestSink::new();
+    Ok(())
+}
+
+/// 阶段一 #4：服务器真实性校验。
+///
+/// 若服务器在响应里声明了 `Repr-Digest`（sha-256，与 Range 无关的整资源摘要），
+/// 下载完成后对整文件算 sha-256 比对。用 `verify::classify` 做判定：
+/// - 无摘要 / 摘要算法不符 → 直接放行（HTTP 普遍没有，不改变现状）；
+/// - 摘要相符 → 放行，交给后续写盘回读校验；
+/// - 摘要不符 → 远端内容真实性失败，阻止成品、清零续传状态、要求重下。
+async fn ensure_server_integrity(
+    entry: &TaskEntry,
+    file: &std::fs::File,
+    part: &Path,
+    expected: Option<&crate::verify::IntegrityExpectation>,
+    total: u64,
+) -> Result<(), EngineError> {
+    let Some(exp) = expected else { return Ok(()) };
+    if exp.algorithm != "sha-256" || exp.digest.len() != 32 || total == 0 {
+        return Ok(());
+    }
+    let actual = util::hash_region(file, 0, total)?;
+    let verdict = crate::verify::classify(
+        Some(exp),
+        &actual,
+        false, // ETag 变化在 run() 早段已通过 effective_resume=false 处理为整份重下
+        false, // 长度不符同上
+        std::collections::BTreeSet::new(),
+    );
+    if verdict == crate::verify::IntegrityVerdict::RemoteChanged {
+        tokio::fs::remove_file(part).await.ok();
+        entry.downloaded.store(0, Ordering::Relaxed);
+        entry.segments.lock().clear();
+        return Err(EngineError::message(
+            "文件内容与服务器声明的校验值不符（远端可能已变化），已阻止保存，请重试该任务"
+        ));
+    }
     Ok(())
 }
 

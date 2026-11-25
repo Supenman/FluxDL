@@ -22,6 +22,8 @@ dirs = "5"
 # 更新包完整性校验：下载的 exe / 工具包必须与发布清单里的 sha256 一致才允许替换，
 # 否则回滚。纯 Rust 实现，无系统依赖。
 sha2 = "0.10"
+# 解析 HTTP Digest/Content-Digest 头里的 base64 摘要（reqwest 已传递依赖，无新增下载）。
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

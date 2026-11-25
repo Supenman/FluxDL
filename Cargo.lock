@@ -313,6 +313,7 @@ dependencies = [
 name = "fluxdl-engine"
 version = "0.4.3-beta.2"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "futures-util",

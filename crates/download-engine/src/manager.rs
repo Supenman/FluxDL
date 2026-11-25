@@ -81,6 +81,9 @@ pub struct Engine {
     recovered_tasks: bool,
     events: mpsc::UnboundedSender<EngineEvent>,
     global_limiter: Arc<RateLimiter>,
+    /// 阶段一 #5：每主机连接数学习表（AIMD）。仅内存态，重启后重新学习，
+    /// 用 parking_lot 同步锁，读/反馈都不跨 await。
+    host_limits: Mutex<crate::host_limit::HostLimits>,
     active: Mutex<usize>,
     notify: Notify,
     ticks: AtomicU64,
@@ -149,6 +152,7 @@ impl Engine {
             recovered_tasks,
             events,
             global_limiter,
+            host_limits: Mutex::new(crate::host_limit::HostLimits::new()),
             active: Mutex::new(0),
             notify: Notify::new(),
             ticks: AtomicU64::new(0),
@@ -191,6 +195,37 @@ impl Engine {
 
     pub fn options(&self) -> EngineOptions {
         self.options.read().clone()
+    }
+
+    /// 阶段一 #5：按主机学习到的上限，给出本次建议连接数。
+    /// `requested` 是体积自适应后的目标连接数；无失败记录时原样返回。
+    pub(crate) fn suggest_connections(&self, url: &str, requested: usize) -> usize {
+        self.host_limits.lock().suggest(url, requested)
+    }
+
+    /// 阶段一 #5：反馈主机压力，返回降级后的上限（便于写日志）。
+    pub(crate) fn note_host_failure(
+        &self,
+        url: &str,
+        kind: crate::host_limit::FailureKind,
+    ) -> usize {
+        let ceiling = self.host_limits.lock().on_failure(url, kind);
+        if ceiling < crate::host_limit::DEFAULT_CEILING {
+            let key = crate::host_limit::HostLimits::host_key(url);
+            let _ = self.events.send(EngineEvent::Log(LogLine {
+                task_id: String::new(),
+                message: format!(
+                    "主机 {key} 连接受限，并发上限收敛到 {ceiling}（避免被服务器封禁）"
+                ),
+                at: chrono::Utc::now().timestamp_millis(),
+            }));
+        }
+        ceiling
+    }
+
+    /// 阶段一 #5：反馈一次成功传输，缓慢回升主机上限。
+    pub(crate) fn note_host_success(&self, url: &str) {
+        self.host_limits.lock().on_success(url);
     }
 
     /// 自动更新随包内置的 yt-dlp。报错路径里 `force=true` 会绕过 24h 冷却立即检查。

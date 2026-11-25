@@ -1,5 +1,6 @@
 pub mod aria2;
 mod douyin;
+pub mod host_limit;
 mod http;
 mod limit;
 mod manager;
@@ -9,6 +10,7 @@ mod store;
 mod types;
 pub mod update;
 mod util;
+pub mod verify;
 pub mod ytdlp;
 
 pub use limit::RateLimiter;

@@ -575,6 +575,71 @@ async fn resolve_hub_url(
 }
 
 #[tauri::command]
+async fn grab_page_links(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<fluxdl_engine::grabber::GrabResult, String> {
+    let opts = state.engine.options();
+    fluxdl_engine::grabber::grab_page_links(
+        &url,
+        &opts.user_agent,
+        opts.proxy.as_deref(),
+        opts.use_system_proxy,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn extract_zip(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let src = std::path::PathBuf::from(&path);
+        if !src.exists() {
+            return Err("压缩包文件不存在".to_string());
+        }
+        let stem = src
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("extracted");
+        let parent = src.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let dest = parent.join(stem);
+        std::fs::create_dir_all(&dest).map_err(|e| format!("创建解压目录失败：{e}"))?;
+
+        let file = std::fs::File::open(&src).map_err(|e| format!("打开压缩包失败：{e}"))?;
+        let mut archive =
+            zip::ZipArchive::new(file).map_err(|e| format!("无法解析 ZIP 文件：{e}"))?;
+
+        for i in 0..archive.len() {
+            let mut entry = archive
+                .by_index(i)
+                .map_err(|e| format!("读取压缩包条目失败：{e}"))?;
+            // 严格防 Zip-Slip 路径穿越：仅允许安全相对路径
+            let Some(enclosed) = entry.enclosed_name() else {
+                continue;
+            };
+            let out_path = dest.join(enclosed);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out_path)
+                    .map_err(|e| format!("创建子目录失败：{e}"))?;
+            } else {
+                if let Some(p) = out_path.parent() {
+                    std::fs::create_dir_all(p)
+                        .map_err(|e| format!("创建父目录失败：{e}"))?;
+                }
+                let mut out_file = std::fs::File::create(&out_path)
+                    .map_err(|e| format!("写出解压文件失败：{e}"))?;
+                std::io::copy(&mut entry, &mut out_file)
+                    .map_err(|e| format!("解压文件内容失败：{e}"))?;
+            }
+        }
+        Ok(dest.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("解压任务执行失败：{e}"))?
+}
+
+#[tauri::command]
 fn execute_power_action(app: AppHandle, action: String) -> Result<(), String> {
     match action.as_str() {
         "exit" => {
@@ -1376,6 +1441,8 @@ pub fn run() {
             set_taskbar_progress,
             probe_url,
             resolve_hub_url,
+            grab_page_links,
+            extract_zip,
             execute_power_action,
             open_extension_folder,
         ])

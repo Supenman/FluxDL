@@ -2,6 +2,7 @@ pub mod aria2;
 pub mod disk;
 pub mod dns;
 mod douyin;
+pub mod grabber;
 pub mod host_limit;
 pub mod hub;
 mod http;

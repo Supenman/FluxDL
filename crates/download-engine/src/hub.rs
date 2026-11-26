@@ -44,6 +44,11 @@ pub enum HubTarget {
         repo: String,
         tag: Option<String>,
     },
+    ModelScope {
+        owner: String,
+        repo: String,
+        revision: String,
+    },
 }
 
 /// 纯函数：识别 HuggingFace 仓库或 GitHub Release 链接。
@@ -108,6 +113,21 @@ pub fn parse_hub_target(raw_url: &str) -> Option<HubTarget> {
             None
         };
         return Some(HubTarget::GitHubRelease { owner, repo, tag });
+    }
+
+    if (host == "modelscope.cn" || host == "www.modelscope.cn")
+        && segs.len() >= 3
+        && segs[0] == "models"
+    {
+        // 排除单文件直链 /resolve/
+        if segs.get(3).copied() == Some("resolve") {
+            return None;
+        }
+        return Some(HubTarget::ModelScope {
+            owner: segs[1].to_string(),
+            repo: segs[2].to_string(),
+            revision: "master".to_string(),
+        });
     }
 
     None
@@ -277,11 +297,91 @@ pub async fn resolve_hub_url(
                 files,
             })
         }
+        HubTarget::ModelScope {
+            owner,
+            repo,
+            revision,
+        } => {
+            let api_url = format!(
+                "https://modelscope.cn/api/v1/models/{owner}/{repo}/repo/files?Revision={revision}&Recursive=True"
+            );
+            let resp = client.get(&api_url).send().await?;
+            if !resp.status().is_success() {
+                return Err(EngineError::message(format!(
+                    "拉取 ModelScope 模型文件失败：HTTP {}",
+                    resp.status().as_u16()
+                )));
+            }
+            let body: serde_json::Value = resp.json().await?;
+            let list = body
+                .get("Data")
+                .and_then(|d| d.get("Files"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut files = Vec::new();
+            for item in list {
+                let kind = item.get("Type").and_then(|v| v.as_str()).unwrap_or("");
+                if !kind.eq_ignore_ascii_case("blob") {
+                    continue;
+                }
+                let Some(path) = item.get("Path").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if !is_safe_relative_path(path) {
+                    continue;
+                }
+                let filename = item
+                    .get("Name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_string());
+                let size = item.get("Size").and_then(|v| v.as_u64()).unwrap_or(0);
+                let sha256 = item
+                    .get("Sha256")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
+                    .map(|s| s.to_ascii_lowercase());
+                let dl_url = format!(
+                    "https://modelscope.cn/models/{owner}/{repo}/resolve/{revision}/{path}"
+                );
+                files.push(HubFileEntry {
+                    path: path.to_string(),
+                    filename,
+                    url: dl_url,
+                    size,
+                    sha256,
+                });
+            }
+
+            Ok(HubListing {
+                source: "ModelScope".to_string(),
+                title: format!("{owner}/{repo} ({revision})"),
+                files,
+            })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_modelscope_urls() {
+        assert_eq!(
+            parse_hub_target("https://modelscope.cn/models/Qwen/Qwen2.5-7B-Instruct/files"),
+            Some(HubTarget::ModelScope {
+                owner: "Qwen".into(),
+                repo: "Qwen2.5-7B-Instruct".into(),
+                revision: "master".into(),
+            })
+        );
+        assert_eq!(
+            parse_hub_target("https://modelscope.cn/models/Qwen/Qwen2.5-7B-Instruct/resolve/master/a.safetensors"),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -1,5 +1,6 @@
 pub mod aria2;
 pub mod disk;
+pub mod dns;
 mod douyin;
 pub mod host_limit;
 mod http;

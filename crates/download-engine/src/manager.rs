@@ -615,11 +615,15 @@ impl Engine {
 
         let engine = self.clone();
         tokio::spawn(async move {
-            let _guard = match engine.acquire_slot(&token).await {
-                Some(g) => g,
-                None => return, // paused or removed while queued
-            };
-            engine.run_task(entry, token).await;
+            let entry_ref = entry.clone();
+            if let Some(_guard) = engine.acquire_slot(&token).await {
+                engine.run_task(entry, token.clone()).await;
+            }
+            // 无论任务完成、失败还是排队被取消，退出前必须清空 cancel 槽位，
+            // 否则 retry/resume 会被 spawn_runner 误判为「仍在运行」而静默卡死在已暂停。
+            token.cancel();
+            let mut cancel = entry_ref.cancel.lock().await;
+            *cancel = None;
         });
     }
 
@@ -657,6 +661,7 @@ impl Engine {
                     view.eta_seconds = None;
                     if view.total_bytes > 0 {
                         view.downloaded_bytes = view.total_bytes;
+                        entry.downloaded.store(view.total_bytes, Ordering::Relaxed);
                     }
                     view.speed_bps = 0;
                     entry.finished.store(true, Ordering::SeqCst);

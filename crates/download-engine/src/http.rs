@@ -45,7 +45,8 @@ pub(crate) fn build_client(
     let mut builder = Client::builder()
         .user_agent(entry.user_agent.clone())
         .connect_timeout(Duration::from_secs(20))
-        .pool_max_idle_per_host(24);
+        .pool_max_idle_per_host(24)
+        .dns_resolver(crate::dns::shared_resolver());
     if let Some(proxy) = proxy.filter(|p| !p.trim().is_empty()) {
         // 显式代理优先级最高；reqwest 在显式 .proxy() 后不再用系统代理。
         builder = builder.proxy(reqwest::Proxy::all(proxy.trim())?);
@@ -656,7 +657,7 @@ async fn segment_loop(
             }
         }
         if pos > end {
-            mark_segment(&entry, index, end + 1);
+            mark_segment(&entry, index, end.saturating_sub(start).saturating_add(1));
             return Ok(Some(sink.finish(digest_start, pos)));
         }
         if token.is_cancelled() {
@@ -736,6 +737,20 @@ async fn segment_loop(
                         Some(Err(e)) => last_error = Some(EngineError::Http(e)),
                         Some(Ok(chunk)) => {
                             if !chunk.is_empty() {
+                                // 实时同步被动态再平衡收缩后的共享边界 end，杜绝与新分流连接重叠下载
+                                // 导致的流量翻倍与 downloaded 计数膨胀（如 730 MB / 290 MB）。
+                                {
+                                    let segs = entry.segments.lock();
+                                    if let Some(shared) = segs.get(index) {
+                                        end = shared.end;
+                                    }
+                                }
+                                if pos > end {
+                                    break;
+                                }
+                                let max_allowed = end.saturating_sub(pos).saturating_add(1);
+                                let take = (chunk.len() as u64).min(max_allowed) as usize;
+                                let chunk = chunk.slice(..take);
                                 let len = chunk.len() as u64;
                                 entry.limiter.acquire(len).await;
                                 global.acquire(len).await;

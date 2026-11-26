@@ -75,15 +75,15 @@ export function BatchActionBar({
 
   const batchMoveQueue = (queueId: string) => {
     if (!queueId) return;
-    const nextMembership = { ...queues.membership };
+    const nextAssignment = { ...queues.assignment };
     for (const id of selectedIds) {
       if (queueId === DEFAULT_QUEUE_ID) {
-        delete nextMembership[id];
+        delete nextAssignment[id];
       } else {
-        nextMembership[id] = queueId;
+        nextAssignment[id] = queueId;
       }
     }
-    setQueues({ ...queues, membership: nextMembership });
+    setQueues({ ...queues, assignment: nextAssignment });
     const targetName =
       queues.queues.find((q) => q.id === queueId)?.name ?? "默认队列";
     pushToast(`已将 ${selectedIds.length} 个任务移入「${targetName}」`, "success");

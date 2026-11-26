@@ -413,7 +413,19 @@ pub async fn run(
         entry.downloaded.store(resumed_bytes, Ordering::Relaxed);
     }
 
-    util::ensure_dir(save_path.parent().unwrap_or(Path::new(".")))?;
+    let save_dir = save_path.parent().unwrap_or(Path::new("."));
+    util::ensure_dir(save_dir)?;
+
+    // 下载前核对目标分区剩余空间（续传时扣除已写入字节），避免下到末尾才因磁盘满失败。
+    if total > 0 {
+        let already_written = if effective_resume && !renamed {
+            segments.iter().map(|s| s.downloaded).sum()
+        } else {
+            0
+        };
+        crate::disk::check_free_space(save_dir, total, already_written)
+            .map_err(|e| EngineError::message(e.to_string()))?;
+    }
 
     // A fresh attempt (or a changed remote file) must not inherit stale bytes.
     if renamed || !effective_resume {
@@ -436,6 +448,10 @@ pub async fn run(
         if total > 0 {
             let len = f.metadata()?.len();
             if len != total {
+                // 大文件在 Windows NTFS 上 set_len 前先设稀疏标记，避免多段并发写入触发同步填零卡顿。
+                if total >= crate::disk::SPARSE_MIN_BYTES {
+                    crate::disk::set_sparse(&f, true);
+                }
                 f.set_len(total)?;
             }
         }
@@ -487,6 +503,9 @@ pub async fn run(
     {
         // 全部为历史续传分段，本次运行没有写盘字节，无需回读校验（旧字节已在各自
         // 写入那一次校验过）；part 长度在上方 P0-2 处已核对过等于 total。
+        if total >= crate::disk::SPARSE_MIN_BYTES {
+            crate::disk::set_sparse(&file, false);
+        }
         finish_file(&part_path, &save_path).await?;
         return Ok(());
     }
@@ -1000,6 +1019,8 @@ async fn finalize_verified(
         Err(e) => Some(format!("写盘回读校验失败：{e}")),
     };
     let Some(problem) = problem else {
+        // 校验通过落盘前清除稀疏属性，让成品保持常规文件属性。
+        crate::disk::set_sparse(file, false);
         return finish_file(part, final_path).await;
     };
     // 丢弃损坏的 part，并清空续传状态，强制下次从 0 开始。

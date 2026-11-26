@@ -257,3 +257,27 @@ export interface ChecksumVerification {
   expected: string;
   actual: string;
 }
+
+export interface UrlProbeInfo {
+  url: string;
+  filename: string;
+  totalBytes: number;
+  resumable: boolean;
+  mime: string | null;
+}
+
+export interface HubFileEntry {
+  path: string;
+  filename: string;
+  url: string;
+  size: number;
+  sha256?: string | null;
+}
+
+export interface HubListing {
+  source: string;
+  title: string;
+  files: HubFileEntry[];
+}
+
+export type PowerAction = "none" | "exit" | "sleep" | "shutdown";

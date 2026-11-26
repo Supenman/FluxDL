@@ -7,10 +7,12 @@ import {
   Gauge,
   Bell,
   BellOff,
+  Power,
 } from "lucide-react";
 import { useStore } from "../store";
 import { formatBytes, formatSpeed } from "../lib/format";
 import { backend, isTauri } from "../lib/backend";
+import type { PowerAction } from "../lib/types";
 import {
   getNotificationSnoozeLabel,
   isNotificationSnoozed,
@@ -25,6 +27,13 @@ const GLOBAL_LIMITS: Array<{ label: string; value: number | null }> = [
   { label: "5 MB/s", value: 5 * 1024 * 1024 },
   { label: "10 MB/s", value: 10 * 1024 * 1024 },
   { label: "20 MB/s", value: 20 * 1024 * 1024 },
+];
+
+const POWER_OPTIONS: Array<{ value: PowerAction; label: string }> = [
+  { value: "none", label: "完成后无动作" },
+  { value: "exit", label: "完成后退出 FluxDL" },
+  { value: "sleep", label: "完成后自动睡眠" },
+  { value: "shutdown", label: "完成后自动关机" },
 ];
 
 const SNOOZE_OPTIONS: Array<{ mode: NotificationSnoozeMode; label: string }> = [
@@ -43,7 +52,9 @@ export function StatusBar() {
   const selectedId = useStore((s) => s.selectedId);
   const selected = selectedId ? tasks.find((t) => t.id === selectedId) : undefined;
 
-  const [openMenu, setOpenMenu] = useState<"limit" | "snooze" | null>(null);
+  const powerAction = useStore((s) => s.powerAction);
+  const setPowerAction = useStore((s) => s.setPowerAction);
+  const [openMenu, setOpenMenu] = useState<"limit" | "snooze" | "power" | null>(null);
   const [snoozed, setSnoozed] = useState(() => isNotificationSnoozed());
   const [snoozeLabel, setSnoozeLabel] = useState(() => getNotificationSnoozeLabel());
   const menuHostRef = useRef<HTMLDivElement>(null);
@@ -188,6 +199,46 @@ export function StatusBar() {
                   role="menuitem"
                   className="status-popover-item"
                   onClick={() => applySnooze(opt.mode, opt.label)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="status-popover-wrap">
+          <button
+            type="button"
+            className={`status-pill${powerAction !== "none" ? " is-active" : ""}`}
+            onClick={() => setOpenMenu(openMenu === "power" ? null : "power")}
+            title="设置全部下载完成后的自动电源动作"
+          >
+            <Power size={12} />
+            {powerAction === "none"
+              ? "完成后"
+              : powerAction === "exit"
+                ? "完后退出"
+                : powerAction === "sleep"
+                  ? "完后睡眠"
+                  : "完后关机"}
+          </button>
+          {openMenu === "power" && (
+            <div className="status-popover" role="menu" aria-label="下载完成后动作">
+              {POWER_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="menuitem"
+                  className={`status-popover-item${powerAction === opt.value ? " active" : ""}`}
+                  onClick={() => {
+                    setPowerAction(opt.value);
+                    setOpenMenu(null);
+                    pushToast(
+                      opt.value === "none" ? "已关闭完成后自动动作" : `已设置：${opt.label}`,
+                      "info",
+                    );
+                  }}
                 >
                   {opt.label}
                 </button>

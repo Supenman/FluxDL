@@ -1,6 +1,8 @@
 import type {
   AddResult,
   ChecksumVerification,
+  HubListing,
+  UrlProbeInfo,
   AppVersionInfo,
   EngineEvent,
   EngineInfo,
@@ -704,6 +706,34 @@ export class MockBackend {
       return { matched: false, pending: true, expected: cleaned, actual: "" };
     }
     return { matched: true, pending: false, expected: cleaned, actual: cleaned };
+  }
+
+  async probeUrl(url: string): Promise<UrlProbeInfo> {
+    const parsed = new URL(url.trim());
+    const name = parsed.pathname.split("/").filter(Boolean).pop() || "download.bin";
+    return {
+      url: parsed.toString(),
+      filename: decodeURIComponent(name),
+      totalBytes: 128 * 1024 * 1024,
+      resumable: true,
+      mime: "application/octet-stream",
+    };
+  }
+
+  async resolveHubUrl(url: string): Promise<HubListing> {
+    return {
+      source: url.includes("github.com") ? "GitHub Release" : "HuggingFace",
+      title: "preview/demo-repo",
+      files: [
+        {
+          path: "model.safetensors",
+          filename: "model.safetensors",
+          url: `${url.replace(/\/+$/, "")}/model.safetensors`,
+          size: 4_294_967_296,
+          sha256: "a".repeat(64),
+        },
+      ],
+    };
   }
 
   async openFile(): Promise<void> {

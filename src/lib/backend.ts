@@ -5,6 +5,9 @@ import { mockBackend } from "./mock";
 import type {
   AddResult,
   ChecksumVerification,
+  HubListing,
+  PowerAction,
+  UrlProbeInfo,
   AppVersionInfo,
   EngineEvent,
   EngineInfo,
@@ -192,6 +195,24 @@ export const backend = {
 
   openPath(path: string): Promise<void> {
     return isTauri ? call("open_path", { path }) : mockBackend.openPath();
+  },
+
+  probeUrl(url: string): Promise<UrlProbeInfo> {
+    return isTauri
+      ? call<UrlProbeInfo>("probe_url", { url })
+      : mockBackend.probeUrl(url);
+  },
+
+  resolveHubUrl(url: string): Promise<HubListing> {
+    return isTauri
+      ? call<HubListing>("resolve_hub_url", { url })
+      : mockBackend.resolveHubUrl(url);
+  },
+
+  executePowerAction(action: Exclude<PowerAction, "none">): Promise<void> {
+    return isTauri
+      ? call("execute_power_action", { action })
+      : Promise.resolve();
   },
 
   setTaskbarProgress(progress: number | null, paused = false): Promise<void> {

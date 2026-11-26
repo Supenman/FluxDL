@@ -6250,3 +6250,142 @@ kbd {
 .list-scroll-idm .task-table tbody tr.is-selected {
   background: var(--accent-soft);
 }
+
+/* 新建下载：文件探测条、HuggingFace/Release 文件勾选器、挂机倒计时弹窗 */
+.modal-probe-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.modal-probe-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.modal-probe-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle, rgba(127, 127, 127, 0.05));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modal-probe-card label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.hub-picker {
+  margin-top: 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.hub-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.hub-picker-list {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.hub-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hub-file-row:last-child {
+  border-bottom: none;
+}
+
+.hub-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-sha-tag {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.14);
+  color: var(--ok, #16a34a);
+  font-weight: 600;
+}
+
+.hub-file-size {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.power-countdown-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: rgba(0, 0, 0, 0.48);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.power-countdown-card {
+  width: 340px;
+  padding: 18px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.36);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.power-countdown-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.power-countdown-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.power-countdown-card p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.power-countdown-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}

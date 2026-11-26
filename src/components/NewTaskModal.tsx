@@ -17,7 +17,7 @@ import { useStore } from "../store";
 import { backend } from "../lib/backend";
 import { matchSiteRule, readSiteRules } from "../lib/siteRules";
 import { cx, countUrls, extractUrls, isMediaUrl } from "../lib/format";
-import type { TaskKind } from "../lib/types";
+import type { HubListing, TaskKind, UrlProbeInfo } from "../lib/types";
 
 type Mode = "auto" | "file" | "media";
 
@@ -35,6 +35,23 @@ const SPEED_LIMITS = [
   { value: 5 * 1024 * 1024, label: "5 MB/s" },
   { value: 10 * 1024 * 1024, label: "10 MB/s" },
 ];
+
+function looksLikeHubUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw.trim());
+    const h = u.hostname.toLowerCase();
+    const p = u.pathname;
+    if ((h === "huggingface.co" || h === "hf-mirror.com") && !p.includes("/resolve/")) {
+      return p.split("/").filter(Boolean).length >= 2;
+    }
+    if (h === "github.com" && p.includes("/releases") && !p.includes("/releases/download/")) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
 
 export function NewTaskModal() {
   const open = useStore((s) => s.newTaskOpen);
@@ -57,6 +74,12 @@ export function NewTaskModal() {
   const [scheduleLocal, setScheduleLocal] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [probeInfo, setProbeInfo] = useState<UrlProbeInfo | null>(null);
+  const [customFilename, setCustomFilename] = useState("");
+  const [resolvingHub, setResolvingHub] = useState(false);
+  const [hubListing, setHubListing] = useState<HubListing | null>(null);
+  const [hubSelected, setHubSelected] = useState<Set<string>>(() => new Set());
   const [importedFile, setImportedFile] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -77,6 +100,10 @@ export function NewTaskModal() {
     setUserAgent("");
     setScheduleLocal("");
     setErrors([]);
+    setProbeInfo(null);
+    setCustomFilename("");
+    setHubListing(null);
+    setHubSelected(new Set());
     setImportedFile(null);
     window.setTimeout(() => textareaRef.current?.focus(), 60);
     // Only reset when the modal opens, not when settings change.
@@ -161,6 +188,95 @@ export function NewTaskModal() {
     setImportedFile(names.join("、"));
   };
 
+  const singleUrl = urls.length === 1 ? urls[0] : null;
+  const canResolveHub = Boolean(singleUrl && looksLikeHubUrl(singleUrl));
+
+  async function runProbe() {
+    if (!singleUrl || probing) return;
+    setProbing(true);
+    setProbeInfo(null);
+    try {
+      const info = await backend.probeUrl(singleUrl);
+      setProbeInfo(info);
+      setCustomFilename(info.filename);
+    } catch (error) {
+      pushToast(String(error), "error");
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  async function runResolveHub() {
+    if (!singleUrl || resolvingHub) return;
+    setResolvingHub(true);
+    setHubListing(null);
+    try {
+      const listing = await backend.resolveHubUrl(singleUrl);
+      setHubListing(listing);
+      setHubSelected(new Set(listing.files.map((f) => f.path)));
+      if (listing.files.length === 0) {
+        pushToast("该页面未找到可下载的文件资产", "info");
+      } else {
+        pushToast(`已解析 ${listing.files.length} 个文件（自动附带官方校验和）`, "success");
+      }
+    } catch (error) {
+      pushToast(String(error), "error");
+    } finally {
+      setResolvingHub(false);
+    }
+  }
+
+  async function submitHubFiles(startLater: boolean) {
+    if (!hubListing || hubSelected.size === 0 || submitting) return;
+    setSubmitting(true);
+    setErrors([]);
+    let added = 0;
+    const allErrors: string[] = [];
+    const createdIds: string[] = [];
+    let firstId: string | null = null;
+    try {
+      const picked = hubListing.files.filter((f) => hubSelected.has(f.path));
+      const activeSiteRules = readSiteRules();
+      for (const file of picked) {
+        const rule = matchSiteRule(file.url, activeSiteRules);
+        const result = await backend.addTasks([file.url], "http", {
+          saveDir,
+          filename: file.filename,
+          connections: rule?.connections ?? connections,
+          speedLimit: limit ?? rule?.speedLimit ?? null,
+          referer: referer.trim() || rule?.referer?.trim() || null,
+          proxy: proxy.trim() || null,
+          userAgent: userAgent.trim() || rule?.userAgent?.trim() || null,
+          expectedChecksum: file.sha256 ?? null,
+        });
+        added += result.tasks.length;
+        for (const t of result.tasks) createdIds.push(t.id);
+        if (!firstId && result.tasks[0]) firstId = result.tasks[0].id;
+        allErrors.push(...result.errors);
+      }
+      if (startLater && createdIds.length > 0) {
+        for (const id of createdIds) {
+          try { await backend.pause(id); } catch { /* ignore */ }
+        }
+      }
+      if (added > 0) {
+        pushToast(
+          startLater
+            ? `已加入稍后下载队列（${added} 个仓库文件）`
+            : `已添加 ${added} 个仓库文件（含官方 SHA-256 校验）`,
+          "success",
+        );
+        if (firstId) select(firstId);
+      }
+      if (allErrors.length > 0) setErrors(allErrors);
+      else setNewTaskOpen(false);
+    } catch (error) {
+      setErrors([String(error)]);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function submit(startLater = false) {
     if (submitting || urls.length === 0) return;
     // B2 定时下载：解析本地时间输入为 UTC 毫秒时间戳；过去时间直接拒绝，避免静默立即下载。
@@ -197,6 +313,7 @@ export function NewTaskModal() {
             (group.kind === "media" && group.urls[0] ? group.urls[0] : null);
           const result = await backend.addTasks(group.urls, group.kind, {
             saveDir,
+            filename: urls.length === 1 && customFilename.trim() ? customFilename.trim() : null,
             connections: group.kind === "media" ? 1 : connections,
             speedLimit: limit,
             referer: autoReferer,
@@ -224,6 +341,7 @@ export function NewTaskModal() {
             const effectiveLimit = limit ?? rule?.speedLimit ?? null;
             const result = await backend.addTasks([singleUrl], group.kind, {
               saveDir,
+              filename: urls.length === 1 && customFilename.trim() ? customFilename.trim() : null,
               connections: effectiveConnections,
               speedLimit: effectiveLimit,
               referer: effectiveReferer,
@@ -369,6 +487,100 @@ export function NewTaskModal() {
             )}
           </div>
 
+          {singleUrl && (
+            <div className="modal-probe-bar">
+              {canResolveHub ? (
+                <button
+                  type="button"
+                  className="drawer-tool-btn primary"
+                  disabled={resolvingHub}
+                  onClick={() => void runResolveHub()}
+                >
+                  {resolvingHub ? "正在拉取文件列表…" : "解析 HuggingFace / Release 文件列表"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="drawer-tool-btn"
+                  disabled={probing}
+                  onClick={() => void runProbe()}
+                >
+                  {probing ? "探测中…" : "探测文件信息（大小/文件名）"}
+                </button>
+              )}
+              {probeInfo && (
+                <span className="modal-probe-meta">
+                  {probeInfo.totalBytes > 0 ? formatBytes(probeInfo.totalBytes) : "未知大小"}
+                  {" · "}
+                  {probeInfo.resumable ? "支持续传" : "单流"}
+                </span>
+              )}
+            </div>
+          )}
+
+          {probeInfo && urls.length === 1 && (
+            <div className="modal-probe-card">
+              <label>保存文件名（探测结果，可直接修改）</label>
+              <input
+                className="drawer-tool-input mono"
+                value={customFilename}
+                onChange={(e) => setCustomFilename(e.target.value)}
+                spellCheck={false}
+              />
+            </div>
+          )}
+
+          {hubListing && hubListing.files.length > 0 && (
+            <div className="hub-picker">
+              <div className="hub-picker-head">
+                <span>
+                  {hubListing.source} · {hubListing.title}（已选 {hubSelected.size}/{hubListing.files.length}）
+                </span>
+                <button
+                  type="button"
+                  className="mini-button"
+                  onClick={() => {
+                    if (hubSelected.size === hubListing.files.length) {
+                      setHubSelected(new Set());
+                    } else {
+                      setHubSelected(new Set(hubListing.files.map((f) => f.path)));
+                    }
+                  }}
+                >
+                  {hubSelected.size === hubListing.files.length ? "全不选" : "全选"}
+                </button>
+              </div>
+              <div className="hub-picker-list">
+                {hubListing.files.map((file) => {
+                  const checked = hubSelected.has(file.path);
+                  return (
+                    <label className="hub-file-row" key={file.path}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setHubSelected((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(file.path)) next.delete(file.path);
+                            else next.add(file.path);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span className="hub-file-name mono" title={file.path}>
+                        {file.filename}
+                      </span>
+                      {file.sha256 && <span className="hub-sha-tag" title={file.sha256}>SHA256</span>}
+                      <span className="hub-file-size">
+                        {file.size > 0 ? formatBytes(file.size) : "—"}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="form-grid">
             <div className="field span-2">
               <label>保存到</label>
@@ -510,19 +722,19 @@ export function NewTaskModal() {
             </button>
             <button
               className="ghost-button"
-              onClick={() => void submit(true)}
-              disabled={urls.length === 0 || submitting}
+              onClick={() => void (hubListing ? submitHubFiles(true) : submit(true))}
+              disabled={(hubListing ? hubSelected.size === 0 : urls.length === 0) || submitting}
               title="添加到列表并保持暂停，稍后再开始下载"
             >
               稍后下载
             </button>
             <button
               className="primary-button"
-              onClick={() => void submit(false)}
-              disabled={urls.length === 0 || submitting}
+              onClick={() => void (hubListing ? submitHubFiles(false) : submit(false))}
+              disabled={(hubListing ? hubSelected.size === 0 : urls.length === 0) || submitting}
             >
               {submitting ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
-              {urls.length > 0 ? `开始下载（${urls.length}）` : "开始下载"}
+              {hubListing ? `下载所选文件（${hubSelected.size}）` : urls.length > 0 ? `开始下载（${urls.length}）` : "开始下载"}
             </button>
           </div>
         </footer>

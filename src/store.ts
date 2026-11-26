@@ -10,6 +10,7 @@ import type {
   TaskStatus,
   UpdateCheck,
   ViewMode,
+  PowerAction,
 } from "./lib/types";
 import { uid } from "./lib/format";
 import { readAccent, saveAccent, type AccentColors } from "./lib/theme";
@@ -195,6 +196,8 @@ interface AppStore {
   setDirection: (direction: "ltr" | "rtl") => void;
   setNotifyOnFinish: (on: boolean) => void;
   setSoundOnFinish: (on: boolean) => void;
+  powerAction: PowerAction;
+  setPowerAction: (action: PowerAction) => void;
   setQueues: (cfg: QueuesConfig) => void;
   setQueueFilter: (id: string | null) => void;
   assignTaskQueue: (taskId: string, queueId: string) => void;
@@ -240,6 +243,7 @@ export const useStore = create<AppStore>((set) => ({
   direction: readDirection(),
   notifyOnFinish: readBool("fluxdl:notifyOnFinish", true),
   soundOnFinish: readBool("fluxdl:soundOnFinish", true),
+  powerAction: "none",
   queues: readQueuesConfig(),
   queueFilter: null,
   scheduleHeld: [],

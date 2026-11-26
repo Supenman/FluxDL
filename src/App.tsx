@@ -19,6 +19,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { SettingsPage } from "./components/SettingsPage";
 import { Toasts } from "./components/Toasts";
 import { ClipboardOffer } from "./components/ClipboardOffer";
+import { PowerActionBanner } from "./components/PowerActionBanner";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ApprovalBanner } from "./components/ApprovalBanner";
 import { ProgressWindow } from "./components/ProgressWindow";
@@ -328,6 +329,7 @@ export function App() {
       <CommandPalette />
       <Toasts />
       <ClipboardOffer />
+      <PowerActionBanner />
       {dragging && (
         <div className="drop-overlay">
           <div className="drop-card">

@@ -47,6 +47,9 @@ function looksLikeHubUrl(raw: string): boolean {
     if (h === "github.com" && p.includes("/releases") && !p.includes("/releases/download/")) {
       return true;
     }
+    if ((h === "modelscope.cn" || h === "www.modelscope.cn") && p.startsWith("/models/") && !p.includes("/resolve/")) {
+      return p.split("/").filter(Boolean).length >= 3;
+    }
   } catch {
     // ignore
   }
@@ -78,6 +81,7 @@ export function NewTaskModal() {
   const [probeInfo, setProbeInfo] = useState<UrlProbeInfo | null>(null);
   const [customFilename, setCustomFilename] = useState("");
   const [resolvingHub, setResolvingHub] = useState(false);
+  const [grabbingPage, setGrabbingPage] = useState(false);
   const [hubListing, setHubListing] = useState<HubListing | null>(null);
   const [hubSelected, setHubSelected] = useState<Set<string>>(() => new Set());
   const [importedFile, setImportedFile] = useState<string | null>(null);
@@ -223,6 +227,38 @@ export function NewTaskModal() {
       pushToast(String(error), "error");
     } finally {
       setResolvingHub(false);
+    }
+  }
+
+  async function runGrabPage() {
+    if (!singleUrl || grabbingPage) return;
+    setGrabbingPage(true);
+    setHubListing(null);
+    try {
+      const res = await backend.grabPageLinks(singleUrl);
+      if (res.links.length === 0) {
+        pushToast("页面中未发现可下载链接", "info");
+        return;
+      }
+      const files = res.links.map((l) => ({
+        path: l.url,
+        filename: l.filename,
+        url: l.url,
+        size: 0,
+        sha256: null,
+      }));
+      setHubListing({
+        source: "网页抓链",
+        title: res.title || res.pageUrl,
+        files,
+      });
+      const defaultPicked = res.links.filter((l) => l.likelyFile).map((l) => l.url);
+      setHubSelected(new Set(defaultPicked.length > 0 ? defaultPicked : files.map((f) => f.path)));
+      pushToast(`已抓取 ${res.links.length} 个链接（自动勾选 ${defaultPicked.length || files.length} 个文件）`, "success");
+    } catch (error) {
+      pushToast(String(error), "error");
+    } finally {
+      setGrabbingPage(false);
     }
   }
 
@@ -496,17 +532,27 @@ export function NewTaskModal() {
                   disabled={resolvingHub}
                   onClick={() => void runResolveHub()}
                 >
-                  {resolvingHub ? "正在拉取文件列表…" : "解析 HuggingFace / Release 文件列表"}
+                  {resolvingHub ? "正在拉取文件列表…" : "解析模型仓库 / Release 文件列表"}
                 </button>
               ) : (
-                <button
-                  type="button"
-                  className="drawer-tool-btn"
-                  disabled={probing}
-                  onClick={() => void runProbe()}
-                >
-                  {probing ? "探测中…" : "探测文件信息（大小/文件名）"}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="drawer-tool-btn"
+                    disabled={probing}
+                    onClick={() => void runProbe()}
+                  >
+                    {probing ? "探测中…" : "探测文件信息"}
+                  </button>
+                  <button
+                    type="button"
+                    className="drawer-tool-btn"
+                    disabled={grabbingPage}
+                    onClick={() => void runGrabPage()}
+                  >
+                    {grabbingPage ? "抓取中…" : "抓取网页链接"}
+                  </button>
+                </>
               )}
               {probeInfo && (
                 <span className="modal-probe-meta">

@@ -68,6 +68,7 @@ export function DetailDrawer() {
   const [updatingUrl, setUpdatingUrl] = useState(false);
   const [checksumInput, setChecksumInput] = useState("");
   const [verifyingChecksum, setVerifyingChecksum] = useState(false);
+  const [extractingZip, setExtractingZip] = useState(false);
   const [checksumResult, setChecksumResult] = useState<ChecksumVerification | null>(null);
 
   useEffect(() => {
@@ -561,6 +562,29 @@ export function DetailDrawer() {
                       链接签名过期（403/410）时可替换新直链，引擎会用重叠字节校验安全续传。
                     </p>
                   )}
+                </div>
+              )}
+
+              {done && /\.zip$/i.test(task.filename) && (
+                <div className="drawer-tool-card">
+                  <div className="drawer-tool-head">
+                    <span>ZIP 压缩包快速解压</span>
+                    <button
+                      type="button"
+                      className="drawer-tool-btn primary"
+                      disabled={extractingZip}
+                      onClick={() => {
+                        setExtractingZip(true);
+                        void backend
+                          .extractZip(task.savePath)
+                          .then((dir) => pushToast(`解压完成：${dir}`, "success"))
+                          .catch((err) => pushToast(String(err), "error"))
+                          .finally(() => setExtractingZip(false));
+                      }}
+                    >
+                      {extractingZip ? "解压中…" : "解压到同名文件夹"}
+                    </button>
+                  </div>
                 </div>
               )}
 

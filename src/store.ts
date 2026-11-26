@@ -198,6 +198,8 @@ interface AppStore {
   setSoundOnFinish: (on: boolean) => void;
   powerAction: PowerAction;
   setPowerAction: (action: PowerAction) => void;
+  autoExtractZip: boolean;
+  setAutoExtractZip: (on: boolean) => void;
   setQueues: (cfg: QueuesConfig) => void;
   setQueueFilter: (id: string | null) => void;
   assignTaskQueue: (taskId: string, queueId: string) => void;
@@ -244,6 +246,7 @@ export const useStore = create<AppStore>((set) => ({
   notifyOnFinish: readBool("fluxdl:notifyOnFinish", true),
   soundOnFinish: readBool("fluxdl:soundOnFinish", true),
   powerAction: "none",
+  autoExtractZip: readBool("fluxdl:autoExtractZip", false),
   queues: readQueuesConfig(),
   queueFilter: null,
   scheduleHeld: [],

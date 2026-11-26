@@ -5,6 +5,7 @@ import { mockBackend } from "./mock";
 import type {
   AddResult,
   ChecksumVerification,
+  GrabResult,
   HubListing,
   PowerAction,
   UrlProbeInfo,
@@ -201,6 +202,18 @@ export const backend = {
     return isTauri
       ? call<UrlProbeInfo>("probe_url", { url })
       : mockBackend.probeUrl(url);
+  },
+
+  grabPageLinks(url: string): Promise<GrabResult> {
+    return isTauri
+      ? call<GrabResult>("grab_page_links", { url })
+      : mockBackend.grabPageLinks(url);
+  },
+
+  extractZip(path: string): Promise<string> {
+    return isTauri
+      ? call<string>("extract_zip", { path })
+      : mockBackend.extractZip(path);
   },
 
   resolveHubUrl(url: string): Promise<HubListing> {

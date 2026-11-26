@@ -283,3 +283,16 @@ export interface HubListing {
 }
 
 export type PowerAction = "none" | "exit" | "sleep" | "shutdown";
+
+export interface GrabbedLink {
+  url: string;
+  filename: string;
+  ext: string;
+  likelyFile: boolean;
+}
+
+export interface GrabResult {
+  pageUrl: string;
+  title: string;
+  links: GrabbedLink[];
+}

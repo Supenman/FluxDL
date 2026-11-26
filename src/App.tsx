@@ -76,6 +76,12 @@ export function App() {
           state.upsertTask(task);
           if (task.status === "completed" && previous && previous.status !== "completed") {
             state.pushToast(`下载完成：${task.filename}`, "success");
+            if (state.autoExtractZip && /\.zip$/i.test(task.filename)) {
+              void backend
+                .extractZip(task.savePath)
+                .then((dir) => state.pushToast(`已自动解压至：${dir}`, "success"))
+                .catch((err) => state.pushToast(`自动解压失败：${String(err)}`, "error"));
+            }
             if (state.settings.openFolderAfter) void backend.openPath(task.savePath);
             enqueueFinishNotification(task.filename, false, {
               notify: state.notifyOnFinish,

@@ -1,6 +1,7 @@
 import type {
   AddResult,
   ChecksumVerification,
+  GrabResult,
   HubListing,
   UrlProbeInfo,
   AppVersionInfo,
@@ -734,6 +735,25 @@ export class MockBackend {
         },
       ],
     };
+  }
+
+  async grabPageLinks(url: string): Promise<GrabResult> {
+    return {
+      pageUrl: url,
+      title: "演示目录索引",
+      links: [
+        {
+          url: `${url.replace(/\/+$/, "")}/release-v1.0.zip`,
+          filename: "release-v1.0.zip",
+          ext: "zip",
+          likelyFile: true,
+        },
+      ],
+    };
+  }
+
+  async extractZip(path: string): Promise<string> {
+    return path.replace(/\.zip$/i, "");
   }
 
   async openFile(): Promise<void> {

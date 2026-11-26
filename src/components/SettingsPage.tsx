@@ -78,6 +78,8 @@ export function SettingsPage() {
   const setNotifyOnFinish = useStore((s) => s.setNotifyOnFinish);
   const soundOnFinish = useStore((s) => s.soundOnFinish);
   const setSoundOnFinish = useStore((s) => s.setSoundOnFinish);
+  const autoExtractZip = useStore((s) => s.autoExtractZip);
+  const setAutoExtractZip = useStore((s) => s.setAutoExtractZip);
   const direction = useStore((s) => s.direction);
   const setDirection = useStore((s) => s.setDirection);
   const setSettings = useStore((s) => s.setSettings);
@@ -856,6 +858,14 @@ export function SettingsPage() {
             checked={settings.openFolderAfter}
             onChange={(next) => update({ openFolderAfter: next })}
           />
+        </div>
+
+        <div className="setting-row inline">
+          <div className="setting-copy">
+            <label>.zip 下载完成后自动解压</label>
+            <p>自动安全解压到同级同名文件夹（自动拦截路径穿越）</p>
+          </div>
+          <Toggle checked={autoExtractZip} onChange={setAutoExtractZip} />
         </div>
 
         <div className="setting-row inline">

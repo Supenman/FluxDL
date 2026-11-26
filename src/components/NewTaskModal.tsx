@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useStore } from "../store";
 import { backend } from "../lib/backend";
+import { matchSiteRule, readSiteRules } from "../lib/siteRules";
 import { cx, countUrls, extractUrls, isMediaUrl } from "../lib/format";
 import type { TaskKind } from "../lib/types";
 
@@ -185,25 +186,55 @@ export function NewTaskModal() {
     const allErrors: string[] = [];
     let firstId: string | null = null;
     try {
+      const activeSiteRules = readSiteRules();
       for (const group of groups) {
-        // 视频站点且用户未手填 referer 时，自动用链接本身作为同源 referer，
-        // 提升 B 站 / YouTube / 抖音等站点的解析成功率（与浏览器扩展行为保持一致）。
-        const autoReferer =
-          referer.trim() ||
-          (group.kind === "media" && group.urls[0] ? group.urls[0] : null);
-        const result = await backend.addTasks(group.urls, group.kind, {
-          saveDir,
-          connections: group.kind === "media" ? 1 : connections,
-          speedLimit: limit,
-          referer: autoReferer,
-          proxy: proxy.trim() || null,
-          userAgent: userAgent.trim() || null,
-          format: group.kind === "media" ? format : null,
-          scheduledAt,
-        });
-        added += result.tasks.length;
-        if (!firstId && result.tasks[0]) firstId = result.tasks[0].id;
-        allErrors.push(...result.errors);
+        // 若存在命中的站点规则，按规则拆分提交以精确应用每站连接数 / 限速 / Referer / UA。
+        const hasAnyRule = group.urls.some((u) => matchSiteRule(u, activeSiteRules) !== null);
+        if (!hasAnyRule) {
+          const autoReferer =
+            referer.trim() ||
+            (group.kind === "media" && group.urls[0] ? group.urls[0] : null);
+          const result = await backend.addTasks(group.urls, group.kind, {
+            saveDir,
+            connections: group.kind === "media" ? 1 : connections,
+            speedLimit: limit,
+            referer: autoReferer,
+            proxy: proxy.trim() || null,
+            userAgent: userAgent.trim() || null,
+            format: group.kind === "media" ? format : null,
+            scheduledAt,
+          });
+          added += result.tasks.length;
+          if (!firstId && result.tasks[0]) firstId = result.tasks[0].id;
+          allErrors.push(...result.errors);
+        } else {
+          for (const singleUrl of group.urls) {
+            const rule = matchSiteRule(singleUrl, activeSiteRules);
+            const effectiveReferer =
+              referer.trim() ||
+              rule?.referer?.trim() ||
+              (group.kind === "media" ? singleUrl : null);
+            const effectiveUa = userAgent.trim() || rule?.userAgent?.trim() || null;
+            const effectiveConnections =
+              group.kind === "media"
+                ? 1
+                : rule?.connections ?? connections;
+            const effectiveLimit = limit ?? rule?.speedLimit ?? null;
+            const result = await backend.addTasks([singleUrl], group.kind, {
+              saveDir,
+              connections: effectiveConnections,
+              speedLimit: effectiveLimit,
+              referer: effectiveReferer,
+              proxy: proxy.trim() || null,
+              userAgent: effectiveUa,
+              format: group.kind === "media" ? format : null,
+              scheduledAt,
+            });
+            added += result.tasks.length;
+            if (!firstId && result.tasks[0]) firstId = result.tasks[0].id;
+            allErrors.push(...result.errors);
+          }
+        }
       }
       if (added > 0) {
         pushToast(`已添加 ${added} 个下载任务`, "success");

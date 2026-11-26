@@ -4,7 +4,7 @@ import { useStore } from "./store";
 import { backend } from "./lib/backend";
 import { extractUrls, cx } from "./lib/format";
 import { applyAccent } from "./lib/theme";
-import { notifyDownloadFinished, playFinishSound } from "./lib/notify";
+import { enqueueFinishNotification } from "./lib/notify";
 import { useQueueScheduler } from "./hooks/useQueueScheduler";
 import { Titlebar } from "./components/Titlebar";
 import { Sidebar } from "./components/Sidebar";
@@ -75,17 +75,17 @@ export function App() {
           if (task.status === "completed" && previous && previous.status !== "completed") {
             state.pushToast(`下载完成：${task.filename}`, "success");
             if (state.settings.openFolderAfter) void backend.openPath(task.savePath);
-            if (state.soundOnFinish) playFinishSound();
-            if (state.notifyOnFinish) {
-              void notifyDownloadFinished("下载完成", task.filename);
-            }
+            enqueueFinishNotification(task.filename, false, {
+              notify: state.notifyOnFinish,
+              sound: state.soundOnFinish,
+            });
           }
           if (task.status === "failed" && previous && previous.status !== "failed") {
             state.pushToast(`${task.filename} 下载失败`, "error");
-            if (state.soundOnFinish) playFinishSound(true);
-            if (state.notifyOnFinish) {
-              void notifyDownloadFinished("下载失败", task.filename);
-            }
+            enqueueFinishNotification(task.filename, true, {
+              notify: state.notifyOnFinish,
+              sound: state.soundOnFinish,
+            });
           }
         } else if (event.type === "removed") {
           state.removeTask(event.payload);

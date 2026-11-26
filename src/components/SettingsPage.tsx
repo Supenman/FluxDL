@@ -24,6 +24,8 @@ import type { EngineInfo, EngineOptions, ToolProgress } from "../lib/types";
 import { cx, formatBytes, formatSpeed } from "../lib/format";
 import { UpdateSection, ToolVersionPicker, AppVersionPicker } from "./UpdateSection";
 import { QueueManager } from "./QueueManager";
+import { SiteRulesSection } from "./SiteRulesSection";
+import { getNotificationSnoozeLabel, setNotificationSnooze, type NotificationSnoozeMode } from "../lib/notify";
 import { ACCENT_PRESETS, parseAccentJSON } from "../lib/theme";
 
 const LIMITS = [
@@ -80,6 +82,7 @@ export function SettingsPage() {
   } | null>(null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(true);
+  const [snoozeLabel, setSnoozeLabel] = useState(() => getNotificationSnoozeLabel());
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<ToolProgress | null>(null);
   const saveTimer = useRef<number | null>(null);
@@ -832,13 +835,49 @@ export function SettingsPage() {
         <div className="setting-row inline">
           <div className="setting-copy">
             <label>完成时播放提示音</label>
-            <p>下载完成一声轻提示，失败为低沉提示音</p>
+            <p>下载完成一声轻提示，失败为低沉提示音；批量任务 2 秒内自动合并提醒</p>
           </div>
           <Toggle checked={soundOnFinish} onChange={setSoundOnFinish} />
+        </div>
+
+        <div className="setting-row inline">
+          <div className="setting-copy">
+            <label>临时免打扰（当前：{snoozeLabel}）</label>
+            <p>暂停完成通知与提示音一段时间，不改动上方长期开关</p>
+          </div>
+          <div className="snooze-chips">
+            {(
+              [
+                ["off", "关闭"],
+                ["30m", "30 分钟"],
+                ["1h", "1 小时"],
+                ["8h", "8 小时"],
+                ["restart", "本次运行"],
+              ] as Array<[NotificationSnoozeMode, string]>
+            ).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                className="drawer-tool-btn"
+                onClick={() => {
+                  setNotificationSnooze(mode);
+                  setSnoozeLabel(getNotificationSnoozeLabel());
+                  pushToast(
+                    mode === "off" ? "已关闭免打扰" : `通知已临时免打扰（${label}）`,
+                    "success",
+                  );
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
 
       <QueueManager />
+
+      <SiteRulesSection />
 
       <UpdateSection />
 

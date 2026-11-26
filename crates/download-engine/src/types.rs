@@ -81,6 +81,9 @@ pub struct TaskView {
     /// 所有新任务一律从 true 开始（含手动添加与网页捕获）；批准后才置 false 并下载。
     /// serde default 让旧 tasks.json（无此字段）按 false 读取，历史任务不会被误锁。
     pub pending_approval: bool,
+    /// 用户可选指定的预期 SHA-256（64 位小写 hex）；有值时落盘前自动校验。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_checksum: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -110,6 +113,8 @@ pub struct NewTaskOptions {
     /// 限速，就必须关掉 aria2c，否则 aria2c 会绕开 `RateLimiter` 把限速架空。
     /// 默认 true；限速任务在创建时由引擎置为 false。
     pub aria2: bool,
+    /// 用户可选指定的预期 SHA-256（64 位 hex）。
+    pub expected_checksum: Option<String>,
 }
 
 /// serde 默认值 helper：struct 级 `#[serde(default)]` 会用字段类型的 Default

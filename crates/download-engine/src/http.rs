@@ -1019,6 +1019,20 @@ async fn finalize_verified(
         Err(e) => Some(format!("写盘回读校验失败：{e}")),
     };
     let Some(problem) = problem else {
+        // 若用户指定了预期 SHA-256，在落盘前核对整文件；不匹配时保留 .part 以便核对或更换校验和。
+        let expected_sha = entry.view.lock().await.expected_checksum.clone();
+        if let Some(expected) = expected_sha {
+            let part_clone = part.to_path_buf();
+            let actual = tokio::task::spawn_blocking(move || crate::verify::hash_file_sha256(&part_clone))
+                .await
+                .map_err(|e| EngineError::message(format!("校验任务执行失败：{e}")))?
+                .map_err(|e| EngineError::message(format!("计算文件 SHA-256 失败：{e}")))?;
+            if !actual.eq_ignore_ascii_case(&expected) {
+                return Err(EngineError::message(format!(
+                    "SHA-256 校验未通过（预期 {expected}，实际 {actual}），已暂存临时文件，请核对校验和或重试"
+                )));
+            }
+        }
         // 校验通过落盘前清除稀疏属性，让成品保持常规文件属性。
         crate::disk::set_sparse(file, false);
         return finish_file(part, final_path).await;

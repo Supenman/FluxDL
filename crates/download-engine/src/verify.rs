@@ -105,6 +105,55 @@ pub fn expectation_from_headers(headers: &HeaderMap) -> Option<IntegrityExpectat
     None
 }
 
+
+/// 用户手动校验和比对结果。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksumVerification {
+    pub matched: bool,
+    pub pending: bool,
+    pub expected: String,
+    pub actual: String,
+}
+
+/// 解析用户粘贴的 SHA-256 校验和（支持 `sha256:` / `sha-256:` 前缀、空白及大小写），
+/// 合法时返回 64 位小写十六进制字符串。
+pub fn parse_user_sha256(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    let raw = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .or_else(|| trimmed.strip_prefix("sha-256:"))
+        .or_else(|| trimmed.strip_prefix("SHA-256:"))
+        .unwrap_or(trimmed)
+        .trim();
+    let bytes = hex_decode(raw).map_err(|_| "校验和格式无效：请输入 64 位十六进制 SHA-256".to_string())?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "校验和长度应为 64 位十六进制 SHA-256（当前为 {} 位）",
+            raw.len()
+        ));
+    }
+    Ok(hex_encode(&bytes))
+}
+
+/// 流式计算本地文件的 SHA-256（256 KiB 缓冲，不占用大内存）。
+pub fn hash_file_sha256(path: &std::path::Path) -> std::io::Result<String> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let out = hasher.finalize();
+    Ok(hex_encode(&out))
+}
+
 /// 计算字节切片的 sha-256（用于纯逻辑测试与文件校验对照）。
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let out = Sha256::digest(bytes);
@@ -245,6 +294,15 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_user_sha256_accepts_prefixes_and_normalizes() {
+        let h = "A".repeat(64);
+        assert_eq!(parse_user_sha256(&format!("  sha256:{h}  ")).unwrap(), "a".repeat(64));
+        assert_eq!(parse_user_sha256(&format!("SHA-256:{h}")).unwrap(), "a".repeat(64));
+        assert!(parse_user_sha256("1234").is_err());
+        assert!(parse_user_sha256(&"z".repeat(64)).is_err());
+    }
+
     use super::*;
 
     #[test]

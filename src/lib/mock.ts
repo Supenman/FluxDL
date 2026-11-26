@@ -1,5 +1,6 @@
 import type {
   AddResult,
+  ChecksumVerification,
   AppVersionInfo,
   EngineEvent,
   EngineInfo,
@@ -673,6 +674,35 @@ export class MockBackend {
 
   async openPath(): Promise<void> {
     // no-op in preview
+  }
+
+  async updateTaskUrl(id: string, newUrl: string, autoResume = true): Promise<Task> {
+    const task = this.tasks.find((t) => t.id === id);
+    if (!task) throw new Error("未找到对应任务");
+    const url = new URL(newUrl.trim());
+    task.url = url.toString();
+    task.domain = url.hostname;
+    task.error = null;
+    if (autoResume && task.status !== "completed") {
+      task.status = "downloading";
+    }
+    this.emit({ type: "task", payload: { ...task } });
+    return { ...task };
+  }
+
+  async verifyTaskChecksum(id: string, expected: string): Promise<ChecksumVerification> {
+    const cleaned = expected.trim().replace(/^sha-?256:/i, "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(cleaned)) {
+      throw new Error("校验和格式无效：请输入 64 位十六进制 SHA-256");
+    }
+    const task = this.tasks.find((t) => t.id === id);
+    if (!task) throw new Error("未找到对应任务");
+    task.expectedChecksum = cleaned;
+    this.emit({ type: "task", payload: { ...task } });
+    if (task.status !== "completed") {
+      return { matched: false, pending: true, expected: cleaned, actual: "" };
+    }
+    return { matched: true, pending: false, expected: cleaned, actual: cleaned };
   }
 
   async openFile(): Promise<void> {

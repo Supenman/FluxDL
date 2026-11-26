@@ -477,6 +477,10 @@ impl Engine {
             mime: None,
             resume_etag: None,
             domain,
+            expected_checksum: match options.expected_checksum.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(raw) => Some(crate::verify::parse_user_sha256(raw).map_err(EngineError::message)?),
+                None => None,
+            },
             // 下载审核闸门：入口强制 require_approval 时任务停在待审核、不自动下载；
             // 否则保持原语义（定时任务暂停等 tick，普通任务入队立即下载）。
             status: if require_approval || scheduled {
@@ -792,6 +796,114 @@ impl Engine {
             entry.segments.lock().clear();
         }
         self.spawn_runner(id.to_string()).await;
+    }
+
+    /// 过期链接续期：为未完成任务替换新的下载链接（例如签名过期 403/410），
+    /// 保留已下载的 `.fluxdl-part` 与分段进度，清空旧 `resume_etag` 让引擎通过
+    /// 重叠字节校验安全续传，避免串文件且无需从零重下。
+    pub async fn update_task_url(
+        self: &Arc<Self>,
+        id: &str,
+        new_url: String,
+        auto_resume: bool,
+    ) -> Result<TaskView, EngineError> {
+        let trimmed = new_url.trim();
+        let parsed = url::Url::parse(trimmed)
+            .map_err(|_| EngineError::message("新链接格式无效，请输入完整的 http/https 链接"))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(EngineError::message("仅支持 http:// 或 https:// 链接"));
+        }
+        let entry = self
+            .get(id)
+            .ok_or_else(|| EngineError::message("未找到对应任务"))?;
+
+        // 若任务仍在运行，先取消当前 runner，防止旧连接继续写盘。
+        if let Some(token) = entry.cancel.lock().await.take() {
+            token.cancel();
+        }
+
+        let (snapshot, can_resume) = {
+            let mut view = entry.view.lock().await;
+            if view.status == TaskStatus::Completed {
+                return Err(EngineError::message("任务已完成，无需更换链接"));
+            }
+            view.url = trimmed.to_string();
+            view.domain = parsed.host_str().unwrap_or("").to_string();
+            view.error = None;
+            // 清空旧 ETag，交由 http.rs 的重叠字节校验确认新链接指向同一份文件。
+            view.resume_etag = None;
+            view.status = TaskStatus::Paused;
+            view.speed_bps = 0;
+            view.eta_seconds = None;
+            view.scheduled_at = None;
+            let can_resume = auto_resume && !view.pending_approval;
+            (view.clone(), can_resume)
+        };
+
+        self.emit_log(id, format!("已更新下载链接（{}），保留已有进度准备续传", snapshot.domain));
+        self.emit_task(&entry).await;
+        self.save().await;
+
+        if can_resume {
+            self.spawn_runner(id.to_string()).await;
+        }
+        Ok(snapshot)
+    }
+
+    /// 核对或登记任务 SHA-256 校验和：
+    /// - 已完成任务：流式计算磁盘文件 SHA-256 并即时返回比对结果；
+    /// - 未完成任务：保存预期 SHA-256，下载完成落盘前自动校验。
+    pub async fn verify_task_checksum(
+        &self,
+        id: &str,
+        expected: String,
+    ) -> Result<crate::verify::ChecksumVerification, EngineError> {
+        let normalized = crate::verify::parse_user_sha256(&expected).map_err(EngineError::message)?;
+        let entry = self
+            .get(id)
+            .ok_or_else(|| EngineError::message("未找到对应任务"))?;
+
+        let (status, save_path) = {
+            let mut view = entry.view.lock().await;
+            view.expected_checksum = Some(normalized.clone());
+            (view.status, PathBuf::from(&view.save_path))
+        };
+        self.emit_task(&entry).await;
+        self.save().await;
+
+        if status != TaskStatus::Completed {
+            return Ok(crate::verify::ChecksumVerification {
+                matched: false,
+                pending: true,
+                expected: normalized,
+                actual: String::new(),
+            });
+        }
+
+        if !save_path.exists() {
+            return Err(EngineError::message("目标文件不存在或已被移动，无法计算校验和"));
+        }
+
+        let actual = tokio::task::spawn_blocking(move || crate::verify::hash_file_sha256(&save_path))
+            .await
+            .map_err(|e| EngineError::message(format!("校验任务执行失败：{e}")))?
+            .map_err(|e| EngineError::message(format!("读取文件计算 SHA-256 失败：{e}")))?;
+
+        let matched = actual.eq_ignore_ascii_case(&normalized);
+        self.emit_log(
+            id,
+            if matched {
+                "SHA-256 校验通过".to_string()
+            } else {
+                format!("SHA-256 校验不匹配：实际 {actual}")
+            },
+        );
+        Ok(crate::verify::ChecksumVerification {
+            matched,
+            pending: false,
+            expected: normalized,
+            actual,
+        })
     }
 
     pub async fn remove(&self, id: &str, delete_file: bool) {

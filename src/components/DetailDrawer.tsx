@@ -18,6 +18,8 @@ import {
   AlertTriangle,
   FileText,
   ExternalLink,
+  Link2,
+  ShieldCheck,
 } from "lucide-react";
 import { useStore } from "../store";
 import { backend } from "../lib/backend";
@@ -29,6 +31,7 @@ import {
   formatSpeed,
   percent,
 } from "../lib/format";
+import type { ChecksumVerification } from "../lib/types";
 import { StatusBadge, statusLabel } from "./StatusBadge";
 import { SpeedChart } from "./SpeedChart";
 
@@ -60,11 +63,21 @@ export function DetailDrawer() {
   useFocusTrap(Boolean(task), drawerRef);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteFile, setDeleteFile] = useState(false);
+  const [editingUrl, setEditingUrl] = useState(false);
+  const [freshUrl, setFreshUrl] = useState("");
+  const [updatingUrl, setUpdatingUrl] = useState(false);
+  const [checksumInput, setChecksumInput] = useState("");
+  const [verifyingChecksum, setVerifyingChecksum] = useState(false);
+  const [checksumResult, setChecksumResult] = useState<ChecksumVerification | null>(null);
 
   useEffect(() => {
     setTab("overview");
     setConfirmDelete(false);
     setDeleteFile(false);
+    setEditingUrl(false);
+    setFreshUrl("");
+    setChecksumInput(task?.expectedChecksum ?? "");
+    setChecksumResult(null);
   }, [selectedId]);
 
   useEffect(() => {
@@ -135,6 +148,49 @@ export function DetailDrawer() {
       select(null);
     } catch (error) {
       pushToast(String(error), "error");
+    }
+  };
+
+  const submitFreshUrl = async () => {
+    const trimmed = freshUrl.trim();
+    if (!trimmed) {
+      pushToast("请先粘贴新的下载链接", "error");
+      return;
+    }
+    setUpdatingUrl(true);
+    try {
+      await backend.updateTaskUrl(task.id, trimmed, true);
+      setEditingUrl(false);
+      setFreshUrl("");
+      pushToast("已更新下载链接并继续下载", "success");
+    } catch (error) {
+      pushToast(String(error), "error");
+    } finally {
+      setUpdatingUrl(false);
+    }
+  };
+
+  const submitChecksum = async () => {
+    const trimmed = checksumInput.trim();
+    if (!trimmed) {
+      pushToast("请粘贴 64 位 SHA-256 校验和", "error");
+      return;
+    }
+    setVerifyingChecksum(true);
+    try {
+      const res = await backend.verifyTaskChecksum(task.id, trimmed);
+      setChecksumResult(res);
+      if (res.pending) {
+        pushToast("已保存预期 SHA-256，下载完成后自动核对", "success");
+      } else if (res.matched) {
+        pushToast("SHA-256 校验通过，文件完整", "success");
+      } else {
+        pushToast("SHA-256 校验不匹配，请确认文件来源", "error");
+      }
+    } catch (error) {
+      pushToast(String(error), "error");
+    } finally {
+      setVerifyingChecksum(false);
     }
   };
 
@@ -445,6 +501,109 @@ export function DetailDrawer() {
                     <span>{new Date(task.finishedAt).toLocaleString("zh-CN")}</span>
                   </div>
                 )}
+              </div>
+
+              {!done && (
+                <div className="drawer-tool-card">
+                  <div className="drawer-tool-head">
+                    <span>
+                      <Link2 size={13} /> 更换下载链接（过期直链续传）
+                    </span>
+                    {!editingUrl && (
+                      <button
+                        className="mini-button"
+                        onClick={() => {
+                          setFreshUrl(task.url);
+                          setEditingUrl(true);
+                        }}
+                      >
+                        更换链接
+                      </button>
+                    )}
+                  </div>
+                  {editingUrl ? (
+                    <div className="drawer-tool-body">
+                      <input
+                        className="drawer-tool-input mono"
+                        type="url"
+                        value={freshUrl}
+                        onChange={(e) => setFreshUrl(e.target.value)}
+                        placeholder="粘贴新的 http(s) 直链，将保留已下载进度..."
+                      />
+                      <div className="drawer-tool-actions">
+                        <button
+                          className="drawer-tool-btn primary"
+                          disabled={updatingUrl}
+                          onClick={() => void submitFreshUrl()}
+                        >
+                          {updatingUrl ? "更新中..." : "替换并继续"}
+                        </button>
+                        <button
+                          className="drawer-tool-btn"
+                          onClick={() => setEditingUrl(false)}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="drawer-tool-hint">
+                      链接签名过期（403/410）时可替换新直链，引擎会用重叠字节校验安全续传。
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="drawer-tool-card">
+                <div className="drawer-tool-head">
+                  <span>
+                    <ShieldCheck size={13} /> SHA-256 完整性核对
+                  </span>
+                </div>
+                <div className="drawer-tool-body">
+                  <input
+                    className="drawer-tool-input mono"
+                    type="text"
+                    value={checksumInput}
+                    onChange={(e) => setChecksumInput(e.target.value)}
+                    placeholder="粘贴官方 64 位 SHA-256（支持 sha256: 前缀）"
+                  />
+                  <div className="drawer-tool-actions">
+                    <button
+                      className="drawer-tool-btn primary"
+                      disabled={verifyingChecksum}
+                      onClick={() => void submitChecksum()}
+                    >
+                      {verifyingChecksum
+                        ? "计算中..."
+                        : done
+                          ? "立即核对"
+                          : "保存待落盘校验"}
+                    </button>
+                  </div>
+                  {checksumResult && (
+                    <div
+                      className={cx(
+                        "checksum-verdict",
+                        checksumResult.pending
+                          ? "pending"
+                          : checksumResult.matched
+                            ? "ok"
+                            : "mismatch",
+                      )}
+                    >
+                      {checksumResult.pending ? (
+                        <span>已登记预期 SHA-256，下载完成落盘前将自动核对。</span>
+                      ) : checksumResult.matched ? (
+                        <span>校验通过：磁盘文件与预期 SHA-256 完全一致。</span>
+                      ) : (
+                        <span>
+                          校验不匹配！实际值：<code className="mono">{checksumResult.actual}</code>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="log-block">

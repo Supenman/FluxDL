@@ -91,6 +91,33 @@ async fn retry_task(state: State<'_, AppState>, id: String) -> Result<(), String
     Ok(())
 }
 
+#[tauri::command]
+async fn update_task_url(
+    state: State<'_, AppState>,
+    id: String,
+    new_url: String,
+    auto_resume: bool,
+) -> Result<TaskView, String> {
+    state
+        .engine
+        .update_task_url(&id, new_url, auto_resume)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn verify_task_checksum(
+    state: State<'_, AppState>,
+    id: String,
+    expected: String,
+) -> Result<fluxdl_engine::verify::ChecksumVerification, String> {
+    state
+        .engine
+        .verify_task_checksum(&id, expected)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 审核通过：批准单条待审核下载并启动。
 #[tauri::command]
 async fn approve_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
@@ -1205,6 +1232,8 @@ pub fn run() {
             pause_task,
             resume_task,
             retry_task,
+            update_task_url,
+            verify_task_checksum,
             approve_task,
             approve_all_tasks,
             remove_task,

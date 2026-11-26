@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mockBackend } from "./mock";
 import type {
   AddResult,
+  ChecksumVerification,
   AppVersionInfo,
   EngineEvent,
   EngineInfo,
@@ -72,6 +73,20 @@ export const backend = {
 
   retry(id: string): Promise<void> {
     return isTauri ? call("retry_task", { id }) : mockBackend.retry(id);
+  },
+
+  /** 过期链接续期：替换直链并保留已有 .part 进度。 */
+  updateTaskUrl(id: string, newUrl: string, autoResume = true): Promise<Task> {
+    return isTauri
+      ? call<Task>("update_task_url", { id, newUrl, autoResume })
+      : mockBackend.updateTaskUrl(id, newUrl, autoResume);
+  },
+
+  /** 核对已完成文件的 SHA-256，或为未完成任务登记落盘前自动校验和。 */
+  verifyTaskChecksum(id: string, expected: string): Promise<ChecksumVerification> {
+    return isTauri
+      ? call<ChecksumVerification>("verify_task_checksum", { id, expected })
+      : mockBackend.verifyTaskChecksum(id, expected);
   },
 
   /** 审核通过：批准单条待审核下载并启动。 */

@@ -58,6 +58,8 @@ export interface NewTaskOptions {
   format?: string | null;
   /** B2 定时下载：期望开始时间（UTC 毫秒时间戳），仅未来时间生效。 */
   scheduledAt?: number | null;
+  /** 用户可选指定的预期 SHA-256（64 位 hex）。 */
+  expectedChecksum?: string | null;
 }
 
 export interface EngineOptions {
@@ -243,4 +245,11 @@ export interface ToolVersionList {
   available: ToolVersionItem[];
   /** 远端不可达时的提示，界面据此降级为「仅本地版本」。 */
   warning: string | null;
+}
+
+export interface ChecksumVerification {
+  matched: boolean;
+  pending: boolean;
+  expected: string;
+  actual: string;
 }

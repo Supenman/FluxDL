@@ -3,6 +3,7 @@ pub mod disk;
 pub mod dns;
 mod douyin;
 pub mod host_limit;
+pub mod hub;
 mod http;
 mod limit;
 mod manager;
@@ -15,6 +16,7 @@ mod util;
 pub mod verify;
 pub mod ytdlp;
 
+pub use http::{probe_url, UrlProbeInfo};
 pub use limit::RateLimiter;
 pub use manager::{Engine, EngineError};
 // 0.3.5：CDN 容器直链判定作为跨层权威规则导出，供 Tauri 建任务时复用，

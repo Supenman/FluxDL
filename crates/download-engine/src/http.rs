@@ -1087,3 +1087,93 @@ async fn finish_file(part: &Path, final_path: &Path) -> Result<(), EngineError> 
     tokio::fs::rename(part, final_path).await?;
     Ok(())
 }
+
+
+/// IDM 风格「下载文件信息」极速探测结果。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrlProbeInfo {
+    pub url: String,
+    pub filename: String,
+    pub total_bytes: u64,
+    pub resumable: bool,
+    pub mime: Option<String>,
+}
+
+/// 独立极速探测单条 http(s) 链接的文件名、体积与断点续传能力（Range: bytes=0-0，超时 10s）。
+pub async fn probe_url(
+    raw_url: &str,
+    options: &crate::types::EngineOptions,
+) -> Result<UrlProbeInfo, EngineError> {
+    let parsed = url::Url::parse(raw_url.trim())
+        .map_err(|_| EngineError::message("链接格式无效，请输入完整的 http/https 链接"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(EngineError::message("仅支持探测 http:// 或 https:// 链接"));
+    }
+
+    let mut builder = Client::builder()
+        .user_agent(options.user_agent.clone())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(12))
+        .dns_resolver(crate::dns::shared_resolver());
+    if let Some(p) = options.proxy.as_deref().filter(|s| !s.trim().is_empty()) {
+        builder = builder.proxy(reqwest::Proxy::all(p.trim())?);
+    } else if !options.use_system_proxy {
+        builder = builder.no_proxy();
+    }
+    let client = builder.build()?;
+
+    let resp = client
+        .get(parsed.as_str())
+        .header(RANGE, "bytes=0-0")
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(EngineError::message(format!(
+            "探测失败：HTTP {}",
+            status.as_u16()
+        )));
+    }
+
+    let headers = resp.headers();
+    let final_url = resp.url().clone();
+    let resumable = status == StatusCode::PARTIAL_CONTENT
+        || headers
+            .get(ACCEPT_RANGES)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_ascii_lowercase().contains("bytes"))
+            .unwrap_or(false);
+
+    let total_bytes = util::total_from_content_range(headers)
+        .or_else(|| {
+            if status == StatusCode::OK {
+                headers
+                    .get(CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    let filename = util::filename_from_headers(headers)
+        .or_else(|| util::filename_from_url(&final_url))
+        .or_else(|| util::filename_from_url(&parsed))
+        .unwrap_or_else(|| "download.bin".to_string());
+
+    let mime = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Ok(UrlProbeInfo {
+        url: final_url.to_string(),
+        filename,
+        total_bytes,
+        resumable,
+        mime,
+    })
+}

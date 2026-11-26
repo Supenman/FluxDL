@@ -25,6 +25,7 @@ import { ProgressWindow } from "./components/ProgressWindow";
 
 export function App() {
   const view = useStore((s) => s.view);
+  const tasks = useStore((s) => s.tasks);
   const theme = useStore((s) => s.theme);
   const accent = useStore((s) => s.accent);
   const uiScale = useStore((s) => s.uiScale);
@@ -129,6 +130,27 @@ export function App() {
     }, 4000);
     return () => window.clearTimeout(timer);
   }, []);
+
+  // 同步 Windows 任务栏图标进度条：有活跃下载时显示总体进度，空闲时清除。
+  useEffect(() => {
+    const active = tasks.filter(
+      (t) => t.status === "downloading" || t.status === "connecting" || t.status === "queued",
+    );
+    if (active.length === 0) {
+      void backend.setTaskbarProgress(null, false);
+      return;
+    }
+    let total = 0;
+    let done = 0;
+    for (const t of active) {
+      if (t.totalBytes > 0) {
+        total += t.totalBytes;
+        done += Math.min(t.downloadedBytes, t.totalBytes);
+      }
+    }
+    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+    void backend.setTaskbarProgress(pct, false);
+  }, [tasks]);
 
   // Apply theme (including the follow-system option).
   useEffect(() => {

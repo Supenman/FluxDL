@@ -548,6 +548,72 @@ async fn open_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn probe_url(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<fluxdl_engine::UrlProbeInfo, String> {
+    let opts = state.engine.options();
+    fluxdl_engine::probe_url(&url, &opts)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn resolve_hub_url(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<fluxdl_engine::hub::HubListing, String> {
+    let opts = state.engine.options();
+    fluxdl_engine::hub::resolve_hub_url(
+        &url,
+        &opts.user_agent,
+        opts.proxy.as_deref(),
+        opts.use_system_proxy,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn execute_power_action(app: AppHandle, action: String) -> Result<(), String> {
+    match action.as_str() {
+        "exit" => {
+            app.exit(0);
+            Ok(())
+        }
+        "sleep" => {
+            #[cfg(windows)]
+            {
+                std::process::Command::new("rundll32.exe")
+                    .args(["powrprof.dll,SetSuspendState", "0,1,0"])
+                    .spawn()
+                    .map_err(|e| format!("触发睡眠失败：{e}"))?;
+                Ok(())
+            }
+            #[cfg(not(windows))]
+            {
+                Err("当前系统暂不支持自动睡眠".to_string())
+            }
+        }
+        "shutdown" => {
+            #[cfg(windows)]
+            {
+                std::process::Command::new("shutdown")
+                    .args(["/s", "/t", "0"])
+                    .spawn()
+                    .map_err(|e| format!("触发关机失败：{e}"))?;
+                Ok(())
+            }
+            #[cfg(not(windows))]
+            {
+                Err("当前系统暂不支持自动关机".to_string())
+            }
+        }
+        _ => Err("不支持的完成后动作".to_string()),
+    }
+}
+
+#[tauri::command]
 fn set_taskbar_progress(app: AppHandle, progress: Option<u64>, paused: bool) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         let state = match progress {
@@ -1308,6 +1374,9 @@ pub fn run() {
             open_path,
             open_file,
             set_taskbar_progress,
+            probe_url,
+            resolve_hub_url,
+            execute_power_action,
             open_extension_folder,
         ])
         .build(tauri::generate_context!())

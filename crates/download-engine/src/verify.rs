@@ -153,6 +153,71 @@ pub fn classify(
     }
 }
 
+/// 断点续传资格判定（纯函数，不依赖 I/O）。
+///
+/// 背景：旧实现把续传的必要条件写成「服务器必须返回强 ETag 且与历史一致」。
+/// 大量 CDN / 带签名参数的直链要么不带 ETag，要么每次请求 ETag 都变，
+/// 于是这些任务一旦中断，点击恢复/重试就会清空分段与 part 从头下载——
+/// 这正是「断掉后很难恢复下载」的根因。
+///
+/// 新的判定把 ETag 从「必要条件」降级为「充分条件之一」：
+/// - 强 ETag 一致 → 直接续传（最可靠，行为不变）；
+/// - 强 ETag 明确不一致 / 长度变了 → 远端文件已变，必须全量重下；
+/// - 没有 ETag（或只有弱 ETag）但本地 part 完好 → 不直接相信，也不直接丢弃，
+///   而是返回 `Probe`，要求调用方做重叠字节校验（取 part 已下载区域的尾部区间，
+///   向服务器请求同一区间比对）。一致才续传，不一致全量重下。
+///
+/// 这样既恢复了「无 ETag 链接也能续传」，又用重叠校验堵住了
+/// 「同长度但内容已变 → 续传拼出损坏文件」的风险（对标 MDM 的 overlap check）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeDecision {
+    /// 全量重下：不支持 Range / 长度不符 / 无进度 / 无有效分段 / ETag 明确变化。
+    Restart,
+    /// 强 ETag 一致，可直接续传，无需额外探测。
+    Strict,
+    /// ETag 不可用，但本地 part 可续；须做重叠字节校验后再定。
+    Probe,
+}
+
+/// 纯判定：`ranges` 服务器支持 Range、`total` 远端总长、`stored_total` 历史总长、
+/// `probe_etag` 本次探测到的强 ETag、`stored_etag` 历史强 ETag、
+/// `prev_bytes` 已下载字节、`has_segments` 是否有有效分段快照、`part_complete`
+/// 本地 part 是否真实存在且长度等于 total（由调用方用元数据判定）。
+pub fn resume_decision(
+    ranges: bool,
+    total: u64,
+    stored_total: u64,
+    probe_etag: Option<&str>,
+    stored_etag: Option<&str>,
+    prev_bytes: u64,
+    has_segments: bool,
+    part_complete: bool,
+) -> ResumeDecision {
+    // 无法续传的硬前提：不支持 Range / 长度为 0 / 远端与历史长度不一致 /
+    // 没有任何进度 / 没有分段快照 / part 文件不完整。
+    if !ranges || total == 0 || stored_total != total || prev_bytes == 0 || !has_segments {
+        return ResumeDecision::Restart;
+    }
+    match (probe_etag, stored_etag) {
+        // 两边都有强 ETag：一致才续传，变化则远端文件已变，全量重下。
+        (Some(p), Some(s)) => {
+            if p == s {
+                ResumeDecision::Strict
+            } else {
+                ResumeDecision::Restart
+            }
+        }
+        // 任一侧没有强 ETag：不能凭长度相信内容，交给重叠校验裁决。
+        _ => {
+            if part_complete {
+                ResumeDecision::Probe
+            } else {
+                ResumeDecision::Restart
+            }
+        }
+    }
+}
+
 /// 十六进制解码（仅 a-fA-F0-9）。
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
     let b = s.as_bytes();
@@ -308,6 +373,77 @@ mod tests {
         assert_eq!(
             classify(Some(&exp), actual, false, false, BTreeSet::new()),
             IntegrityVerdict::Intact
+        );
+    }
+
+    // ---- 续传资格判定 ----
+
+    #[test]
+    fn resume_etag_match_is_strict() {
+        assert_eq!(
+            resume_decision(true, 1000, 1000, Some("\"v1\""), Some("\"v1\""), 400, true, true),
+            ResumeDecision::Strict
+        );
+    }
+
+    #[test]
+    fn resume_etag_changed_restarts_even_if_part_ok() {
+        // ETag 明确变化 = 远端文件已换，即便长度和 part 都一致也必须全量重下。
+        assert_eq!(
+            resume_decision(true, 1000, 1000, Some("\"v2\""), Some("\"v1\""), 400, true, true),
+            ResumeDecision::Restart
+        );
+    }
+
+    #[test]
+    fn resume_without_etag_probes_when_part_complete() {
+        // 本轮修复的核心：无 ETag 不再一律从头，而是进入重叠校验。
+        assert_eq!(
+            resume_decision(true, 1000, 1000, None, None, 400, true, true),
+            ResumeDecision::Probe
+        );
+        // 一侧有、一侧无，同样走探测。
+        assert_eq!(
+            resume_decision(true, 1000, 1000, Some("\"v1\""), None, 400, true, true),
+            ResumeDecision::Probe
+        );
+    }
+
+    #[test]
+    fn resume_without_etag_restarts_when_part_incomplete() {
+        // part 不完整（缺失或长度不符）→ 不能跳过分段，必须从头。
+        assert_eq!(
+            resume_decision(true, 1000, 1000, None, None, 400, true, false),
+            ResumeDecision::Restart
+        );
+    }
+
+    #[test]
+    fn resume_hard_preconditions_restart() {
+        // 不支持 Range。
+        assert_eq!(
+            resume_decision(false, 1000, 1000, None, None, 400, true, true),
+            ResumeDecision::Restart
+        );
+        // 远端长度为 0。
+        assert_eq!(
+            resume_decision(true, 0, 0, None, None, 0, true, true),
+            ResumeDecision::Restart
+        );
+        // 长度与历史不符。
+        assert_eq!(
+            resume_decision(true, 1000, 900, None, None, 400, true, true),
+            ResumeDecision::Restart
+        );
+        // 没有任何进度。
+        assert_eq!(
+            resume_decision(true, 1000, 1000, None, None, 0, true, true),
+            ResumeDecision::Restart
+        );
+        // 没有分段快照。
+        assert_eq!(
+            resume_decision(true, 1000, 1000, None, None, 400, false, true),
+            ResumeDecision::Restart
         );
     }
 }

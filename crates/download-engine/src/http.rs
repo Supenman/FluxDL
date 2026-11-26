@@ -199,6 +199,75 @@ fn spawn_segment(
     });
 }
 
+/// 无强 ETag 时的重叠字节校验：确认本地 part 的已下载尾部与服务器当前内容一致。
+///
+/// 只读取「某个分段已真实下载过的连续尾部区间」，避开稀疏文件里尚未下载的空洞。
+/// 返回 Ok(true)=一致可续传 / Ok(false)=内容不符须全量重下 / Err=探测本身失败。
+const OVERLAP_BYTES: u64 = 64 * 1024;
+
+async fn overlap_confirms_resume(
+    client: &Client,
+    entry: &TaskEntry,
+    part: &Path,
+    token: &CancellationToken,
+    total: u64,
+    _prev_bytes: u64,
+) -> Result<bool, EngineError> {
+    // 找下载水位最高且已下载字节最多的分段，用它的连续尾部做样本。
+    let segs = entry.segments.lock().clone();
+    let sample_seg = segs
+        .iter()
+        .filter(|s| s.downloaded > 0)
+        .max_by_key(|s| s.start + s.downloaded);
+    let Some(seg) = sample_seg else {
+        return Ok(false);
+    };
+    let high = seg.start.saturating_add(seg.downloaded).min(total);
+    let len = OVERLAP_BYTES.min(seg.downloaded).min(high);
+    if len == 0 {
+        return Ok(false);
+    }
+    let start = high - len;
+    let end = high - 1; // Range 是闭区间
+
+    // 读本地 part 的同一区间。
+    let mut local = vec![0u8; len as usize];
+    {
+        let file = std::fs::File::open(part).map_err(|e| EngineError::message(e.to_string()))?;
+        let n = util::read_at(&file, &mut local, start)
+            .map_err(|e| EngineError::message(e.to_string()))?;
+        if n as u64 != len {
+            return Ok(false);
+        }
+    }
+
+    // 向服务器请求同一区间的字节。
+    let req = apply_headers(client.get(&entry.url), entry).header(RANGE, format!("bytes={start}-{end}"));
+    let resp = tokio::select! {
+        _ = token.cancelled() => return Err(EngineError::Paused),
+        r = tokio::time::timeout(Duration::from_secs(20), req.send()) => match r {
+            Err(_) => return Err(EngineError::message("重叠校验请求超时")),
+            Ok(Err(e)) => return Err(EngineError::Http(e)),
+            Ok(Ok(resp)) => resp,
+        },
+    };
+    if resp.status() != StatusCode::PARTIAL_CONTENT {
+        return Ok(false);
+    }
+    let remote = tokio::select! {
+        _ = token.cancelled() => return Err(EngineError::Paused),
+        r = tokio::time::timeout(Duration::from_secs(20), resp.bytes()) => match r {
+            Err(_) => return Err(EngineError::message("重叠校验读取超时")),
+            Ok(Err(e)) => return Err(EngineError::Http(e)),
+            Ok(Ok(b)) => b,
+        },
+    };
+    if remote.len() as u64 != len {
+        return Ok(false);
+    }
+    Ok(remote.as_ref() == local.as_slice())
+}
+
 pub async fn run(
     engine: &Arc<Engine>,
     entry: &Arc<TaskEntry>,
@@ -226,13 +295,51 @@ pub async fn run(
         total = stored_total;
     }
     let resumable = probe.ranges && total > 0;
-    // 旧任务没有强 ETag，长度相同也不能确认缓存字节属于当前资源。
-    let mut effective_resume = resumable
-        && probe.etag.is_some()
-        && probe.etag == stored_etag
-        && stored_total == total
-        && prev_bytes > 0
-        && !prev_segments.is_empty();
+
+    // 续传资格：强 ETag 一致直接续；无 ETag 但 part 完好的，走重叠字节校验后裁决。
+    // 先确认 part 是否真实完整（P0-2：必须以磁盘长度为准，不能用 set_len 后的假长度）。
+    let probe_part = PathBuf::from(format!("{}.fluxdl-part", stored_path.to_string_lossy()));
+    let part_complete = std::fs::metadata(&probe_part)
+        .map(|m| m.len() == total && total > 0)
+        .unwrap_or(false);
+    let decision = crate::verify::resume_decision(
+        resumable,
+        total,
+        stored_total,
+        probe.etag.as_deref(),
+        stored_etag.as_deref(),
+        prev_bytes,
+        !prev_segments.is_empty(),
+        part_complete,
+    );
+    // Probe 分支：无强 ETag 时，取 part 尾部已下载区间向服务器请求同一区间比对，
+    // 一致才续传（抓「同长度内容已变」），不一致或请求失败则全量重下。
+    let mut effective_resume = match decision {
+        crate::verify::ResumeDecision::Strict => true,
+        crate::verify::ResumeDecision::Restart => false,
+        crate::verify::ResumeDecision::Probe => {
+            match overlap_confirms_resume(&client, entry, &probe_part, &token, total, prev_bytes)
+                .await
+            {
+                Ok(true) => true,
+                Ok(false) => {
+                    engine.emit_log(
+                        &entry.id,
+                        "本地进度与服务器内容不一致（文件可能已更新），将从头下载".to_string(),
+                    );
+                    false
+                }
+                Err(err) => {
+                    // 探测失败按不可续传处理，但不当作任务失败——继续全量下载。
+                    engine.emit_log(
+                        &entry.id,
+                        format!("续传校验未完成，改为从头下载：{err}"),
+                    );
+                    false
+                }
+            }
+        }
+    };
 
     let mut save_path = stored_path.clone();
     let mut renamed = false;

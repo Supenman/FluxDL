@@ -44,7 +44,7 @@ export const COLUMN_DEFS: ColumnDef[] = [
   { key: "added", label: "添加时间", sort: "added", defaultVisible: true, defaultWidth: 104, minWidth: 84, lockable: true },
   { key: "domain", label: "来源", sort: "domain", defaultVisible: true, defaultWidth: 150, minWidth: 90, lockable: true },
   { key: "category", label: "类型", sort: null, defaultVisible: false, defaultWidth: 76, minWidth: 60, lockable: true },
-  { key: "connections", label: "连接", sort: null, defaultVisible: false, defaultWidth: 68, minWidth: 56, lockable: true, align: "right" },
+  { key: "connections", label: "连接", sort: null, defaultVisible: true, defaultWidth: 68, minWidth: 56, lockable: true, align: "right" },
   { key: "speedLimit", label: "限速", sort: null, defaultVisible: false, defaultWidth: 88, minWidth: 72, lockable: true, align: "right" },
 ];
 

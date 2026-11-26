@@ -673,6 +673,7 @@ async fn segment_loop(
             _ = token.cancelled() => return Err(EngineError::Paused),
             r = tokio::time::timeout(Duration::from_secs(30), req.send()) => match r {
                 Err(_) => {
+                    crate::dns::invalidate_url(&entry.url);
                     last_error = Some(EngineError::message("分段连接超时"));
                     continue;
                 }
@@ -696,6 +697,7 @@ async fn segment_loop(
             if status == StatusCode::TOO_MANY_REQUESTS {
                 engine.note_host_failure(&entry.url, crate::host_limit::FailureKind::TooManyRequests);
             } else if status.is_server_error() {
+                crate::dns::invalidate_url(&entry.url);
                 engine.note_host_failure(&entry.url, crate::host_limit::FailureKind::ServerError);
             }
             let err = EngineError::message(format!("分段请求失败：HTTP {}", status.as_u16()));
@@ -789,6 +791,7 @@ async fn segment_loop(
         if swapped {
             // 换线：从已写到的 pos 重新发 Range（换一条连接），重置热身/窗口，
             // 但不消耗错误重试预算、也不丢弃已写字节。
+            crate::dns::invalidate_url(&entry.url);
             watch.on_reconnect(clock.elapsed().as_secs_f64());
             engine.emit_log(
                 &entry.id,

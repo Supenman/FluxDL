@@ -129,7 +129,16 @@ pub fn filename_from_headers(headers: &HeaderMap) -> Option<String> {
             }
         }
         if let Some(rest) = part.strip_prefix("filename=") {
-            fallback = Some(sanitize_filename(rest.trim_matches('"').trim()));
+            let raw_name = rest.trim_matches('"').trim();
+            let decoded = if raw_name.contains('%') {
+                percent_decode_str(raw_name)
+                    .decode_utf8()
+                    .map(|c| c.into_owned())
+                    .unwrap_or_else(|_| raw_name.to_string())
+            } else {
+                raw_name.to_string()
+            };
+            fallback = Some(sanitize_filename(&decoded));
         }
     }
     fallback

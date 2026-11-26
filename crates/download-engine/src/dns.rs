@@ -52,6 +52,24 @@ pub fn shared_resolver() -> Arc<FastDnsResolver> {
     INSTANCE.get_or_init(|| Arc::new(FastDnsResolver::new())).clone()
 }
 
+/// 主动失效指定域名的缓存优选 IP（例如节点突然掉速换线或超时时触发重新竞速）。
+pub fn invalidate_host(host: &str) {
+    let key = host.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        return;
+    }
+    shared_resolver().cache.lock().remove(&key);
+}
+
+/// 从 URL 提取主机名并失效其优选 IP 缓存。
+pub fn invalidate_url(raw_url: &str) {
+    if let Ok(parsed) = url::Url::parse(raw_url) {
+        if let Some(host) = parsed.host_str() {
+            invalidate_host(host);
+        }
+    }
+}
+
 /// 将指定胜出 IP 提升到候选列表首位（纯函数，便于单测）。
 pub fn promote_ip(addrs: &mut Vec<SocketAddr>, winner: IpAddr) {
     if let Some(idx) = addrs.iter().position(|a| a.ip() == winner) {
@@ -70,24 +88,24 @@ fn is_local_or_special(host: &str, addrs: &[SocketAddr]) -> bool {
     addrs.iter().all(|a| a.ip().is_loopback())
 }
 
-async fn race_fastest_ip(addrs: &[SocketAddr]) -> Option<IpAddr> {
+async fn race_port(addrs: &[SocketAddr], port: u16, timeout: Duration) -> Option<IpAddr> {
     let mut set: JoinSet<Option<IpAddr>> = JoinSet::new();
     for (idx, addr) in addrs.iter().take(MAX_CANDIDATES).enumerate() {
-        let target = SocketAddr::new(addr.ip(), 443);
+        let target = SocketAddr::new(addr.ip(), port);
         // 轻微错峰（RFC 8305 思路），避免瞬间 SYN 风暴同时仍以最快连通者胜出。
         let stagger = Duration::from_millis((idx as u64) * 35);
         set.spawn(async move {
             if !stagger.is_zero() {
                 tokio::time::sleep(stagger).await;
             }
-            match tokio::time::timeout(RACE_TIMEOUT, tokio::net::TcpStream::connect(target)).await {
+            match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(target)).await {
                 Ok(Ok(_stream)) => Some(target.ip()),
                 _ => None,
             }
         });
     }
 
-    let deadline = tokio::time::sleep(RACE_TIMEOUT);
+    let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
 
     loop {
@@ -110,11 +128,23 @@ async fn race_fastest_ip(addrs: &[SocketAddr]) -> Option<IpAddr> {
     }
 }
 
+async fn race_fastest_ip(addrs: &[SocketAddr]) -> Option<IpAddr> {
+    // 优先竞速 HTTPS (443)；若全部快速被拒/失败，再以短超时回退 HTTP (80) 兼容纯 HTTP 镜像站。
+    let started = Instant::now();
+    if let Some(ip) = race_port(addrs, 443, RACE_TIMEOUT).await {
+        return Some(ip);
+    }
+    if started.elapsed() < Duration::from_millis(1200) {
+        return race_port(addrs, 80, Duration::from_millis(1500)).await;
+    }
+    None
+}
+
 impl Resolve for FastDnsResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let cache = self.cache.clone();
         Box::pin(async move {
-            let host = name.as_str().to_string();
+            let host = name.as_str().to_ascii_lowercase();
             let resolved = tokio::net::lookup_host((host.as_str(), 0)).await?;
             let mut addrs: Vec<SocketAddr> = Vec::new();
             for addr in resolved {

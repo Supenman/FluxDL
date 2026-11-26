@@ -5587,3 +5587,96 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 失败条快捷补救按钮 */
+.drawer-alert-msg {
+  flex: 1;
+  min-width: 0;
+}
+
+.drawer-alert-action {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.drawer-alert-action:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* 底栏快捷胶囊与向上弹出菜单 */
+.status-popover-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.status-pill:hover {
+  background: var(--surface-subtle, rgba(127, 127, 127, 0.1));
+  color: var(--text);
+}
+
+.status-pill.is-active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.status-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  min-width: 128px;
+  padding: 5px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 60;
+}
+
+.status-popover-item {
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.status-popover-item:hover {
+  background: var(--surface-subtle, rgba(127, 127, 127, 0.12));
+}
+
+.status-popover-item.active {
+  color: var(--accent);
+  font-weight: 600;
+}

@@ -312,7 +312,18 @@ export function DetailDrawer() {
           {failed && (
             <div className="drawer-alert">
               <AlertTriangle size={15} />
-              <span>{task.error ?? "下载失败，请重试或检查链接"}</span>
+              <span className="drawer-alert-msg">{task.error ?? "下载失败，请重试或检查链接"}</span>
+              <button
+                type="button"
+                className="drawer-alert-action"
+                onClick={() => {
+                  setTab("info");
+                  setFreshUrl(task.url);
+                  setEditingUrl(true);
+                }}
+              >
+                <Link2 size={12} /> 更换链接续传
+              </button>
             </div>
           )}
 

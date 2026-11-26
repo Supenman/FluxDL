@@ -46,6 +46,8 @@ export interface Task {
   pendingApproval: boolean;
   /** 用户指定的预期 SHA-256（64 位 hex），校验通过/待校验由后端回填。 */
   expectedChecksum?: string | null;
+  /** 大文件落盘前的 SHA-256 校验中状态（前端展示「校验中…」）。 */
+  verifying?: boolean;
 }
 
 export interface NewTaskOptions {

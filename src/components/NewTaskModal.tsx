@@ -16,7 +16,7 @@ import {
 import { useStore } from "../store";
 import { backend } from "../lib/backend";
 import { matchSiteRule, readSiteRules } from "../lib/siteRules";
-import { cx, countUrls, extractUrls, isMediaUrl } from "../lib/format";
+import { cx, countUrls, extractUrls, formatBytes, isMediaUrl } from "../lib/format";
 import type { HubListing, TaskKind, UrlProbeInfo } from "../lib/types";
 
 type Mode = "auto" | "file" | "media";
@@ -313,7 +313,7 @@ export function NewTaskModal() {
             (group.kind === "media" && group.urls[0] ? group.urls[0] : null);
           const result = await backend.addTasks(group.urls, group.kind, {
             saveDir,
-            filename: urls.length === 1 && customFilename.trim() ? customFilename.trim() : null,
+            filename: urls.length === 1 && customFilename.trim() ? customFilename.trim() : undefined,
             connections: group.kind === "media" ? 1 : connections,
             speedLimit: limit,
             referer: autoReferer,
@@ -341,7 +341,7 @@ export function NewTaskModal() {
             const effectiveLimit = limit ?? rule?.speedLimit ?? null;
             const result = await backend.addTasks([singleUrl], group.kind, {
               saveDir,
-              filename: urls.length === 1 && customFilename.trim() ? customFilename.trim() : null,
+              filename: urls.length === 1 && customFilename.trim() ? customFilename.trim() : undefined,
               connections: effectiveConnections,
               speedLimit: effectiveLimit,
               referer: effectiveReferer,

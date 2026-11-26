@@ -5,7 +5,8 @@ use crate::types::*;
 use crate::util;
 use futures_util::StreamExt;
 use reqwest::header::{
-    HeaderName, HeaderValue, ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_RANGE, RANGE, REFERER,
+    HeaderName, HeaderValue, ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_RANGE, RANGE,
+    REFERER,
 };
 use reqwest::{Client, StatusCode};
 use std::path::{Path, PathBuf};

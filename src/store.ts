@@ -300,6 +300,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => ({ settings: { ...state.settings, ...patch } })),
   setSettingsLoaded: (loaded) => set({ settingsLoaded: loaded }),
 
+  setPowerAction: (action) => set({ powerAction: action }),
+
   setTheme: (theme) => {
     try {
       localStorage.setItem("fluxdl:theme", theme);

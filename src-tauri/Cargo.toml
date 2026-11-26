@@ -1,6 +1,6 @@
 [package]
 name = "fluxdl"
-version = "0.4.3-beta.4"
+version = "0.4.3-beta.5"
 description = "FluxDL · 迅流下载器"
 authors = ["FluxDL"]
 edition = "2021"

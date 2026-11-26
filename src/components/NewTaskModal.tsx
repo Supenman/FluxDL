@@ -161,7 +161,7 @@ export function NewTaskModal() {
     setImportedFile(names.join("、"));
   };
 
-  async function submit() {
+  async function submit(startLater = false) {
     if (submitting || urls.length === 0) return;
     // B2 定时下载：解析本地时间输入为 UTC 毫秒时间戳；过去时间直接拒绝，避免静默立即下载。
     let scheduledAt: number | null = null;
@@ -184,6 +184,7 @@ export function NewTaskModal() {
 
     let added = 0;
     const allErrors: string[] = [];
+    const createdIds: string[] = [];
     let firstId: string | null = null;
     try {
       const activeSiteRules = readSiteRules();
@@ -205,6 +206,7 @@ export function NewTaskModal() {
             scheduledAt,
           });
           added += result.tasks.length;
+          for (const t of result.tasks) createdIds.push(t.id);
           if (!firstId && result.tasks[0]) firstId = result.tasks[0].id;
           allErrors.push(...result.errors);
         } else {
@@ -231,13 +233,28 @@ export function NewTaskModal() {
               scheduledAt,
             });
             added += result.tasks.length;
+            for (const t of result.tasks) createdIds.push(t.id);
             if (!firstId && result.tasks[0]) firstId = result.tasks[0].id;
             allErrors.push(...result.errors);
           }
         }
       }
+      if (startLater && createdIds.length > 0) {
+        for (const id of createdIds) {
+          try {
+            await backend.pause(id);
+          } catch {
+            // ignore
+          }
+        }
+      }
       if (added > 0) {
-        pushToast(`已添加 ${added} 个下载任务`, "success");
+        pushToast(
+          startLater
+            ? `已加入稍后下载队列（${added} 个任务，保持暂停）`
+            : `已添加 ${added} 个下载任务`,
+          "success",
+        );
         setNewTaskOpen(false);
         if (added === 1 && firstId) select(firstId);
       } else {
@@ -492,8 +509,16 @@ export function NewTaskModal() {
               取消
             </button>
             <button
+              className="ghost-button"
+              onClick={() => void submit(true)}
+              disabled={urls.length === 0 || submitting}
+              title="添加到列表并保持暂停，稍后再开始下载"
+            >
+              稍后下载
+            </button>
+            <button
               className="primary-button"
-              onClick={() => void submit()}
+              onClick={() => void submit(false)}
               disabled={urls.length === 0 || submitting}
             >
               {submitting ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}

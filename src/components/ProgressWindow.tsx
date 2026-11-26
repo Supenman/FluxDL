@@ -14,11 +14,9 @@ export function ProgressWindow() {
   const task = useStore((s) =>
     s.progressId ? (s.tasks.find((t) => t.id === s.progressId) ?? null) : null,
   );
-  const logs = useStore((s) => (s.progressId ? s.logs[s.progressId] : undefined)) ?? [];
-  const task = progressId ? tasks.find((t) => t.id === progressId) ?? null : null;
+  const logs = useStore((s) => (s.progressId ? s.logs[s.progressId] : undefined)) ?? EMPTY_LOGS;
   const winRef = useRef<HTMLDivElement>(null);
   useFocusTrap(Boolean(progressId), winRef);
-  const logs = progressId ? logMap[progressId] ?? EMPTY_LOGS : EMPTY_LOGS;
 
   useEffect(() => {
     if (!progressId) return;

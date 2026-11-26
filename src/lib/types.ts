@@ -44,6 +44,8 @@ export interface Task {
   scheduledAt: number | null;
   /** 下载审核闸门：true 表示这条任务在等用户点「允许」，引擎不会启动它。 */
   pendingApproval: boolean;
+  /** 用户指定的预期 SHA-256（64 位 hex），校验通过/待校验由后端回填。 */
+  expectedChecksum?: string | null;
 }
 
 export interface NewTaskOptions {

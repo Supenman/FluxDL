@@ -619,11 +619,15 @@ impl Engine {
             if let Some(_guard) = engine.acquire_slot(&token).await {
                 engine.run_task(entry, token.clone()).await;
             }
-            // 无论任务完成、失败还是排队被取消，退出前必须清空 cancel 槽位，
-            // 否则 retry/resume 会被 spawn_runner 误判为「仍在运行」而静默卡死在已暂停。
+            // 退出前 cancel 自己的 token 并清理 cancel 槽位，避免失败后 retry/resume
+            // 被误判为「仍在运行」而卡死。但必须「条件清空」：并发 resume 会新建 token
+            // 覆盖槽位，旧 runner 若无条件清空，会把新 runner 的 token 抹掉，导致
+            // pause 只取消到部分连接、漏掉仍在下载的连接（p1_6 回归）。
             token.cancel();
             let mut cancel = entry_ref.cancel.lock().await;
-            *cancel = None;
+            if cancel.as_ref() == Some(&token) {
+                *cancel = None;
+            }
         });
     }
 

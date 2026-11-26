@@ -374,6 +374,15 @@ export const useStore = create<AppStore>((set) => ({
     set({ soundOnFinish: on });
   },
 
+  setAutoExtractZip: (on) => {
+    try {
+      localStorage.setItem("fluxdl:autoExtractZip", on ? "1" : "0");
+    } catch {
+      // ignore
+    }
+    set({ autoExtractZip: on });
+  },
+
   setQueues: (queues) => {
     saveQueuesConfig(queues);
     set({ queues });

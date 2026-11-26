@@ -17,9 +17,12 @@ const EMPTY: Series = { samples: [], scale: 1 };
 
 function readCollapsed(): boolean {
   try {
-    return localStorage.getItem("fluxdl:globalChartCollapsed") === "1";
+    const saved = localStorage.getItem("fluxdl:globalChartCollapsed");
+    // 默认收起：曲线是「想看时展开」的辅助信息，不该默认占据列表空间。
+    // 只在用户显式展开过（存 "0"）时才默认展开。
+    return saved === null ? true : saved === "1";
   } catch {
-    return false;
+    return true;
   }
 }
 

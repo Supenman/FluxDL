@@ -881,6 +881,57 @@ kbd {
   box-shadow: none;
 }
 
+/* 批量操作溢出菜单：低频操作收起，让主按钮与搜索保持突出 */
+.bulk-menu-wrap { position: relative; }
+.bulk-trigger { width: 34px; padding: 0; }
+.bulk-menu {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + 6px);
+  z-index: 60;
+  min-width: 200px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-soft);
+  animation: fade-in 0.12s var(--ease);
+}
+.bulk-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: start;
+  cursor: pointer;
+}
+.bulk-item:hover:not(:disabled) { background: var(--panel-2); }
+.bulk-item:disabled { opacity: 0.4; cursor: default; }
+.bulk-item.danger { color: var(--danger-text); }
+.bulk-item > span:nth-child(2) { flex: 1; }
+.bulk-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: var(--text-3);
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+}
+.bulk-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+.bulk-hint {
+  padding: 5px 9px 3px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
 /* ============================================================
    视图切换：卡片 / 多列数据表（借鉴 MDM 表格式扫视，原创实现）
    ============================================================ */
@@ -1177,7 +1228,19 @@ kbd {
 }
 .th-filter::placeholder { color: var(--text-3); opacity: 0.7; }
 .th-filter:focus { outline: none; border-color: var(--accent); }
-.task-table thead th { height: auto; padding-top: 6px; padding-bottom: 5px; }
+/* 默认态：表头单行、清爽；仅开启筛选时才为筛选框让出第二行高度 */
+.task-table thead th { height: auto; padding-top: 0; padding-bottom: 0; }
+.task-table thead th.has-filters { padding-top: 6px; padding-bottom: 5px; }
+.th-filter-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); flex: none; margin-inline-start: 2px;
+}
+.table-toolbar-tools { display: flex; align-items: center; gap: 6px; }
+.table-tool-button.active {
+  color: var(--accent-text);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
 .col-resizer {
   position: absolute;
   top: 0; inset-inline-end: 0; bottom: 0;

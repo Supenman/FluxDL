@@ -1,4 +1,5 @@
-import { Search, Plus, Pause, Play, X, ChevronDown, Trash2, Columns3, LayoutList, Grid3x3, List } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Search, Plus, Pause, Play, X, ChevronDown, Trash2, Columns3, LayoutList, Grid3x3, List, MoreHorizontal } from "lucide-react";
 import { useStore } from "../store";
 import { backend } from "../lib/backend";
 import type { Filter, SortKey } from "../lib/types";
@@ -43,6 +44,22 @@ export function Toolbar() {
   const setViewMode = useStore((s) => s.setViewMode);
   const setNewTaskOpen = useStore((s) => s.setNewTaskOpen);
   const pushToast = useStore((s) => s.pushToast);
+
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const bulkRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!bulkOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (bulkRef.current && !bulkRef.current.contains(e.target as Node)) setBulkOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setBulkOpen(false); };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [bulkOpen]);
 
   const activeCount = tasks.filter(
     (t) => t.status === "downloading" || t.status === "connecting",
@@ -151,33 +168,53 @@ export function Toolbar() {
           <ChevronDown size={13} className="select-caret" />
         </div>
 
-        <button
-          className="ghost-button"
-          onClick={pauseAll}
-          disabled={activeCount === 0}
-          title={activeCount === 0 ? "没有正在进行的任务" : "暂停全部"}
-        >
-          <Pause size={14} />
-          <span>全部暂停</span>
-        </button>
-        <button
-          className="ghost-button"
-          onClick={resumeAll}
-          disabled={pausedCount === 0}
-          title={pausedCount === 0 ? "没有可继续的任务" : "继续全部"}
-        >
-          <Play size={14} />
-          <span>全部继续</span>
-        </button>
-        <button
-          className="ghost-button"
-          onClick={deleteCompleted}
-          disabled={completedCount === 0}
-          title={completedCount === 0 ? "没有已完成的任务" : "清除已完成记录（保留文件）"}
-        >
-          <Trash2 size={14} />
-          <span>清除已完成</span>
-        </button>
+        <div className="bulk-menu-wrap" ref={bulkRef}>
+          <button
+            className="ghost-button bulk-trigger"
+            onClick={() => setBulkOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={bulkOpen}
+            title="批量操作"
+          >
+            <MoreHorizontal size={16} />
+          </button>
+          {bulkOpen && (
+            <div className="bulk-menu" role="menu">
+              <button
+                role="menuitem"
+                className="bulk-item"
+                onClick={() => { setBulkOpen(false); void pauseAll(); }}
+                disabled={activeCount === 0}
+              >
+                <Pause size={14} />
+                <span>全部暂停</span>
+                {activeCount > 0 && <span className="bulk-count">{activeCount}</span>}
+              </button>
+              <button
+                role="menuitem"
+                className="bulk-item"
+                onClick={() => { setBulkOpen(false); void resumeAll(); }}
+                disabled={pausedCount === 0}
+              >
+                <Play size={14} />
+                <span>全部继续</span>
+                {pausedCount > 0 && <span className="bulk-count">{pausedCount}</span>}
+              </button>
+              <div className="bulk-sep" role="separator" />
+              <button
+                role="menuitem"
+                className="bulk-item danger"
+                onClick={() => { setBulkOpen(false); void deleteCompleted(); }}
+                disabled={completedCount === 0}
+              >
+                <Trash2 size={14} />
+                <span>清除已完成记录</span>
+                {completedCount > 0 && <span className="bulk-count">{completedCount}</span>}
+              </button>
+              <div className="bulk-hint">清除记录不会删除已下载的文件</div>
+            </div>
+          )}
+        </div>
 
         <button
           className="primary-button"

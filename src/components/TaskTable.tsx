@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Columns3,
+  Filter,
   Globe,
   Pause,
   Play,
@@ -72,6 +73,7 @@ export function TaskTable({
 
   const [cfg, setCfg] = useState<ColumnsConfig>(() => readColumnsConfig());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
   const [dragKey, setDragKey] = useState<ColumnKey | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -180,6 +182,10 @@ export function TaskTable({
   };
 
   const activeFilterCount = Object.values(cfg.filters).filter((v) => v && v.trim()).length;
+  // 有筛选值时强制展开筛选行，避免用户看不到自己已设的筛选条件而无法调整。
+  const filtersVisible = showFilters || activeFilterCount > 0;
+  // 切换视图时收起筛选行，回到清爽的默认态。
+  const toggleFilters = () => setShowFilters((v) => !v);
 
   return (
     <div className="task-table-shell">
@@ -188,7 +194,17 @@ export function TaskTable({
           多列视图 · {rows.length} 项
           {activeFilterCount > 0 && <span className="table-filter-badge">过滤 {activeFilterCount}</span>}
         </div>
-        <div className="table-column-menu-wrap" ref={menuRef}>
+        <div className="table-toolbar-tools">
+          <button
+            className={cx("table-tool-button", filtersVisible && "active")}
+            onClick={toggleFilters}
+            aria-expanded={filtersVisible}
+            title={filtersVisible ? "隐藏列筛选框" : "显示列筛选框"}
+          >
+            <Filter size={13} />
+            筛选
+          </button>
+          <div className="table-column-menu-wrap" ref={menuRef}>
           <button
             className={cx("table-tool-button", menuOpen && "active")}
             onClick={() => setMenuOpen((v) => !v)}
@@ -236,6 +252,7 @@ export function TaskTable({
               )}
             </div>
           )}
+          </div>
         </div>
       </div>
 
@@ -260,6 +277,7 @@ export function TaskTable({
                       sorted && "sorted",
                       col.align === "right" && "align-right",
                       dragKey === col.key && "dragging",
+                      filtersVisible && "has-filters",
                     )}
                     onClick={() => headerClick(col)}
                     onKeyDown={(e) => {
@@ -281,16 +299,19 @@ export function TaskTable({
                     <span className="th-label">
                       {col.label}
                       {sorted && <span className="sort-arrow">▾</span>}
+                      {filterVal && <span className="th-filter-dot" title="此列有筛选" />}
                     </span>
-                    <input
-                      className="th-filter"
-                      value={filterVal}
-                      onChange={(e) => setFilter(col.key, e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => e.stopPropagation()}
-                      placeholder="筛选"
-                      aria-label={`按${col.label}筛选`}
-                    />
+                    {filtersVisible && (
+                      <input
+                        className="th-filter"
+                        value={filterVal}
+                        onChange={(e) => setFilter(col.key, e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        placeholder="筛选"
+                        aria-label={`按${col.label}筛选`}
+                      />
+                    )}
                     <span
                       className="col-resizer"
                       role="separator"

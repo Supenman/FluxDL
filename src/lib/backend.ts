@@ -194,6 +194,12 @@ export const backend = {
     return isTauri ? call("open_path", { path }) : mockBackend.openPath();
   },
 
+  setTaskbarProgress(progress: number | null, paused = false): Promise<void> {
+    return isTauri
+      ? call("set_taskbar_progress", { progress, paused })
+      : Promise.resolve();
+  },
+
   openFile(path: string): Promise<void> {
     return isTauri ? call("open_file", { path }) : mockBackend.openFile();
   },

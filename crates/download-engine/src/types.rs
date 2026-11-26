@@ -81,6 +81,9 @@ pub struct TaskView {
     /// 所有新任务一律从 true 开始（含手动添加与网页捕获）；批准后才置 false 并下载。
     /// serde default 让旧 tasks.json（无此字段）按 false 读取，历史任务不会被误锁。
     pub pending_approval: bool,
+    /// 传输完毕正在做落盘完整性校验（大文件耗时数秒至数十秒），用于区分「下载中」与「校验中」。
+    #[serde(default)]
+    pub verifying: bool,
     /// 用户可选指定的预期 SHA-256（64 位小写 hex）；有值时落盘前自动校验。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_checksum: Option<String>,

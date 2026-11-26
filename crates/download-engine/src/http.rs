@@ -487,6 +487,14 @@ pub async fn run(
             total,
         )
         .await?;
+        {
+            let mut view = entry.view.lock().await;
+            view.verifying = true;
+            view.speed_bps = 0;
+            view.eta_seconds = None;
+        }
+        engine.emit_task(entry).await;
+        engine.emit_log(&entry.id, "传输完成，正在校验磁盘文件完整性…".to_string());
         // 阶段一 #4：先做服务器真实性校验（若有 Repr-Digest），再做写盘回读校验。
         ensure_server_integrity(&entry, &file, &part_path, probe.integrity.as_ref(), total).await?;
         // 不可续传的单流同样做写后回读校验，校验通过才落成最终文件。
@@ -611,6 +619,14 @@ pub async fn run(
     // 所有分段写盘完毕后、落成最终文件之前：
     // 1) 阶段一 #4 服务器真实性校验（若有 Repr-Digest）；
     // 2) 逐段回读重算 SHA-256 比对（任何不一致都拒绝产出最终文件）。
+    {
+        let mut view = entry.view.lock().await;
+        view.verifying = true;
+        view.speed_bps = 0;
+        view.eta_seconds = None;
+    }
+    engine.emit_task(entry).await;
+    engine.emit_log(&entry.id, "传输完成，正在校验磁盘文件完整性…".to_string());
     ensure_server_integrity(&entry, &file, &part_path, probe.integrity.as_ref(), total).await?;
     finalize_verified(&entry, &file, &part_path, &save_path, &digests).await?;
     let mut view = entry.view.lock().await;

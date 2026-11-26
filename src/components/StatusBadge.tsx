@@ -13,11 +13,21 @@ export function StatusBadge({
   status,
   scheduledAt,
   pendingApproval,
+  verifying,
 }: {
   status: TaskStatus;
   scheduledAt?: number | null;
   pendingApproval?: boolean;
+  verifying?: boolean;
 }) {
+  if (verifying) {
+    return (
+      <span className="status-badge status-connecting">
+        <span className="status-dot" />
+        校验中…
+      </span>
+    );
+  }
   // 待审核优先：新任务停在 Paused，但语义是「等你允许」，不是普通暂停。
   if (pendingApproval) {
     return (

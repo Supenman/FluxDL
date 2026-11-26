@@ -548,6 +548,28 @@ async fn open_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_taskbar_progress(app: AppHandle, progress: Option<u64>, paused: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let state = match progress {
+            Some(p) => tauri::window::ProgressBarState {
+                status: Some(if paused {
+                    tauri::window::ProgressBarStatus::Paused
+                } else {
+                    tauri::window::ProgressBarStatus::Normal
+                }),
+                progress: Some(p.min(100)),
+            },
+            None => tauri::window::ProgressBarState {
+                status: Some(tauri::window::ProgressBarStatus::None),
+                progress: None,
+            },
+        };
+        let _ = window.set_progress_bar(state);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn open_file(path: String) -> Result<(), String> {
     opener::open(path).map_err(|e| e.to_string())
 }
@@ -1285,6 +1307,7 @@ pub fn run() {
             pick_file,
             open_path,
             open_file,
+            set_taskbar_progress,
             open_extension_folder,
         ])
         .build(tauri::generate_context!())

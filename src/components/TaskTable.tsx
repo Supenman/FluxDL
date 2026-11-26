@@ -444,6 +444,7 @@ function renderCell(
           status={task.status}
           scheduledAt={task.scheduledAt}
           pendingApproval={task.pendingApproval}
+          verifying={task.verifying}
         />
       );
     case "size":

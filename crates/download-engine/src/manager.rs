@@ -490,6 +490,7 @@ impl Engine {
             },
             scheduled_at,
             pending_approval: require_approval,
+            verifying: false,
         };
 
         let entry = Arc::new(TaskEntry {
@@ -651,6 +652,7 @@ impl Engine {
         }
 
         let mut view = entry.view.lock().await;
+        view.verifying = false;
         if token.is_cancelled() {
             if entry.wanted_pause.load(Ordering::SeqCst) {
                 view.status = TaskStatus::Paused;

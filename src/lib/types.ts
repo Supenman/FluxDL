@@ -137,6 +137,7 @@ export type Filter =
   | "category:other";
 export type SortKey =
   | "recent"
+  | "manual"
   | "name"
   | "size"
   | "progress"

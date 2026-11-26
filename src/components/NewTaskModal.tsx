@@ -11,10 +11,11 @@ import {
   FileDown,
   AlertTriangle,
   Loader2,
+  FileText,
 } from "lucide-react";
 import { useStore } from "../store";
 import { backend } from "../lib/backend";
-import { cx, extractUrls, isMediaUrl } from "../lib/format";
+import { cx, countUrls, extractUrls, isMediaUrl } from "../lib/format";
 import type { TaskKind } from "../lib/types";
 
 type Mode = "auto" | "file" | "media";
@@ -55,7 +56,9 @@ export function NewTaskModal() {
   const [scheduleLocal, setScheduleLocal] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [importedFile, setImportedFile] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   useFocusTrap(open, modalRef);
 
@@ -73,6 +76,7 @@ export function NewTaskModal() {
     setUserAgent("");
     setScheduleLocal("");
     setErrors([]);
+    setImportedFile(null);
     window.setTimeout(() => textareaRef.current?.focus(), 60);
     // Only reset when the modal opens, not when settings change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -93,6 +97,8 @@ export function NewTaskModal() {
   }, [open, submitting, text, mode, saveDir, connections, limit, format, referer, proxy, userAgent, scheduleLocal]);
 
   const urls = useMemo(() => extractUrls(text), [text]);
+  const urlCounts = useMemo(() => countUrls(text), [text]);
+  const duplicateCount = Math.max(0, urlCounts.raw - urlCounts.unique);
 
   const resolved = useMemo(() => {
     if (mode === "file") return urls.map((url) => ({ url, kind: "http" as TaskKind }));
@@ -122,6 +128,36 @@ export function NewTaskModal() {
   const pickFolder = async () => {
     const picked = await backend.pickFolder(saveDir);
     if (picked) setSaveDir(picked);
+  };
+
+  // 批量导入：从 .txt / .csv / .md / .url 文本文件中读取链接，追加到输入框。
+  const importFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const chunks: string[] = [];
+    const names: string[] = [];
+    for (const file of Array.from(files)) {
+      const textLike = file.type.startsWith("text/") || /\.(txt|csv|json|md|url)$/i.test(file.name);
+      if (!textLike) {
+        names.push(`${file.name}（非文本文件，跳过）`);
+        continue;
+      }
+      try {
+        const content = await file.text();
+        if (extractUrls(content).length) {
+          chunks.push(content.trim());
+          names.push(file.name);
+        } else {
+          names.push(`${file.name}（未找到链接）`);
+        }
+      } catch {
+        names.push(`${file.name}（读取失败）`);
+      }
+    }
+    if (chunks.length) {
+      const incoming = chunks.join("\n");
+      setText((prev) => (prev.trim() ? `${prev.trim()}\n${incoming}` : incoming));
+    }
+    setImportedFile(names.join("、"));
   };
 
   async function submit() {
@@ -198,7 +234,7 @@ export function NewTaskModal() {
             </div>
             <div>
               <h2>新建下载</h2>
-              <p>支持批量链接、站点视频与整段文本粘贴</p>
+              <p>支持批量链接、文本文件导入与站点视频，自动去重</p>
             </div>
           </div>
           <button
@@ -239,10 +275,31 @@ export function NewTaskModal() {
               spellCheck={false}
               rows={5}
             />
-            <button className="paste-button" onClick={paste} title="从剪贴板粘贴">
-              <Clipboard size={13} />
-              粘贴
-            </button>
+            <div className="url-field-tools">
+              <button className="paste-button" onClick={paste} title="从剪贴板粘贴">
+                <Clipboard size={13} />
+                粘贴
+              </button>
+              <button
+                className="paste-button"
+                onClick={() => fileInputRef.current?.click()}
+                title="从 .txt / .csv / .md 文件批量导入链接"
+              >
+                <FileText size={13} />
+                导入文件
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.csv,.json,.md,.url,text/plain"
+                multiple
+                hidden
+                onChange={(event) => {
+                  void importFiles(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+            </div>
           </div>
 
           <div className="url-summary">
@@ -250,8 +307,18 @@ export function NewTaskModal() {
               <Link2 size={12} />
               {urls.length === 0 ? "等待粘贴链接" : `已识别 ${urls.length} 个链接`}
             </span>
+            {duplicateCount > 0 && (
+              <span className="summary-chip dup" title="自动去重，不会重复添加">
+                去重 -{duplicateCount}
+              </span>
+            )}
             {fileCount > 0 && <span className="summary-chip">文件 {fileCount}</span>}
             {mediaCount > 0 && <span className="summary-chip media">视频 {mediaCount}</span>}
+            {importedFile && (
+              <span className="summary-imported" title={importedFile}>
+                <FileText size={11} /> {importedFile}
+              </span>
+            )}
           </div>
 
           <div className="form-grid">

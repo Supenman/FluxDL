@@ -9,6 +9,7 @@ import { useQueueScheduler } from "./hooks/useQueueScheduler";
 import { Titlebar } from "./components/Titlebar";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
+import { GlobalSpeedChart } from "./components/GlobalSpeedChart";
 import { TaskList } from "./components/TaskList";
 import { StatusBar } from "./components/StatusBar";
 import { DetailDrawer } from "./components/DetailDrawer";
@@ -20,6 +21,7 @@ import { ClipboardOffer } from "./components/ClipboardOffer";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ApprovalBanner } from "./components/ApprovalBanner";
 import { ProgressWindow } from "./components/ProgressWindow";
+import { TaskHoverPreview } from "./components/TaskHoverPreview";
 
 export function App() {
   const view = useStore((s) => s.view);
@@ -288,6 +290,7 @@ export function App() {
               <ApprovalBanner />
               <UpdateBanner />
               <Toolbar />
+              <GlobalSpeedChart />
               <div className="list-scroll">
                 <TaskList />
               </div>
@@ -298,6 +301,7 @@ export function App() {
       <StatusBar />
       <DetailDrawer />
       <ProgressWindow />
+      <TaskHoverPreview />
       <NewTaskModal />
       <CommandPalette />
       <Toasts />

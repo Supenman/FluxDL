@@ -7,6 +7,7 @@ import { TaskTable } from "./TaskTable";
 import { EmptyState } from "./EmptyState";
 import { ContextMenu } from "./ContextMenu";
 import { useTaskContextMenu } from "../hooks/useTaskContextMenu";
+import { useDragReorder } from "../hooks/useDragReorder";
 
 const GROUPS: Array<{ label: string; statuses: TaskStatus[] }> = [
   { label: "进行中", statuses: ["downloading", "connecting", "queued"] },
@@ -27,6 +28,7 @@ export function TaskList() {
   const viewMode = useStore((s) => s.viewMode);
   const queues = useStore((s) => s.queues);
   const queueFilter = useStore((s) => s.queueFilter);
+  const manualOrder = useStore((s) => s.manualOrder);
   const { menu, openMenu, close, items } = useTaskContextMenu();
 
   const menuNode = menu ? (
@@ -45,8 +47,24 @@ export function TaskList() {
         task.domain.toLowerCase().includes(q)
       );
     });
-    return sortTasks(matched, sort);
-  }, [tasks, filter, query, sort, queues, queueFilter]);
+    return sortTasks(matched, sort, manualOrder);
+  }, [tasks, filter, query, sort, manualOrder, queues, queueFilter]);
+
+  // 拖拽重排：把当前可见顺序里的两个 id 换位，写入持久化顺序并切到手动排序。
+  // 只有「按状态分组」的视图（recent 且无搜索）不接受拖拽——分组由状态决定，手动排序无意义。
+  const grouped = sort === "recent" && !query.trim();
+  const canDrag = !grouped;
+  const onReorder = (dragId: string, overId: string) => {
+    if (dragId === overId) return;
+    const ids = filtered.map((t) => t.id);
+    const from = ids.indexOf(dragId);
+    const to = ids.indexOf(overId);
+    if (from < 0 || to < 0) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, dragId);
+    useStore.getState().reorderTasks(ids);
+  };
+  const { rowProps, dragOverId, draggingId } = useDragReorder({ enabled: canDrag, onReorder });
 
   // 键盘导航：↑/↓ 只在筛选结果中移动「焦点行」，按 Enter 才打开详情抽屉。
   // 焦点与选中分离后，浏览列表不会不停弹抽屉遮盖内容，也符合 IDM/资源管理器的直觉。
@@ -110,13 +128,15 @@ export function TaskList() {
           focusedId={focusedId}
           onSelect={(id) => select(selectedId === id ? null : id)}
           onContextMenu={openMenu}
+          rowProps={rowProps}
+          dragOverId={dragOverId}
+          draggingId={draggingId}
         />
         {menuNode}
       </>
     );
   }
 
-  const grouped = sort === "recent" && !query.trim();
   if (!grouped) {
     return (
       <div className="task-list">
@@ -129,6 +149,9 @@ export function TaskList() {
             focused={focusedId === task.id}
             onSelect={() => select(selectedId === task.id ? null : task.id)}
             onContextMenu={openMenu}
+            {...rowProps(task.id)}
+            isDragOver={dragOverId === task.id}
+            isDragging={draggingId === task.id}
           />
         ))}
         {menuNode}

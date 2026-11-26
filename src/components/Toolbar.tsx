@@ -18,7 +18,8 @@ const TITLES: Record<Filter, { title: string; subtitle: string }> = {
 };
 
 const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
-  { value: "recent", label: "最近添加" },
+  { value: "recent", label: "默认分组" },
+  { value: "manual", label: "手动排序（可拖拽）" },
   { value: "name", label: "文件名" },
   { value: "size", label: "文件大小" },
   { value: "progress", label: "完成度" },

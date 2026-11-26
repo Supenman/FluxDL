@@ -77,6 +77,19 @@ function readBool(key: string, fallback: boolean): boolean {
   return fallback;
 }
 
+function readManualOrder(): string[] {
+  try {
+    const raw = localStorage.getItem("fluxdl:manualOrder");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
 function readDirection(): "ltr" | "rtl" {
   try {
     return localStorage.getItem("fluxdl:direction") === "rtl" ? "rtl" : "ltr";
@@ -115,6 +128,8 @@ interface AppStore {
   filter: Filter;
   query: string;
   sort: SortKey;
+  /** 手动排序时的任务 id 顺序（拖拽排序写入，localStorage 持久化） */
+  manualOrder: string[];
   settings: EngineOptions;
   settingsLoaded: boolean;
   theme: Theme;
@@ -167,6 +182,8 @@ interface AppStore {
   setFilter: (filter: Filter) => void;
   setQuery: (query: string) => void;
   setSort: (sort: SortKey) => void;
+  /** 拖拽排序：接收拖拽后的完整 id 顺序，自动切到手动排序并持久化。 */
+  reorderTasks: (ids: string[]) => void;
   setSettings: (patch: Partial<EngineOptions>) => void;
   setSettingsLoaded: (loaded: boolean) => void;
   setTheme: (theme: Theme) => void;
@@ -211,6 +228,7 @@ export const useStore = create<AppStore>((set) => ({
   filter: "all",
   query: "",
   sort: "recent",
+  manualOrder: readManualOrder(),
   settings: defaultEngineOptions,
   settingsLoaded: false,
   theme: readTheme(),
@@ -264,6 +282,14 @@ export const useStore = create<AppStore>((set) => ({
   setFilter: (filter) => set({ filter }),
   setQuery: (query) => set({ query }),
   setSort: (sort) => set({ sort }),
+  reorderTasks: (ids) => {
+    try {
+      localStorage.setItem("fluxdl:manualOrder", JSON.stringify(ids));
+    } catch {
+      // ignore
+    }
+    set({ manualOrder: ids, sort: "manual" });
+  },
 
   setSettings: (patch) =>
     set((state) => ({ settings: { ...state.settings, ...patch } })),
@@ -446,10 +472,23 @@ export function taskMatchesFilter(task: Task, filter: Filter): boolean {
   }
 }
 
-export function sortTasks(tasks: Task[], sort: SortKey): Task[] {
+export function sortTasks(tasks: Task[], sort: SortKey, manualOrder?: string[]): Task[] {
   const out = tasks.slice();
+  // 手动排序：按持久化的 id 顺序排；不在名单里的（新加的任务）按原顺序补在后面。
+  // 只在 mode===manual 时读取，避免每次进度刷新都做多余的 indexOf。
+  if (sort === "manual" && manualOrder?.length) {
+    const rank = new Map(manualOrder.map((id, index) => [id, index]));
+    out.sort((a, b) => {
+      const ra = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const rb = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return ra - rb;
+    });
+    return out;
+  }
   out.sort((a, b) => {
     switch (sort) {
+      case "manual":
+        return 0;
       case "name":
         return a.filename.localeCompare(b.filename, "zh-CN");
       case "size":

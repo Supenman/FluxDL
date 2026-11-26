@@ -26,6 +26,7 @@ import {
   percent,
 } from "../lib/format";
 import { StatusBadge } from "./StatusBadge";
+import { dispatchHoverShow, dispatchHoverMove, dispatchHoverHide } from "./TaskHoverPreview";
 
 interface TaskRowProps {
   task: Task;
@@ -34,6 +35,14 @@ interface TaskRowProps {
   onSelect: () => void;
   compact?: boolean;
   onContextMenu?: (event: React.MouseEvent, task: Task) => void;
+  /** 拖拽排序（由 useDragReorder 提供，摊到 DOM 上） */
+  draggable?: boolean;
+  onDragStart?: (event: React.DragEvent) => void;
+  onDragOver?: (event: React.DragEvent) => void;
+  onDrop?: (event: React.DragEvent) => void;
+  onDragEnd?: () => void;
+  isDragOver?: boolean;
+  isDragging?: boolean;
 }
 
 export function TaskRow({
@@ -43,6 +52,13 @@ export function TaskRow({
   onSelect,
   compact = false,
   onContextMenu,
+  draggable,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  isDragOver = false,
+  isDragging = false,
 }: TaskRowProps) {
   const select = useStore((s) => s.select);
   const pushToast = useStore((s) => s.pushToast);
@@ -109,9 +125,19 @@ export function TaskRow({
         focused && "is-focused",
         isActive && "is-active",
         failed && "is-failed",
+        isDragOver && "is-drag-over",
+        isDragging && "is-dragging",
       )}
       onClick={onSelect}
       onMouseDown={() => useStore.getState().setFocus(task.id)}
+      onMouseEnter={(e) => dispatchHoverShow(task.id, e.clientX, e.clientY)}
+      onMouseMove={(e) => dispatchHoverMove(e.clientX, e.clientY)}
+      onMouseLeave={() => dispatchHoverHide()}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
       onContextMenu={onContextMenu ? (event) => onContextMenu(event, task) : undefined}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {

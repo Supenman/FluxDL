@@ -190,6 +190,16 @@ export function extractUrls(text: string): string[] {
   return Array.from(new Set([...fromHttp, ...fromBv]));
 }
 
+/**
+ * 统计文本里原始链接数与去重后数量，用于批量导入时提示「已跳过 N 条重复链接」。
+ * 与 extractUrls 的清洗规则保持一致（去尾标点），但不做 BV 号补全，仅做计数。
+ */
+export function countUrls(text: string): { raw: number; unique: number } {
+  const matches = text.match(/https?:\/\/[^\s"'<>]+/gi) ?? [];
+  const cleaned = matches.map((u) => u.replace(/[),.;]+$/, ""));
+  return { raw: cleaned.length, unique: new Set(cleaned).size };
+}
+
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
 }

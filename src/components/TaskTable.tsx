@@ -34,6 +34,7 @@ import {
   type ColumnsConfig,
 } from "../lib/columns";
 import { StatusBadge } from "./StatusBadge";
+import { dispatchHoverShow, dispatchHoverMove, dispatchHoverHide } from "./TaskHoverPreview";
 
 const CATEGORY_LABEL: Record<FileCategory, string> = {
   video: "视频",
@@ -48,6 +49,10 @@ interface TaskTableProps {
   focusedId?: string | null;
   onSelect: (id: string) => void;
   onContextMenu?: (event: React.MouseEvent, task: Task) => void;
+  /** 拖拽排序：由 useDragReorder 摊到每个 tr 上 */
+  rowProps?: (id: string) => import("../hooks/useDragReorder").DragRowProps;
+  dragOverId?: string | null;
+  draggingId?: string | null;
 }
 
 /** MDM 式多列数据表：列可显隐/排序/调宽/重排/过滤，配置持久化。原创实现。 */
@@ -57,6 +62,9 @@ export function TaskTable({
   focusedId = null,
   onSelect,
   onContextMenu,
+  rowProps,
+  dragOverId = null,
+  draggingId = null,
 }: TaskTableProps) {
   const sort = useStore((s) => s.sort);
   const setSort = useStore((s) => s.setSort);
@@ -311,10 +319,16 @@ export function TaskTable({
                     selectedId === task.id && "is-selected",
                     focusedId === task.id && "is-focused",
                     done && "is-done",
+                    dragOverId === task.id && "is-drag-over",
+                    draggingId === task.id && "is-dragging",
                   )}
                   onClick={() => onSelect(task.id)}
                   onMouseDown={() => useStore.getState().setFocus(task.id)}
+                  onMouseEnter={(e) => dispatchHoverShow(task.id, e.clientX, e.clientY)}
+                  onMouseMove={(e) => dispatchHoverMove(e.clientX, e.clientY)}
+                  onMouseLeave={() => dispatchHoverHide()}
                   onContextMenu={onContextMenu ? (event) => onContextMenu(event, task) : undefined}
+                  {...(rowProps ? rowProps(task.id) : {})}
                   tabIndex={0}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {

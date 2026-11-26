@@ -5923,3 +5923,34 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 侧栏 IDM 式树形根节点 */
+.nav-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.nav-tree-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.nav-tree-caret:hover {
+  background: var(--surface-subtle, rgba(127, 127, 127, 0.12));
+  color: var(--text);
+}
+
+.nav-tree-root {
+  flex: 1;
+  min-width: 0;
+}

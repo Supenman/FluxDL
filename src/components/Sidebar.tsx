@@ -28,10 +28,8 @@ interface NavItem {
   icon: typeof Inbox;
 }
 
-const STATUS_NAV: NavItem[] = [
-  { id: "all", label: "全部任务", icon: Inbox },
+const UNFINISHED_NAV: NavItem[] = [
   { id: "active", label: "下载中", icon: ArrowDownToLine },
-  { id: "completed", label: "已完成", icon: CheckCircle2 },
   { id: "paused", label: "已暂停", icon: Pause },
   { id: "failed", label: "失败", icon: AlertTriangle },
 ];
@@ -69,7 +67,8 @@ export function Sidebar() {
   const queueFilter = useStore((s) => s.queueFilter);
   const setQueueFilter = useStore((s) => s.setQueueFilter);
   const pushToast = useStore((s) => s.pushToast);
-  const [typesOpen, setTypesOpen] = useState(true);
+  const [allOpen, setAllOpen] = useState(true);
+  const [unfinishedOpen, setUnfinishedOpen] = useState(true);
   const [queuesOpen, setQueuesOpen] = useState(true);
   const [width, setWidth] = useState<number>(readWidth);
 
@@ -129,6 +128,7 @@ export function Sidebar() {
 
   const selectFilter = (next: Filter) => {
     setView("tasks");
+    setQueueFilter(null);
     setFilter(next);
   };
 
@@ -157,19 +157,50 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar" style={{ width }}>
-      <nav className="nav">
-        <div className="nav-label">状态</div>
-        {STATUS_NAV.map(renderItem)}
+      <nav className="nav" aria-label="下载分类目录树">
+        <div className="nav-tree-row">
+          <button
+            type="button"
+            className="nav-tree-caret"
+            onClick={() => setAllOpen((v) => !v)}
+            aria-expanded={allOpen}
+            aria-label="展开或折叠全部下载分类"
+          >
+            <ChevronDown size={13} className={cx("group-caret", allOpen && "open")} />
+          </button>
+          <button
+            className={cx("nav-item nav-tree-root", view === "tasks" && filter === "all" && queueFilter === null && "active")}
+            onClick={() => selectFilter("all")}
+            aria-current={view === "tasks" && filter === "all" && queueFilter === null ? "true" : undefined}
+          >
+            <Inbox size={17} className="nav-icon" />
+            <span className="nav-text">全部下载</span>
+            {counts.all > 0 && <span className="nav-count">{counts.all}</span>}
+          </button>
+        </div>
+        {allOpen && <div className="nav-subtree">{TYPE_NAV.map(renderItem)}</div>}
 
         <button
           className="nav-group-toggle"
-          onClick={() => setTypesOpen((v) => !v)}
-          aria-expanded={typesOpen}
+          onClick={() => setUnfinishedOpen((v) => !v)}
+          aria-expanded={unfinishedOpen}
         >
-          <span className="nav-label">按类型</span>
-          <ChevronDown size={13} className={cx("group-caret", typesOpen && "open")} />
+          <span className="nav-label">
+            未完成 ({counts.active + counts.paused + counts.failed})
+          </span>
+          <ChevronDown size={13} className={cx("group-caret", unfinishedOpen && "open")} />
         </button>
-        {typesOpen && <div className="nav-subtree">{TYPE_NAV.map(renderItem)}</div>}
+        {unfinishedOpen && <div className="nav-subtree">{UNFINISHED_NAV.map(renderItem)}</div>}
+
+        <button
+          className={cx("nav-item", view === "tasks" && filter === "completed" && queueFilter === null && "active")}
+          onClick={() => selectFilter("completed")}
+          aria-current={view === "tasks" && filter === "completed" && queueFilter === null ? "true" : undefined}
+        >
+          <CheckCircle2 size={17} className="nav-icon" />
+          <span className="nav-text">已完成</span>
+          {counts.completed > 0 && <span className="nav-count">{counts.completed}</span>}
+        </button>
 
         <button
           className="nav-group-toggle"

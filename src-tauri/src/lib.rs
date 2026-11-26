@@ -13,6 +13,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 mod appversion;
 mod capture_guard;
+mod remotezip;
 mod tools;
 mod version;
 use capture_guard::CAPTURE_PORT;
@@ -637,6 +638,83 @@ async fn extract_zip(path: String) -> Result<String, String> {
     })
     .await
     .map_err(|e| format!("解压任务执行失败：{e}"))?
+}
+
+#[tauri::command]
+async fn list_remote_zip(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<remotezip::RemoteZipListing, String> {
+    let opts = state.engine.options();
+    let rt = tokio::runtime::Handle::current();
+    tauri::async_runtime::spawn_blocking(move || {
+        remotezip::list_remote_zip(
+            rt,
+            &url,
+            &opts.user_agent,
+            opts.proxy.as_deref(),
+            opts.use_system_proxy,
+        )
+    })
+    .await
+    .map_err(|e| format!("远程 ZIP 解析异常：{e}"))?
+}
+
+#[tauri::command]
+async fn extract_remote_zip_entries(
+    state: State<'_, AppState>,
+    url: String,
+    entries: Vec<String>,
+    save_dir: String,
+) -> Result<Vec<String>, String> {
+    let opts = state.engine.options();
+    let rt = tokio::runtime::Handle::current();
+    let dir = PathBuf::from(save_dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        remotezip::extract_remote_zip_entries(
+            rt,
+            &url,
+            &entries,
+            &dir,
+            &opts.user_agent,
+            opts.proxy.as_deref(),
+            opts.use_system_proxy,
+        )
+    })
+    .await
+    .map_err(|e| format!("远程 ZIP 提取异常：{e}"))?
+}
+
+#[tauri::command]
+fn toggle_drop_target(app: AppHandle) -> Result<bool, String> {
+    if let Some(win) = app.get_webview_window("drop-target") {
+        let _ = win.close();
+        return Ok(false);
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "drop-target",
+        tauri::WebviewUrl::App("index.html?dropTarget=1".into()),
+    )
+    .title("FluxDL 悬浮球")
+    .inner_size(64.0, 64.0)
+    .resizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .build()
+    .map_err(|e| format!("打开悬浮球失败：{e}"))?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn show_main_window(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1443,6 +1521,10 @@ pub fn run() {
             resolve_hub_url,
             grab_page_links,
             extract_zip,
+            list_remote_zip,
+            extract_remote_zip_entries,
+            toggle_drop_target,
+            show_main_window,
             execute_power_action,
             open_extension_folder,
         ])

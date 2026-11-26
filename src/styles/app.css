@@ -6389,3 +6389,32 @@ kbd {
   justify-content: flex-end;
   margin-top: 4px;
 }
+
+/* 桌面置顶拖拽悬浮球窗口 */
+.drop-orb {
+  width: 100vw;
+  height: 100vh;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent, #2563eb), #1d4ed8);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.25);
+  transition: transform 0.14s ease, background 0.18s ease;
+}
+
+.drop-orb.is-over {
+  transform: scale(0.92);
+  background: linear-gradient(135deg, #10b981, #059669);
+}
+
+.drop-orb.is-ok {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+.drop-orb.is-err {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+}

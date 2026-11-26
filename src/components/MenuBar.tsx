@@ -188,6 +188,18 @@ export function MenuBar() {
         { label: `${sort === "rate" ? "✓ " : ""}按速率排序`, onClick: () => setSortBy("rate") },
         { label: `${sort === "added" ? "✓ " : ""}按添加时间排序`, onClick: () => setSortBy("added") },
         { sep: true },
+        {
+          label: "显示 / 隐藏桌面拖拽悬浮球",
+          onClick: async () => {
+            try {
+              const opened = await backend.toggleDropTarget();
+              pushToast(opened ? "已开启桌面置顶拖拽悬浮球" : "已隐藏桌面拖拽悬浮球", "info");
+            } catch (err) {
+              pushToast(String(err), "error");
+            }
+          },
+        },
+        { sep: true },
         { label: "清空搜索过滤", onClick: () => setQuery("") },
       ],
     },

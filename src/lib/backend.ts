@@ -7,6 +7,7 @@ import type {
   ChecksumVerification,
   GrabResult,
   HubListing,
+  RemoteZipListing,
   PowerAction,
   UrlProbeInfo,
   AppVersionInfo,
@@ -208,6 +209,30 @@ export const backend = {
     return isTauri
       ? call<GrabResult>("grab_page_links", { url })
       : mockBackend.grabPageLinks(url);
+  },
+
+  listRemoteZip(url: string): Promise<RemoteZipListing> {
+    return isTauri
+      ? call<RemoteZipListing>("list_remote_zip", { url })
+      : mockBackend.listRemoteZip(url);
+  },
+
+  extractRemoteZipEntries(
+    url: string,
+    entries: string[],
+    saveDir: string,
+  ): Promise<string[]> {
+    return isTauri
+      ? call<string[]>("extract_remote_zip_entries", { url, entries, saveDir })
+      : mockBackend.extractRemoteZipEntries(url, entries, saveDir);
+  },
+
+  toggleDropTarget(): Promise<boolean> {
+    return isTauri ? call<boolean>("toggle_drop_target") : Promise.resolve(false);
+  },
+
+  showMainWindow(): Promise<void> {
+    return isTauri ? call("show_main_window") : Promise.resolve();
   },
 
   extractZip(path: string): Promise<string> {

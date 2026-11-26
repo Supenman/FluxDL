@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "FluxDL 主窗口权限",
-  "windows": ["main"],
+  "windows": ["main", "drop-target"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

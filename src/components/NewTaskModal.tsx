@@ -17,7 +17,7 @@ import { useStore } from "../store";
 import { backend } from "../lib/backend";
 import { matchSiteRule, readSiteRules } from "../lib/siteRules";
 import { cx, countUrls, extractUrls, formatBytes, isMediaUrl } from "../lib/format";
-import type { HubListing, TaskKind, UrlProbeInfo } from "../lib/types";
+import type { HubListing, RemoteZipListing, TaskKind, UrlProbeInfo } from "../lib/types";
 
 type Mode = "auto" | "file" | "media";
 
@@ -82,6 +82,9 @@ export function NewTaskModal() {
   const [customFilename, setCustomFilename] = useState("");
   const [resolvingHub, setResolvingHub] = useState(false);
   const [grabbingPage, setGrabbingPage] = useState(false);
+  const [loadingZip, setLoadingZip] = useState(false);
+  const [remoteZip, setRemoteZip] = useState<RemoteZipListing | null>(null);
+  const [zipSelected, setZipSelected] = useState<Set<string>>(() => new Set());
   const [hubListing, setHubListing] = useState<HubListing | null>(null);
   const [hubSelected, setHubSelected] = useState<Set<string>>(() => new Set());
   const [importedFile, setImportedFile] = useState<string | null>(null);
@@ -108,6 +111,8 @@ export function NewTaskModal() {
     setCustomFilename("");
     setHubListing(null);
     setHubSelected(new Set());
+    setRemoteZip(null);
+    setZipSelected(new Set());
     setImportedFile(null);
     window.setTimeout(() => textareaRef.current?.focus(), 60);
     // Only reset when the modal opens, not when settings change.
@@ -194,6 +199,7 @@ export function NewTaskModal() {
 
   const singleUrl = urls.length === 1 ? urls[0] : null;
   const canResolveHub = Boolean(singleUrl && looksLikeHubUrl(singleUrl));
+  const looksLikeZip = Boolean(singleUrl && /\.zip(?:\?|#|$)/i.test(singleUrl));
 
   async function runProbe() {
     if (!singleUrl || probing) return;
@@ -259,6 +265,46 @@ export function NewTaskModal() {
       pushToast(String(error), "error");
     } finally {
       setGrabbingPage(false);
+    }
+  }
+
+  async function runListRemoteZip() {
+    if (!singleUrl || loadingZip) return;
+    setLoadingZip(true);
+    setRemoteZip(null);
+    setHubListing(null);
+    try {
+      const listing = await backend.listRemoteZip(singleUrl);
+      setRemoteZip(listing);
+      setZipSelected(new Set());
+      if (listing.entries.length === 0) {
+        pushToast("该 ZIP 中没有可提取的文件条目", "info");
+      } else {
+        pushToast(`已读取远程 ZIP 目录：共 ${listing.entries.length} 个文件，请勾选需要提取的条目`, "success");
+      }
+    } catch (error) {
+      pushToast(String(error), "error");
+    } finally {
+      setLoadingZip(false);
+    }
+  }
+
+  async function extractSelectedZipEntries() {
+    if (!remoteZip || zipSelected.size === 0 || submitting) return;
+    setSubmitting(true);
+    setErrors([]);
+    try {
+      const saved = await backend.extractRemoteZipEntries(
+        remoteZip.url,
+        Array.from(zipSelected),
+        saveDir,
+      );
+      pushToast(`已精准提取 ${saved.length} 个文件至 ${saveDir}`, "success");
+      setNewTaskOpen(false);
+    } catch (error) {
+      setErrors([String(error)]);
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -552,6 +598,16 @@ export function NewTaskModal() {
                   >
                     {grabbingPage ? "抓取中…" : "抓取网页链接"}
                   </button>
+                  {looksLikeZip && (
+                    <button
+                      type="button"
+                      className="drawer-tool-btn primary"
+                      disabled={loadingZip}
+                      onClick={() => void runListRemoteZip()}
+                    >
+                      {loadingZip ? "读取目录…" : "在线查看 ZIP 内容"}
+                    </button>
+                  )}
                 </>
               )}
               {probeInfo && (
@@ -573,6 +629,51 @@ export function NewTaskModal() {
                 onChange={(e) => setCustomFilename(e.target.value)}
                 spellCheck={false}
               />
+            </div>
+          )}
+
+          {remoteZip && remoteZip.entries.length > 0 && (
+            <div className="hub-picker">
+              <div className="hub-picker-head">
+                <span>
+                  远程 ZIP 预览（{formatBytes(remoteZip.totalSize)} · 已选 {zipSelected.size}/{remoteZip.entries.length}）
+                </span>
+                <button
+                  type="button"
+                  className="drawer-tool-btn primary"
+                  disabled={zipSelected.size === 0 || submitting}
+                  onClick={() => void extractSelectedZipEntries()}
+                >
+                  {submitting ? "提取中…" : `仅提取所选 (${zipSelected.size})`}
+                </button>
+              </div>
+              <div className="hub-picker-list">
+                {remoteZip.entries.map((entry) => {
+                  const checked = zipSelected.has(entry.name);
+                  return (
+                    <label className="hub-file-row" key={entry.name}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setZipSelected((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(entry.name)) next.delete(entry.name);
+                            else next.add(entry.name);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span className="hub-file-name mono" title={entry.name}>
+                        {entry.name}
+                      </span>
+                      <span className="hub-file-size">
+                        {formatBytes(entry.uncompressedSize)}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           )}
 

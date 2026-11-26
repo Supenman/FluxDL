@@ -296,3 +296,15 @@ export interface GrabResult {
   title: string;
   links: GrabbedLink[];
 }
+
+export interface RemoteZipEntry {
+  name: string;
+  compressedSize: number;
+  uncompressedSize: number;
+}
+
+export interface RemoteZipListing {
+  url: string;
+  totalSize: number;
+  entries: RemoteZipEntry[];
+}

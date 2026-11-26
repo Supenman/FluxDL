@@ -3,6 +3,7 @@ import type {
   ChecksumVerification,
   GrabResult,
   HubListing,
+  RemoteZipListing,
   UrlProbeInfo,
   AppVersionInfo,
   EngineEvent,
@@ -754,6 +755,25 @@ export class MockBackend {
 
   async extractZip(path: string): Promise<string> {
     return path.replace(/\.zip$/i, "");
+  }
+
+  async listRemoteZip(url: string): Promise<RemoteZipListing> {
+    return {
+      url,
+      totalSize: 512 * 1024 * 1024,
+      entries: [
+        { name: "docs/README.md", compressedSize: 4096, uncompressedSize: 12288 },
+        { name: "bin/tool.exe", compressedSize: 8_388_608, uncompressedSize: 18_874_368 },
+      ],
+    };
+  }
+
+  async extractRemoteZipEntries(
+    _url: string,
+    entries: string[],
+    saveDir: string,
+  ): Promise<string[]> {
+    return entries.map((e) => `${saveDir}/${e}`);
   }
 
   async openFile(): Promise<void> {

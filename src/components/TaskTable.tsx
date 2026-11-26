@@ -35,7 +35,6 @@ import {
   type ColumnsConfig,
 } from "../lib/columns";
 import { StatusBadge } from "./StatusBadge";
-import { dispatchHoverShow, dispatchHoverMove, dispatchHoverHide } from "./TaskHoverPreview";
 
 const CATEGORY_LABEL: Record<FileCategory, string> = {
   video: "视频",
@@ -348,9 +347,6 @@ export function TaskTable({
                   )}
                   onClick={(event) => onSelect(task.id, event)}
                   onMouseDown={() => useStore.getState().setFocus(task.id)}
-                  onMouseEnter={(e) => dispatchHoverShow(task.id, e.clientX, e.clientY)}
-                  onMouseMove={(e) => dispatchHoverMove(e.clientX, e.clientY)}
-                  onMouseLeave={() => dispatchHoverHide()}
                   onContextMenu={onContextMenu ? (event) => onContextMenu(event, task) : undefined}
                   {...(rowProps ? rowProps(task.id) : {})}
                   tabIndex={0}
@@ -434,9 +430,11 @@ function renderCell(
           </span>
           <span className="c-name-text">
             <span className="c-name-line" title={task.filename}>{task.filename}</span>
-            <span className="table-mini-track" aria-hidden="true">
-              <span className="table-mini-fill" style={{ width: `${pct}%` }} />
-            </span>
+            {task.status !== "completed" && pct > 0 && (
+              <span className="table-mini-track" aria-hidden="true">
+                <span className="table-mini-fill" style={{ width: `${pct}%` }} />
+              </span>
+            )}
           </span>
         </>
       );

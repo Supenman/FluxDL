@@ -26,7 +26,6 @@ import {
   percent,
 } from "../lib/format";
 import { StatusBadge } from "./StatusBadge";
-import { dispatchHoverShow, dispatchHoverMove, dispatchHoverHide } from "./TaskHoverPreview";
 
 interface TaskRowProps {
   task: Task;
@@ -133,9 +132,6 @@ function TaskRowInner({
       )}
       onClick={(event) => onSelect(event)}
       onMouseDown={() => useStore.getState().setFocus(task.id)}
-      onMouseEnter={(e) => dispatchHoverShow(task.id, e.clientX, e.clientY)}
-      onMouseMove={(e) => dispatchHoverMove(e.clientX, e.clientY)}
-      onMouseLeave={() => dispatchHoverHide()}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragOver={onDragOver}

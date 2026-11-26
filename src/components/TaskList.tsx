@@ -268,6 +268,7 @@ export function TaskList() {
           </section>
         );
       })}
+      {batchBar}
       {menuNode}
     </div>
   );

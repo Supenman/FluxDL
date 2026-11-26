@@ -56,6 +56,16 @@ function Toggle({
   );
 }
 
+type SettingsTab = "download" | "rules" | "appearance" | "tools" | "all";
+
+const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
+  { id: "download", label: "下载与体验" },
+  { id: "rules", label: "队列与站点规则" },
+  { id: "appearance", label: "外观与无障碍" },
+  { id: "tools", label: "视频工具与更新" },
+  { id: "all", label: "全部" },
+];
+
 export function SettingsPage() {
   const settings = useStore((s) => s.settings);
   const theme = useStore((s) => s.theme);
@@ -82,6 +92,8 @@ export function SettingsPage() {
   } | null>(null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(true);
+  const [activeTab, setActiveTab] = useState<SettingsTab>("download");
+  const show = (tab: Exclude<SettingsTab, "all">) => activeTab === "all" || activeTab === tab;
   const [snoozeLabel, setSnoozeLabel] = useState(() => getNotificationSnoozeLabel());
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<ToolProgress | null>(null);
@@ -251,6 +263,22 @@ export function SettingsPage() {
         </div>
       </header>
 
+      <nav className="settings-tabs" role="tablist" aria-label="设置分组">
+        {SETTINGS_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === t.id}
+            className={cx("settings-tab", activeTab === t.id && "active")}
+            onClick={() => setActiveTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {show("appearance") && (
       <section className="settings-section">
         <div className="section-head">
           <span className="section-icon">
@@ -379,7 +407,9 @@ export function SettingsPage() {
           </div>
         </div>
       </section>
+      )}
 
+      {show("download") && (
       <section className="settings-section">
         <div className="section-head">
           <span className="section-icon">
@@ -522,7 +552,9 @@ export function SettingsPage() {
           />
         </div>
       </section>
+      )}
 
+      {show("tools") && (
       <section className="settings-section">
         <div className="section-head">
           <span className="section-icon">
@@ -716,7 +748,9 @@ export function SettingsPage() {
           </div>
         </div>
       </section>
+      )}
 
+      {show("download") && (
       <section className="settings-section">
         <div className="section-head">
           <span className="section-icon">
@@ -885,13 +919,18 @@ export function SettingsPage() {
           </div>
         </div>
       </section>
+      )}
 
-      <QueueManager />
+      {show("rules") && (
+        <>
+          <QueueManager />
+          <SiteRulesSection />
+        </>
+      )}
 
-      <SiteRulesSection />
+      {show("tools") && <UpdateSection />}
 
-      <UpdateSection />
-
+      {show("tools") && (
       <section className="settings-section">
         <div className="section-head">
           <span className="section-icon">
@@ -939,6 +978,7 @@ export function SettingsPage() {
           </button>
         </div>
       </section>
+      )}
 
       <footer className="settings-footer">
         <span>FluxDL · 私人使用版本</span>

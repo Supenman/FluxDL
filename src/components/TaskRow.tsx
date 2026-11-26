@@ -31,8 +31,9 @@ import { dispatchHoverShow, dispatchHoverMove, dispatchHoverHide } from "./TaskH
 interface TaskRowProps {
   task: Task;
   selected: boolean;
+  multiSelected?: boolean;
   focused?: boolean;
-  onSelect: () => void;
+  onSelect: (event?: React.MouseEvent) => void;
   compact?: boolean;
   onContextMenu?: (event: React.MouseEvent, task: Task) => void;
   /** 拖拽排序（由 useDragReorder 提供，摊到 DOM 上） */
@@ -48,6 +49,7 @@ interface TaskRowProps {
 function TaskRowInner({
   task,
   selected,
+  multiSelected = false,
   focused = false,
   onSelect,
   compact = false,
@@ -122,13 +124,14 @@ function TaskRowInner({
       className={cx(
         "task-row",
         selected && "is-selected",
+        multiSelected && "is-multi-selected",
         focused && "is-focused",
         isActive && "is-active",
         failed && "is-failed",
         isDragOver && "is-drag-over",
         isDragging && "is-dragging",
       )}
-      onClick={onSelect}
+      onClick={(event) => onSelect(event)}
       onMouseDown={() => useStore.getState().setFocus(task.id)}
       onMouseEnter={(e) => dispatchHoverShow(task.id, e.clientX, e.clientY)}
       onMouseMove={(e) => dispatchHoverMove(e.clientX, e.clientY)}
@@ -382,6 +385,7 @@ export const TaskRow = memo(TaskRowInner, (prev, next) => {
   return (
     prev.task === next.task &&
     prev.selected === next.selected &&
+    prev.multiSelected === next.multiSelected &&
     prev.focused === next.focused &&
     prev.compact === next.compact &&
     prev.draggable === next.draggable &&

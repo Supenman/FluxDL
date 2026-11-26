@@ -1,4 +1,4 @@
-import { useMemo, useEffect } from "react";
+import { useMemo, useEffect, useState, useRef, useCallback } from "react";
 import { useStore, sortTasks, taskMatchesFilter } from "../store";
 import { queueOfTask } from "../lib/queues";
 import type { TaskStatus } from "../lib/types";
@@ -6,6 +6,7 @@ import { TaskRow } from "./TaskRow";
 import { TaskTable } from "./TaskTable";
 import { EmptyState } from "./EmptyState";
 import { ContextMenu } from "./ContextMenu";
+import { BatchActionBar } from "./BatchActionBar";
 import { useTaskContextMenu } from "../hooks/useTaskContextMenu";
 import { useDragReorder } from "../hooks/useDragReorder";
 
@@ -35,6 +36,9 @@ export function TaskList() {
     <ContextMenu x={menu.x} y={menu.y} items={items} onClose={close} label={`${menu.task.filename} 操作`} />
   ) : null;
 
+  const [multiSelected, setMultiSelected] = useState<Set<string>>(() => new Set());
+  const anchorRef = useRef<string | null>(null);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const matched = tasks.filter((task) => {
@@ -49,6 +53,61 @@ export function TaskList() {
     });
     return sortTasks(matched, sort, manualOrder);
   }, [tasks, filter, query, sort, manualOrder, queues, queueFilter]);
+
+  // 剔除已不存在或被筛选隐藏的多选 ID
+  const visibleMultiIds = useMemo(() => {
+    if (multiSelected.size === 0) return [] as string[];
+    const visible = new Set(filtered.map((t) => t.id));
+    return [...multiSelected].filter((id) => visible.has(id));
+  }, [multiSelected, filtered]);
+
+  const clearMulti = useCallback(() => {
+    setMultiSelected(new Set());
+  }, []);
+
+  const selectAllVisible = useCallback(() => {
+    setMultiSelected(new Set(filtered.map((t) => t.id)));
+  }, [filtered]);
+
+  const handleRowSelect = useCallback(
+    (id: string, event?: React.MouseEvent) => {
+      const isCtrl = Boolean(event && (event.ctrlKey || event.metaKey));
+      const isShift = Boolean(event && event.shiftKey);
+
+      if (isShift) {
+        const ids = filtered.map((t) => t.id);
+        const anchor = anchorRef.current ?? focusedId ?? selectedId ?? id;
+        const from = ids.indexOf(anchor);
+        const to = ids.indexOf(id);
+        if (from >= 0 && to >= 0) {
+          const [lo, hi] = from <= to ? [from, to] : [to, from];
+          setMultiSelected(new Set(ids.slice(lo, hi + 1)));
+          return;
+        }
+      }
+
+      if (isCtrl) {
+        setMultiSelected((prev) => {
+          const next = new Set(prev);
+          if (next.size === 0 && selectedId && selectedId !== id) {
+            next.add(selectedId);
+          }
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+        anchorRef.current = id;
+        return;
+      }
+
+      if (multiSelected.size > 0) {
+        setMultiSelected(new Set());
+      }
+      anchorRef.current = id;
+      select(selectedId === id ? null : id);
+    },
+    [filtered, focusedId, selectedId, multiSelected.size, select],
+  );
 
   // 拖拽重排：把当前可见顺序里的两个 id 换位，写入持久化顺序并切到手动排序。
   // 只有「按状态分组」的视图（recent 且无搜索）不接受拖拽——分组由状态决定，手动排序无意义。
@@ -96,6 +155,17 @@ export function TaskList() {
         });
         return;
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        if (filtered.length > 0) {
+          e.preventDefault();
+          setMultiSelected(new Set(filtered.map((t) => t.id)));
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        setMultiSelected((prev) => (prev.size > 0 ? new Set() : prev));
+        return;
+      }
       if (e.key === "Enter") {
         const id = state.focusedId;
         if (!id) return;
@@ -119,19 +189,30 @@ export function TaskList() {
     );
   }
 
+  const batchBar = (
+    <BatchActionBar
+      selectedIds={visibleMultiIds}
+      totalCount={filtered.length}
+      onSelectAll={selectAllVisible}
+      onClear={clearMulti}
+    />
+  );
+
   if (viewMode === "table") {
     return (
       <>
         <TaskTable
           tasks={filtered}
           selectedId={selectedId}
+          multiSelected={multiSelected}
           focusedId={focusedId}
-          onSelect={(id) => select(selectedId === id ? null : id)}
+          onSelect={handleRowSelect}
           onContextMenu={openMenu}
           rowProps={rowProps}
           dragOverId={dragOverId}
           draggingId={draggingId}
         />
+        {batchBar}
         {menuNode}
       </>
     );
@@ -146,14 +227,16 @@ export function TaskList() {
             task={task}
             compact={compact}
             selected={selectedId === task.id}
+            multiSelected={multiSelected.has(task.id)}
             focused={focusedId === task.id}
-            onSelect={() => select(selectedId === task.id ? null : task.id)}
+            onSelect={(event) => handleRowSelect(task.id, event)}
             onContextMenu={openMenu}
             {...rowProps(task.id)}
             isDragOver={dragOverId === task.id}
             isDragging={draggingId === task.id}
           />
         ))}
+        {batchBar}
         {menuNode}
       </div>
     );

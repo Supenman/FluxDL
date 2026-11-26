@@ -47,8 +47,9 @@ const CATEGORY_LABEL: Record<FileCategory, string> = {
 interface TaskTableProps {
   tasks: Task[];
   selectedId: string | null;
+  multiSelected?: ReadonlySet<string>;
   focusedId?: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, event?: React.MouseEvent) => void;
   onContextMenu?: (event: React.MouseEvent, task: Task) => void;
   /** 拖拽排序：由 useDragReorder 摊到每个 tr 上 */
   rowProps?: (id: string) => import("../hooks/useDragReorder").DragRowProps;
@@ -60,6 +61,7 @@ interface TaskTableProps {
 export function TaskTable({
   tasks,
   selectedId,
+  multiSelected,
   focusedId = null,
   onSelect,
   onContextMenu,
@@ -338,12 +340,13 @@ export function TaskTable({
                   className={cx(
                     "task-table-row",
                     selectedId === task.id && "is-selected",
+                    multiSelected?.has(task.id) && "is-multi-selected",
                     focusedId === task.id && "is-focused",
                     done && "is-done",
                     dragOverId === task.id && "is-drag-over",
                     draggingId === task.id && "is-dragging",
                   )}
-                  onClick={() => onSelect(task.id)}
+                  onClick={(event) => onSelect(task.id, event)}
                   onMouseDown={() => useStore.getState().setFocus(task.id)}
                   onMouseEnter={(e) => dispatchHoverShow(task.id, e.clientX, e.clientY)}
                   onMouseMove={(e) => dispatchHoverMove(e.clientX, e.clientY)}

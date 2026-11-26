@@ -17,7 +17,7 @@ import {
 import { useStore } from "../store";
 import { backend } from "../lib/backend";
 import { matchSiteRule, readSiteRules } from "../lib/siteRules";
-import { cx, countUrls, extractUrls, formatBytes, isMediaUrl } from "../lib/format";
+import { cx, countUrls, extractUrls, isMediaUrl } from "../lib/format";
 import type { HubListing, RemoteZipListing, TaskKind, UrlProbeInfo } from "../lib/types";
 
 type Mode = "auto" | "file" | "media";

@@ -11,8 +11,10 @@ const EMPTY_LOGS: never[] = [];
 export function ProgressWindow() {
   const progressId = useStore((s) => s.progressId);
   const setProgressId = useStore((s) => s.setProgressId);
-  const tasks = useStore((s) => s.tasks);
-  const logMap = useStore((s) => s.logs);
+  const task = useStore((s) =>
+    s.progressId ? (s.tasks.find((t) => t.id === s.progressId) ?? null) : null,
+  );
+  const logs = useStore((s) => (s.progressId ? s.logs[s.progressId] : undefined)) ?? [];
   const task = progressId ? tasks.find((t) => t.id === progressId) ?? null : null;
   const winRef = useRef<HTMLDivElement>(null);
   useFocusTrap(Boolean(progressId), winRef);

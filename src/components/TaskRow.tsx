@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import {
   Pause,
   Play,
@@ -45,7 +45,7 @@ interface TaskRowProps {
   isDragging?: boolean;
 }
 
-export function TaskRow({
+function TaskRowInner({
   task,
   selected,
   focused = false,
@@ -377,3 +377,15 @@ export function TaskRow({
     </div>
   );
 }
+
+export const TaskRow = memo(TaskRowInner, (prev, next) => {
+  return (
+    prev.task === next.task &&
+    prev.selected === next.selected &&
+    prev.focused === next.focused &&
+    prev.compact === next.compact &&
+    prev.draggable === next.draggable &&
+    prev.isDragOver === next.isDragOver &&
+    prev.isDragging === next.isDragging
+  );
+});

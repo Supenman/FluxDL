@@ -52,12 +52,12 @@ const CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
 export function DetailDrawer() {
   const selectedId = useStore((s) => s.selectedId);
-  const tasks = useStore((s) => s.tasks);
+  const task = useStore((s) =>
+    s.selectedId ? (s.tasks.find((t) => t.id === s.selectedId) ?? null) : null,
+  );
   const select = useStore((s) => s.select);
-  const logs = useStore((s) => s.logs);
+  const taskLogs = useStore((s) => (s.selectedId ? s.logs[s.selectedId] : undefined)) ?? [];
   const pushToast = useStore((s) => s.pushToast);
-
-  const task = tasks.find((t) => t.id === selectedId) ?? null;
   const [tab, setTab] = useState<Tab>("overview");
   const drawerRef = useRef<HTMLElement>(null);
   useFocusTrap(Boolean(task), drawerRef);
@@ -100,7 +100,6 @@ export function DetailDrawer() {
   const failed = task.status === "failed";
   const paused = task.status === "paused";
   const pending = task.pendingApproval === true;
-  const taskLogs = logs[task.id] ?? [];
 
   const primary = async () => {
     try {

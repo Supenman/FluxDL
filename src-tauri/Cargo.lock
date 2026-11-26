@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "fluxdl"
-version = "0.4.3-beta.5"
+version = "0.4.3-beta.6"
 dependencies = [
  "arboard",
  "chrono",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "fluxdl-engine"
-version = "0.4.3-beta.5"
+version = "0.4.3-beta.6"
 dependencies = [
  "base64 0.22.1",
  "chrono",

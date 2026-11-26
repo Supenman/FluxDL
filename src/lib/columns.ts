@@ -35,17 +35,17 @@ export interface ColumnDef {
 
 /** 列定义表。顺序即默认显示顺序；新增列只需在此追加，读配置时会自动补默认值。 */
 export const COLUMN_DEFS: ColumnDef[] = [
-  { key: "name", label: "文件名", sort: "name", defaultVisible: true, defaultWidth: 300, minWidth: 160, lockable: false },
-  { key: "status", label: "状态", sort: "status", defaultVisible: true, defaultWidth: 92, minWidth: 72, lockable: true },
-  { key: "size", label: "大小", sort: "size", defaultVisible: true, defaultWidth: 88, minWidth: 64, lockable: true, align: "right" },
-  { key: "progress", label: "进度", sort: "progress", defaultVisible: true, defaultWidth: 132, minWidth: 96, lockable: true },
-  { key: "eta", label: "剩余", sort: "eta", defaultVisible: true, defaultWidth: 88, minWidth: 64, lockable: true, align: "right" },
-  { key: "rate", label: "速率", sort: "rate", defaultVisible: true, defaultWidth: 92, minWidth: 68, lockable: true, align: "right" },
-  { key: "added", label: "添加时间", sort: "added", defaultVisible: true, defaultWidth: 104, minWidth: 84, lockable: true },
-  { key: "domain", label: "来源", sort: "domain", defaultVisible: true, defaultWidth: 150, minWidth: 90, lockable: true },
-  { key: "category", label: "类型", sort: null, defaultVisible: false, defaultWidth: 76, minWidth: 60, lockable: true },
-  { key: "connections", label: "连接", sort: null, defaultVisible: true, defaultWidth: 68, minWidth: 56, lockable: true, align: "right" },
-  { key: "speedLimit", label: "限速", sort: null, defaultVisible: false, defaultWidth: 88, minWidth: 72, lockable: true, align: "right" },
+  { key: "name", label: "文件名", sort: "name", defaultVisible: true, defaultWidth: 240, minWidth: 150, lockable: false },
+  { key: "size", label: "大小", sort: "size", defaultVisible: true, defaultWidth: 78, minWidth: 60, lockable: true, align: "right" },
+  { key: "status", label: "状态", sort: "status", defaultVisible: true, defaultWidth: 82, minWidth: 68, lockable: true },
+  { key: "progress", label: "进度", sort: "progress", defaultVisible: true, defaultWidth: 108, minWidth: 84, lockable: true },
+  { key: "eta", label: "剩余时间", sort: "eta", defaultVisible: true, defaultWidth: 76, minWidth: 56, lockable: true, align: "right" },
+  { key: "rate", label: "传输速率", sort: "rate", defaultVisible: true, defaultWidth: 82, minWidth: 64, lockable: true, align: "right" },
+  { key: "added", label: "添加时间", sort: "added", defaultVisible: true, defaultWidth: 96, minWidth: 80, lockable: true },
+  { key: "domain", label: "来源", sort: "domain", defaultVisible: false, defaultWidth: 140, minWidth: 90, lockable: true },
+  { key: "category", label: "类型", sort: null, defaultVisible: false, defaultWidth: 72, minWidth: 60, lockable: true },
+  { key: "connections", label: "连接", sort: null, defaultVisible: false, defaultWidth: 64, minWidth: 52, lockable: true, align: "right" },
+  { key: "speedLimit", label: "限速", sort: null, defaultVisible: false, defaultWidth: 84, minWidth: 70, lockable: true, align: "right" },
 ];
 
 const DEF_BY_KEY = new Map(COLUMN_DEFS.map((d) => [d.key, d]));
@@ -63,7 +63,7 @@ export interface ColumnsConfig {
   filters: Record<string, string>;
 }
 
-const STORAGE_KEY = "fluxdl:columns";
+const STORAGE_KEY = "fluxdl:columns:v2";
 
 export function defaultColumnsConfig(): ColumnsConfig {
   const states: ColumnsConfig["states"] = {};

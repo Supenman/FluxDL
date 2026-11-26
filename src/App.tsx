@@ -7,6 +7,7 @@ import { applyAccent } from "./lib/theme";
 import { enqueueFinishNotification } from "./lib/notify";
 import { useQueueScheduler } from "./hooks/useQueueScheduler";
 import { Titlebar } from "./components/Titlebar";
+import { MenuBar } from "./components/MenuBar";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
 import { GlobalSpeedChart } from "./components/GlobalSpeedChart";
@@ -280,18 +281,19 @@ export function App() {
       {/* 屏幕阅读器：跳过重复的标题栏/侧栏，直达主内容 */}
       <a className="skip-link" href="#main-content">跳到主内容</a>
       <Titlebar />
-      <div className="shell">
+      <MenuBar />
+      <Toolbar />
+      <div className="shell shell-idm">
         <Sidebar />
-        <main className="main" id="main-content" tabIndex={-1}>
+        <main className="main main-idm" id="main-content" tabIndex={-1}>
           {view === "settings" ? (
             <SettingsPage />
           ) : (
             <>
               <ApprovalBanner />
               <UpdateBanner />
-              <Toolbar />
               <GlobalSpeedChart />
-              <div className="list-scroll">
+              <div className="list-scroll list-scroll-idm">
                 <TaskList />
               </div>
             </>

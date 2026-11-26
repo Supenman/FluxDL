@@ -5954,3 +5954,299 @@ kbd {
   flex: 1;
   min-width: 0;
 }
+
+/* ============================================================
+   IDM / MDM 经典全宽桌面布局（通栏菜单 + 通栏大图标工具栏 + 窄树 + 满屏细网格）
+   ============================================================ */
+
+.app {
+  grid-template-rows: var(--titlebar-h) auto auto minmax(0, 1fr) var(--statusbar-h);
+}
+
+/* 1. 极薄经典菜单栏（24px） */
+.idm-menubar {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 6px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  z-index: 45;
+}
+
+.idm-menu-wrap {
+  position: relative;
+}
+
+.idm-menu-trigger {
+  height: 22px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.idm-menu-trigger:hover,
+.idm-menu-trigger.is-open {
+  background: var(--surface-subtle, rgba(127, 127, 127, 0.16));
+}
+
+.idm-menu-popup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 196px;
+  padding: 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 80;
+}
+
+.idm-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.idm-menu-item:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.idm-menu-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.idm-menu-item.danger {
+  color: var(--danger, #ef4444);
+}
+
+.idm-menu-kbd {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.idm-menu-sep {
+  height: 1px;
+  margin: 3px 6px;
+  background: var(--border);
+}
+
+/* 2. 全宽大图标工具栏（58px） */
+.idm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 58px;
+  padding: 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border-strong);
+  user-select: none;
+}
+
+.idm-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.idm-tb-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 62px;
+  height: 48px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.idm-tb-btn:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
+.idm-tb-btn.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.idm-tb-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.idm-tb-btn.tone-add svg { color: #34d399; }
+.idm-tb-btn.tone-resume svg { color: #60a5fa; }
+.idm-tb-btn.tone-stop svg { color: #f59e0b; }
+.idm-tb-btn.tone-stopall svg { color: #e2e8f0; }
+.idm-tb-btn.tone-delete svg { color: #f87171; }
+.idm-tb-btn.tone-clean svg { color: #f472b6; }
+.idm-tb-btn.tone-options svg { color: #a78bfa; }
+.idm-tb-btn.tone-queue svg { color: #38bdf8; }
+
+.idm-toolbar-search {
+  flex-shrink: 0;
+}
+
+.search-box.idm-search {
+  width: 168px;
+  height: 28px;
+  border-radius: 5px;
+}
+
+/* 3. 左侧窄分类树面板 */
+.sidebar.sidebar-idm {
+  padding: 0;
+  background: var(--panel);
+  border-inline-end: 1px solid var(--border-strong);
+  gap: 0;
+}
+
+.idm-cat-head {
+  display: flex;
+  align-items: center;
+  height: 25px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-idm .nav.idm-tree-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 4px 8px;
+  gap: 1px;
+}
+
+.sidebar-idm .nav-item {
+  height: 25px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  gap: 7px;
+}
+
+.sidebar-idm .nav-item svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-idm .nav-group-toggle {
+  height: 24px;
+  padding: 0 6px;
+  margin-top: 4px;
+}
+
+.sidebar-idm .nav-subtree {
+  padding-inline-start: 14px;
+  gap: 1px;
+}
+
+.sidebar-idm .nav-count {
+  font-size: 10.5px;
+  padding: 0 5px;
+  height: 16px;
+}
+
+.sidebar-idm .queue-add {
+  height: 24px;
+  font-size: 11.5px;
+  margin-top: 4px;
+}
+
+/* 4. 右侧满屏直出高密度网格表 */
+.list-scroll.list-scroll-idm {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.list-scroll-idm .task-table-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.list-scroll-idm .table-toolbar {
+  height: 25px;
+  min-height: 25px;
+  padding: 0 10px;
+  margin: 0;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.list-scroll-idm .task-table-wrap {
+  flex: 1;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--bg);
+}
+
+.list-scroll-idm .task-table thead th {
+  height: 25px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-inline-end: 1px solid var(--border);
+}
+
+.list-scroll-idm .task-table tbody td {
+  height: 27px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-inline-end: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.list-scroll-idm .task-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--panel-2) 35%, transparent);
+}
+
+.list-scroll-idm .task-table tbody tr:hover {
+  background: var(--panel-2);
+}
+
+.list-scroll-idm .task-table tbody tr.is-selected {
+  background: var(--accent-soft);
+}

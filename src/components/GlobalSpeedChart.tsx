@@ -83,6 +83,8 @@ export function GlobalSpeedChart() {
   const area = points.length ? `M0,${HEIGHT} ${line} L${WIDTH},${HEIGHT} Z` : "";
   const peak = samples.length ? Math.max(...samples) : 0;
 
+  if (activeCount === 0 && collapsed) return null;
+
   return (
     <section
       className={cx("global-speed", collapsed && "is-collapsed")}

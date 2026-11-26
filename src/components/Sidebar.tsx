@@ -6,9 +6,6 @@ import {
   Film,
   Pause,
   AlertTriangle,
-  Settings,
-  Zap,
-  Command,
   FileText,
   Package,
   Files,
@@ -17,7 +14,6 @@ import {
   Plus,
 } from "lucide-react";
 import { useStore, fileCategory } from "../store";
-import { formatSpeed } from "../lib/format";
 import { cx } from "../lib/format";
 import { newQueue, tasksInQueue } from "../lib/queues";
 import type { Filter } from "../lib/types";
@@ -41,8 +37,8 @@ const TYPE_NAV: NavItem[] = [
   { id: "category:other", label: "其他", icon: Files },
 ];
 
-const WIDTH_KEY = "fluxdl:sidebar-width";
-const WIDTH_MIN = 180;
+const WIDTH_KEY = "fluxdl:sidebar-width:v2";
+const WIDTH_MIN = 152;
 const WIDTH_MAX = 360;
 
 function readWidth(): number {
@@ -53,7 +49,7 @@ function readWidth(): number {
   } catch {
     // ignore
   }
-  return 232;
+  return 178;
 }
 
 export function Sidebar() {
@@ -121,11 +117,6 @@ export function Sidebar() {
     } as Record<Filter, number>;
   }, [tasks]);
 
-  const totalSpeed = useMemo(
-    () => tasks.reduce((sum, t) => sum + (t.status === "downloading" ? t.speedBps : 0), 0),
-    [tasks],
-  );
-
   const selectFilter = (next: Filter) => {
     setView("tasks");
     setQueueFilter(null);
@@ -156,8 +147,9 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="sidebar" style={{ width }}>
-      <nav className="nav" aria-label="下载分类目录树">
+    <aside className="sidebar sidebar-idm" style={{ width }}>
+      <div className="idm-cat-head">分类</div>
+      <nav className="nav idm-tree-nav" aria-label="下载分类目录树">
         <div className="nav-tree-row">
           <button
             type="button"
@@ -213,9 +205,9 @@ export function Sidebar() {
         {queuesOpen && (
           <div className="nav-subtree queue-subtree">
             <button
-              className={cx("nav-item nav-queue", queueFilter === null && "active")}
+              className="nav-item nav-queue"
               onClick={() => selectQueue(null)}
-              aria-current={queueFilter === null ? "true" : undefined}
+              aria-current={undefined}
             >
               <Layers size={16} className="nav-icon" />
               <span className="nav-text">全部队列</span>
@@ -252,51 +244,6 @@ export function Sidebar() {
           </div>
         )}
       </nav>
-
-      <div className="sidebar-spacer" />
-
-      <div className="session-card">
-        <div className="session-head">
-          <Zap size={14} />
-          <span>当前总速度</span>
-        </div>
-        <div className="session-speed">
-          {formatSpeed(totalSpeed).replace("/s", "")}
-          <span className="session-unit">/s</span>
-        </div>
-        <div className="session-meta">
-          <span className={cx("mini-dot", totalSpeed > 0 && "pulsing")} />
-          {counts.active > 0 ? `${counts.active} 个任务传输中` : "引擎空闲"}
-        </div>
-        <div className="session-bar">
-          {tasks
-            .filter((t) => t.status === "downloading")
-            .slice(0, 6)
-            .map((t) => (
-              <span
-                key={t.id}
-                className="session-bar-seg"
-                style={{ flexGrow: Math.max(0.2, t.speedBps / Math.max(totalSpeed, 1)) }}
-              />
-            ))}
-          {counts.active === 0 && <span className="session-bar-idle" />}
-        </div>
-      </div>
-
-      <button
-        className={cx("nav-item settings-nav", view === "settings" && "active")}
-        onClick={() => setView("settings")}
-      >
-        <Settings size={17} className="nav-icon" />
-        <span className="nav-text">设置</span>
-      </button>
-
-      <div className="shortcut-hint">
-        <Command size={12} />
-        <span>
-          按 <kbd>Ctrl</kbd> <kbd>K</kbd> 打开命令面板
-        </span>
-      </div>
 
       <div
         className="sidebar-resizer"

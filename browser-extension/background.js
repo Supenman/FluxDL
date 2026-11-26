@@ -844,8 +844,29 @@ function suggestedFilename(item) {
  * 只保留一个总开关，不做扩展名 / 体积 / 类型判断。
  * 「接管范围」设置已移除：所有 http(s) 下载一律交给 FluxDL。
  */
+/** 超过 30 秒才收到 onCreated 的条目视为浏览器历史回放，绝不接管。 */
+const MAX_CAPTURE_AGE_MS = 30 * 1000;
+const SESSION_DEDUPE_KEY = "fluxdl_captured_recent_v1";
+const SESSION_DEDUPE_TTL_MS = 15 * 1000;
+
+function isFreshInProgressDownload(item, now = Date.now()) {
+  if (!item || typeof item !== "object") return false;
+  // Chrome/Edge 重启或重载扩展时会把历史已完成/已中断记录重放给 onCreated。
+  if (item.state && item.state !== "in_progress") return false;
+  // 跳过其他浏览器扩展后台发起的下载，避免误截。
+  if (item.byExtensionId) return false;
+  if (item.startTime) {
+    const started = Date.parse(item.startTime);
+    if (Number.isFinite(started) && now - started > MAX_CAPTURE_AGE_MS) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function shouldCapture(item, settings) {
   if (!settings.autoCapture) return false;
+  if (!isFreshInProgressDownload(item)) return false;
   const url = item.finalUrl || item.url || "";
   return /^https?:/i.test(url);
 }
@@ -853,15 +874,39 @@ function shouldCapture(item, settings) {
 const inflight = new Set();
 const recentUrls = new Map();
 
+/** MV3 Service Worker 休眠会清空内存，用 storage.session 做跨唤醒短窗去重。 */
+async function markIfDuplicateCapture(itemId, url, now) {
+  if (now - (recentUrls.get(url) || 0) < SESSION_DEDUPE_TTL_MS) return true;
+  if (recentUrls.size > 200) recentUrls.clear();
+  recentUrls.set(url, now);
+
+  const session = chrome.storage && chrome.storage.session;
+  if (!session || typeof session.get !== "function") return false;
+  try {
+    const data = await session.get(SESSION_DEDUPE_KEY);
+    const prev = Array.isArray(data && data[SESSION_DEDUPE_KEY])
+      ? data[SESSION_DEDUPE_KEY]
+      : [];
+    const alive = prev.filter((e) => e && now - e.at < SESSION_DEDUPE_TTL_MS);
+    const dup = alive.some((e) => e.id === itemId || e.url === url);
+    if (!dup) {
+      alive.push({ id: itemId, url, at: now });
+      await session.set({ [SESSION_DEDUPE_KEY]: alive.slice(-100) });
+    }
+    return dup;
+  } catch {
+    return false;
+  }
+}
+
 chrome.downloads.onCreated.addListener(async (item) => {
   if (!item || inflight.has(item.id)) return;
+  if (!isFreshInProgressDownload(item)) return;
   const url = item.finalUrl || item.url || "";
   if (!/^https?:/i.test(url)) return;
 
   const now = Date.now();
-  if (now - (recentUrls.get(url) || 0) < 3000) return;
-  if (recentUrls.size > 200) recentUrls.clear();
-  recentUrls.set(url, now);
+  if (await markIfDuplicateCapture(item.id, url, now)) return;
 
   inflight.add(item.id);
   try {

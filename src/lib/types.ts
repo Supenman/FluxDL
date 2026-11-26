@@ -87,6 +87,8 @@ export interface EngineOptions {
   clipboardWatch: boolean;
   closeToTray: boolean;
   openFolderAfter: boolean;
+  /** 浏览器扩展自动接管的下载是否需先手动审核（默认关闭）。 */
+  approveCapturedDownloads?: boolean;
 }
 
 export interface InstalledTools {

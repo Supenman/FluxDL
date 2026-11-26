@@ -46,6 +46,7 @@ export const defaultEngineOptions: EngineOptions = {
   clipboardWatch: true,
   closeToTray: true,
   openFolderAfter: false,
+  approveCapturedDownloads: false,
 };
 
 function readTheme(): Theme {

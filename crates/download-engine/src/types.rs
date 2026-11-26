@@ -151,6 +151,9 @@ pub struct EngineOptions {
     pub clipboard_watch: bool,
     pub close_to_tray: bool,
     pub open_folder_after: bool,
+    /// 浏览器扩展自动接管的下载是否需先手动点「允许」才开始（默认关闭）。
+    #[serde(default)]
+    pub approve_captured_downloads: bool,
 }
 
 impl Default for EngineOptions {
@@ -174,6 +177,7 @@ impl Default for EngineOptions {
             clipboard_watch: true,
             close_to_tray: true,
             open_folder_after: false,
+            approve_captured_downloads: false,
         }
     }
 }

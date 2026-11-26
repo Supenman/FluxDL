@@ -826,6 +826,17 @@ export function SettingsPage() {
 
         <div className="setting-row inline">
           <div className="setting-copy">
+            <label>浏览器接管前先手动审核</label>
+            <p>开启后，扩展自动捕获的网页下载会先暂停等待点「允许」；手动新建任务始终直接下载</p>
+          </div>
+          <Toggle
+            checked={Boolean(settings.approveCapturedDownloads)}
+            onChange={(next) => update({ approveCapturedDownloads: next })}
+          />
+        </div>
+
+        <div className="setting-row inline">
+          <div className="setting-copy">
             <label>完成时弹系统通知</label>
             <p>应用在后台或最小化到托盘时提醒；前台可见时不打扰</p>
           </div>

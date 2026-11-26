@@ -221,6 +221,7 @@ export class MockBackend {
     clipboardWatch: true,
     closeToTray: true,
     openFolderAfter: false,
+    approveCapturedDownloads: false,
   };
   private timer: number | null = null;
 

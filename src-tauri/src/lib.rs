@@ -56,10 +56,9 @@ async fn add_tasks(
     };
     let mut tasks = Vec::new();
     let mut errors = Vec::new();
-    // 下载审核闸门：手动/剪贴板/命令面板入口一律强制要求用户批准后才下载。
-    // 不接受前端传入的值，避免绕过。
+    // 手动新建 / 批量导入 / 剪贴板确认由用户主动发起，不再强制二次审核。
     let mut options = options;
-    options.require_approval = true;
+    options.require_approval = false;
     for url in urls {
         let url = url.trim().to_string();
         if url.is_empty() {
@@ -983,15 +982,36 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
         return;
     }
 
+    // 捕获接口幂等去重：列表里已有同 URL 的未完成任务，或 15 秒内刚由同 URL 建过任务，
+    // 直接返回已有任务 ID，防止扩展重启/并发事件导致重复下单。
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if let Some(existing) = engine.tasks().await.into_iter().find(|t| {
+        t.url == url
+            && (t.status.is_active()
+                || t.status == fluxdl_engine::TaskStatus::Paused
+                || t.pending_approval
+                || now_ms.saturating_sub(t.created_at) < 15_000)
+    }) {
+        let body = serde_json::json!({
+            "ok": true,
+            "id": existing.id,
+            "duplicate": true,
+            "task": existing,
+        });
+        write_http_response(&mut stream, 200, "OK", &body.to_string(), allow_origin).await;
+        return;
+    }
+
     let kind = capture_task_kind(payload.kind.as_deref(), &url);
+    let require_approval = engine.options().approve_captured_downloads;
 
     let options = NewTaskOptions {
         filename: payload.filename,
         prefer_header_filename: true,
         referer: payload.referer,
         user_agent: payload.user_agent,
-        // 下载审核闸门：网页捕获的下载一律待审核，绝不静默开始。
-        require_approval: true,
+        // 是否需手动点「允许」由设置项 approve_captured_downloads 控制（默认关闭）。
+        require_approval,
         ..Default::default()
     };
 

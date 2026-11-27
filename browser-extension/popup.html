@@ -36,6 +36,16 @@
             <span class="slider"></span>
           </label>
         </div>
+        <div class="row row-sep">
+          <div class="copy">
+            <span>视频悬浮下载按钮</span>
+            <small>鼠标悬停于网页播放器右上角时显示快捷下载胶囊</small>
+          </div>
+          <label class="switch">
+            <input id="video-widget" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
       </section>
 
       <!-- 视频站点：可整页解析时交给 yt-dlp；不可解析时弹窗改走嗅探到的直链 -->
@@ -86,6 +96,31 @@
           <button id="download-all" class="secondary" hidden>全部发送到 FluxDL</button>
         </div>
         <div id="res-summary" class="res-summary"></div>
+      </section>
+
+      <!-- 批量抓图（自动按规则还原高清原图） -->
+      <section class="card img-card">
+        <div class="res-head">
+          <div class="copy">
+            <span>本页图片 <b id="img-count">0</b></span>
+            <small>自动匹配 16 类站点规则还原高清原图，发送到桌面端高速下载</small>
+          </div>
+          <button id="scan-images" class="res-mini" type="button">抓取本页图片</button>
+        </div>
+
+        <div id="img-panel" hidden>
+          <div class="res-toolbar-row img-toolbar">
+            <select id="img-min-size" class="res-select" aria-label="最小像素过滤">
+              <option value="120">≥ 120px（过滤小图标）</option>
+              <option value="0">不限尺寸</option>
+              <option value="300">≥ 300px（中等图）</option>
+              <option value="600">≥ 600px（高清大图）</option>
+            </select>
+            <button id="img-select-all" class="res-mini" type="button">全选</button>
+            <button id="img-download" class="primary img-dl-btn" type="button" disabled>下载选中 (0)</button>
+          </div>
+          <div id="img-grid" class="img-grid"></div>
+        </div>
       </section>
 
       <section class="hint" id="hint">

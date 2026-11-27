@@ -1090,6 +1090,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (tab) await clearTab(tab.id);
         return { ok: true };
       }
+      case "downloadVideoFromWidget": {
+        const tabId = sender && sender.tab && typeof sender.tab.id === "number"
+          ? sender.tab.id
+          : (tab ? tab.id : -1);
+        const pageUrl = String(message.pageUrl || (sender && sender.tab && sender.tab.url) || "");
+        const directUrl = typeof message.directUrl === "string" ? message.directUrl : "";
+        let payload = null;
+        if (directUrl && /^https?:\/\//i.test(directUrl)) {
+          payload = { url: directUrl, kind: "http", referer: pageUrl };
+        } else {
+          let best = null;
+          if (tabId >= 0) {
+            const key = `res:${tabId}`;
+            const stored = await chrome.storage.session.get(key);
+            const list = Array.isArray(stored[key]) ? stored[key] : [];
+            best = bestVideoResource(list);
+          }
+          if (best && best.url) {
+            payload = {
+              url: best.url,
+              kind: "http",
+              filename: best.name || undefined,
+              referer: best.referer || pageUrl,
+            };
+          } else if (pageUrl && isVideoPage(pageUrl)) {
+            payload = { url: pageUrl, kind: "media", referer: pageUrl };
+          }
+        }
+        if (!payload) {
+          return { ok: false, error: "未嗅探到可下载的视频直链，请先播放视频" };
+        }
+        const data = await sendToFluxDL(payload, { silent: false });
+        return { ok: true, data };
+      }
       case "sendDownload": {
         const data = await sendToFluxDL(message.payload || {}, {
           silent: message.silent === true,

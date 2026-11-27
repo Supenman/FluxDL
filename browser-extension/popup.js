@@ -1,10 +1,11 @@
 const API = "http://127.0.0.1:35917";
-const DEFAULT_SETTINGS = { autoCapture: true };
+const DEFAULT_SETTINGS = { autoCapture: true, videoWidget: true };
 
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 const hint = document.getElementById("hint");
 const autoCapture = document.getElementById("auto-capture");
+const videoWidget = document.getElementById("video-widget");
 const recheck = document.getElementById("recheck");
 
 const videoCard = document.getElementById("video-card");
@@ -66,10 +67,11 @@ async function checkHealth() {
 async function loadPrefs() {
   const stored = await chrome.storage.sync.get(DEFAULT_SETTINGS);
   autoCapture.checked = stored.autoCapture !== false;
+  if (videoWidget) videoWidget.checked = stored.videoWidget !== false;
 }
 
 function savePrefs() {
-  chrome.storage.sync.set({ autoCapture: autoCapture.checked });
+  chrome.storage.sync.set({ autoCapture: autoCapture.checked, videoWidget: videoWidget ? videoWidget.checked : true });
 }
 
 function formatSize(bytes) {
@@ -486,3 +488,157 @@ void checkHealth();
 void refreshResources();
 // 打开弹窗时对未校验 / 过期的直链补一次轻量探测，随后状态会落到列表上
 void recheckMetadata();
+
+
+/* ------------------------------------------------------------------ *
+ * 批量抓图（高清原图还原 + 网格筛选 + 一键发送到 FluxDL）
+ * ------------------------------------------------------------------ */
+(function initImageGrabber() {
+  const scanBtn = document.getElementById("scan-images");
+  const imgCount = document.getElementById("img-count");
+  const imgPanel = document.getElementById("img-panel");
+  const imgMinSize = document.getElementById("img-min-size");
+  const imgSelectAll = document.getElementById("img-select-all");
+  const imgDownload = document.getElementById("img-download");
+  const imgGrid = document.getElementById("img-grid");
+  if (!scanBtn || !imgGrid) return;
+
+  if (videoWidget) {
+    videoWidget.addEventListener("change", savePrefs);
+  }
+
+  let allImages = [];
+  let selectedUrls = new Set();
+
+  function visibleImages() {
+    const minPx = Number(imgMinSize.value) || 0;
+    return allImages.filter((img) => {
+      if (minPx <= 0) return true;
+      const edge = Math.max(img.width || 0, img.height || 0);
+      return edge === 0 || edge >= minPx;
+    });
+  }
+
+  function renderImages() {
+    const list = visibleImages();
+    imgCount.textContent = String(list.length);
+    const visSet = new Set(list.map((i) => i.url));
+    for (const u of Array.from(selectedUrls)) {
+      if (!visSet.has(u)) selectedUrls.delete(u);
+    }
+
+    imgGrid.textContent = "";
+    if (list.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "img-empty";
+      empty.textContent = "未找到符合当前尺寸条件的图片，可调低最小像素过滤。";
+      imgGrid.appendChild(empty);
+    } else {
+      for (const item of list) {
+        const tile = document.createElement("label");
+        tile.className = "img-tile" + (selectedUrls.has(item.url) ? " is-selected" : "");
+        tile.title = `${item.filename}\n${item.width}×${item.height}${item.upgraded ? ` · 原图规则(${item.rule})` : ""}`;
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = selectedUrls.has(item.url);
+        cb.addEventListener("change", () => {
+          if (cb.checked) selectedUrls.add(item.url);
+          else selectedUrls.delete(item.url);
+          tile.classList.toggle("is-selected", cb.checked);
+          syncButtons(list);
+        });
+
+        const pic = document.createElement("img");
+        pic.src = item.previewUrl || item.url;
+        pic.loading = "lazy";
+        pic.referrerPolicy = "no-referrer";
+
+        const meta = document.createElement("span");
+        meta.className = "img-meta";
+        meta.textContent = item.width && item.height ? `${item.width}×${item.height}` : "图片";
+
+        tile.appendChild(cb);
+        tile.appendChild(pic);
+        tile.appendChild(meta);
+        if (item.upgraded) {
+          const hd = document.createElement("span");
+          hd.className = "img-hd-tag";
+          hd.textContent = "HD";
+          tile.appendChild(hd);
+        }
+        imgGrid.appendChild(tile);
+      }
+    }
+    syncButtons(list);
+  }
+
+  function syncButtons(list) {
+    const n = selectedUrls.size;
+    imgDownload.disabled = n === 0;
+    imgDownload.textContent = `下载选中 (${n})`;
+    imgSelectAll.textContent = list.length > 0 && n === list.length ? "全不选" : "全选";
+  }
+
+  scanBtn.addEventListener("click", async () => {
+    scanBtn.disabled = true;
+    scanBtn.textContent = "扫描中…";
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || typeof tab.id !== "number") return;
+      const resp = await chrome.tabs.sendMessage(tab.id, { type: "scanPageImages" });
+      allImages = resp && Array.isArray(resp.images) ? resp.images : [];
+      selectedUrls = new Set(visibleImages().map((i) => i.url));
+      imgPanel.hidden = false;
+      renderImages();
+    } catch {
+      imgPanel.hidden = false;
+      allImages = [];
+      selectedUrls.clear();
+      renderImages();
+      const empty = imgGrid.querySelector(".img-empty");
+      if (empty) empty.textContent = "无法扫描当前页面（请刷新网页或在普通 http/https 网页中使用）。";
+    } finally {
+      scanBtn.disabled = false;
+      scanBtn.textContent = "重新抓取";
+    }
+  });
+
+  imgMinSize.addEventListener("change", () => {
+    selectedUrls = new Set(visibleImages().map((i) => i.url));
+    renderImages();
+  });
+
+  imgSelectAll.addEventListener("click", () => {
+    const list = visibleImages();
+    if (selectedUrls.size === list.length) selectedUrls.clear();
+    else selectedUrls = new Set(list.map((i) => i.url));
+    renderImages();
+  });
+
+  imgDownload.addEventListener("click", async () => {
+    const picked = visibleImages().filter((i) => selectedUrls.has(i.url));
+    if (picked.length === 0) return;
+    imgDownload.disabled = true;
+    let ok = 0;
+    for (const item of picked) {
+      try {
+        const res = await chrome.runtime.sendMessage({
+          type: "sendDownload",
+          silent: true,
+          payload: {
+            url: item.url,
+            kind: "http",
+            filename: item.filename,
+            referer: item.referer,
+          },
+        });
+        if (res && res.ok) ok += 1;
+      } catch {
+        // ignore single failure
+      }
+    }
+    imgDownload.textContent = `已发送 ${ok}/${picked.length}`;
+    setTimeout(() => syncButtons(visibleImages()), 1800);
+  });
+})();

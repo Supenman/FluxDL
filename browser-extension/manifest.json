@@ -29,7 +29,7 @@
     },
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["probe-bridge.js"],
+      "js": ["probe-bridge.js", "hd-rules.js", "page-assistant.js"],
       "run_at": "document_start",
       "all_frames": true
     }

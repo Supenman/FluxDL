@@ -1,7 +1,7 @@
 {
   "name": "fluxdl",
   "private": true,
-  "version": "0.4.3",
+  "version": "0.4.4",
   "type": "module",
   "description": "FluxDL - 迅流下载器，一个更快、更顺手的桌面下载工具",
   "license": "GPL-3.0-or-later",

@@ -1,11 +1,12 @@
 const API = "http://127.0.0.1:35917";
-const DEFAULT_SETTINGS = { autoCapture: true, videoWidget: true };
+const DEFAULT_SETTINGS = { autoCapture: true, videoWidget: true, dragDropImage: true };
 
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 const hint = document.getElementById("hint");
 const autoCapture = document.getElementById("auto-capture");
 const videoWidget = document.getElementById("video-widget");
+const dragDropImg = document.getElementById("drag-drop-img");
 const recheck = document.getElementById("recheck");
 
 const videoCard = document.getElementById("video-card");
@@ -68,10 +69,11 @@ async function loadPrefs() {
   const stored = await chrome.storage.sync.get(DEFAULT_SETTINGS);
   autoCapture.checked = stored.autoCapture !== false;
   if (videoWidget) videoWidget.checked = stored.videoWidget !== false;
+  if (dragDropImg) dragDropImg.checked = stored.dragDropImage !== false;
 }
 
 function savePrefs() {
-  chrome.storage.sync.set({ autoCapture: autoCapture.checked, videoWidget: videoWidget ? videoWidget.checked : true });
+  chrome.storage.sync.set({ autoCapture: autoCapture.checked, videoWidget: videoWidget ? videoWidget.checked : true, dragDropImage: dragDropImg ? dragDropImg.checked : true });
 }
 
 function formatSize(bytes) {
@@ -503,9 +505,8 @@ void recheckMetadata();
   const imgGrid = document.getElementById("img-grid");
   if (!scanBtn || !imgGrid) return;
 
-  if (videoWidget) {
-    videoWidget.addEventListener("change", savePrefs);
-  }
+  if (videoWidget) videoWidget.addEventListener("change", savePrefs);
+  if (dragDropImg) dragDropImg.addEventListener("change", savePrefs);
 
   let allImages = [];
   let selectedUrls = new Set();
@@ -586,7 +587,7 @@ void recheckMetadata();
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab || typeof tab.id !== "number") return;
-      const resp = await chrome.tabs.sendMessage(tab.id, { type: "scanPageImages" });
+      const resp = await chrome.tabs.sendMessage(tab.id, { type: "scanPageImages" }, { frameId: 0 });
       allImages = resp && Array.isArray(resp.images) ? resp.images : [];
       selectedUrls = new Set(visibleImages().map((i) => i.url));
       imgPanel.hidden = false;
@@ -650,19 +651,57 @@ void recheckMetadata();
 (function initTabsAndGallery() {
   const tabs = document.querySelectorAll(".popup-tab[data-tab]");
   const panes = document.querySelectorAll(".tab-pane[data-pane]");
+  function activateTab(target) {
+    tabs.forEach((t) => {
+      const active = t.getAttribute("data-tab") === target;
+      t.classList.toggle("active", active);
+      t.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    panes.forEach((p) => {
+      p.classList.toggle("active", p.getAttribute("data-pane") === target);
+    });
+  }
+
   tabs.forEach((btn) => {
     btn.addEventListener("click", () => {
       const target = btn.getAttribute("data-tab");
-      tabs.forEach((t) => {
-        const active = t === btn;
-        t.classList.toggle("active", active);
-        t.setAttribute("aria-selected", active ? "true" : "false");
-      });
-      panes.forEach((p) => {
-        p.classList.toggle("active", p.getAttribute("data-pane") === target);
-      });
+      activateTab(target);
+      try { chrome.storage.local.set({ "popup:lastTab": target }); } catch {}
     });
   });
+
+  try {
+    chrome.storage.local.get({ "popup:lastTab": "resources" }, (res) => {
+      if (res && res["popup:lastTab"]) activateTab(res["popup:lastTab"]);
+    });
+  } catch {}
+
+  const clickDlBtn = document.getElementById("toggle-click-dl");
+  if (clickDlBtn) {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || typeof tab.id !== "number") return;
+        const st = await chrome.tabs.sendMessage(tab.id, { type: "getClickDownloadState" }, { frameId: 0 });
+        if (st && st.active) {
+          clickDlBtn.classList.add("is-active");
+          clickDlBtn.textContent = "关闭点图即下载模式（正在运行）";
+        }
+      } catch {}
+    })();
+    clickDlBtn.addEventListener("click", async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || typeof tab.id !== "number") return;
+        const res = await chrome.tabs.sendMessage(tab.id, { type: "toggleClickDownload" }, { frameId: 0 });
+        if (res && res.ok) {
+          window.close();
+        }
+      } catch {
+        clickDlBtn.textContent = "请先刷新当前网页后再试";
+      }
+    });
+  }
 
   const btnCur = document.getElementById("open-gallery-current");
   const btnAll = document.getElementById("open-gallery-all");
@@ -688,9 +727,9 @@ void recheckMetadata();
   }
 
   if (btnCur) {
-    btnCur.addEventListener("click", () => void launchGallery("current", btnCur, "抓取当前页 → 画廊"));
+    btnCur.addEventListener("click", () => void launchGallery("current", btnCur, "下载当前页 (Alt+Z)"));
   }
   if (btnAll) {
-    btnAll.addEventListener("click", () => void launchGallery("all", btnAll, "抓取所有标签页"));
+    btnAll.addEventListener("click", () => void launchGallery("all", btnAll, "下载所有页 (Alt+X)"));
   }
 })();

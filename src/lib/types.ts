@@ -209,6 +209,7 @@ export interface StagedUpdate {
   size: number;
   stagedPath: string;
   needsRestart: boolean;
+  extensionUpdated?: boolean;
 }
 
 export interface ToolVersionItem {

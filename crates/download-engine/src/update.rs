@@ -141,6 +141,9 @@ pub struct UpdateManifest {
     /// 清单格式版本，便于以后兼容演进；当前为 1。
     pub schema: u32,
     pub app: AppRelease,
+    /// 可选：随版本同步分发的浏览器扩展 zip 资产，旧清单缺省时为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension: Option<ExtensionRelease>,
     pub tools: BTreeMap<String, ToolRelease>,
     /// 更新历史，按版本从新到旧。
     pub history: Vec<HistoryEntry>,
@@ -156,6 +159,13 @@ pub struct AppRelease {
     pub notes: Vec<String>,
     /// key 为平台标识，如 `windows-x64`。
     pub assets: BTreeMap<String, Asset>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExtensionRelease {
+    pub version: String,
+    pub asset: Asset,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

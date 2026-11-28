@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -73,6 +74,9 @@ def main() -> int:
         metavar="NAME=VERSION",
         help="随包工具的最新版本，可重复，如 --tool yt-dlp=2025.11.01",
     )
+    parser.add_argument("--extension-zip", default=None, help="可选：浏览器扩展 zip 文件路径（将写入 manifest.extension）")
+    parser.add_argument("--pack-extension", default=None, help="可选：自动将指定扩展目录打包为 fluxdl-extension.zip 并写入清单")
+    parser.add_argument("--extension-asset-name", default="fluxdl-extension.zip", help="Release 上的扩展附件名")
     parser.add_argument("--out", default="update-manifest.json", help="输出路径")
     parser.add_argument("--reset-history", action="store_true", help="丢弃已有历史")
     parser.add_argument(
@@ -112,6 +116,37 @@ def main() -> int:
     asset_name = args.asset_name or "fluxdl.exe"
     url = f"https://github.com/{args.repo}/releases/download/{tag}/{asset_name}"
 
+    extension_block = None
+    ext_zip_path = Path(args.extension_zip) if args.extension_zip else None
+    if args.pack_extension:
+        src_dir = Path(args.pack_extension)
+        if not src_dir.is_dir():
+            print(f"找不到扩展目录：{src_dir}", file=sys.stderr)
+            return 1
+        ext_zip_path = Path(args.extension_asset_name)
+        with zipfile.ZipFile(ext_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for item in sorted(src_dir.rglob("*")):
+                if item.is_file():
+                    zf.write(item, item.relative_to(src_dir).as_posix())
+        print(f"已打包扩展：{ext_zip_path} ({ext_zip_path.stat().st_size:,} 字节)")
+
+    if ext_zip_path is not None:
+        if not ext_zip_path.is_file():
+            print(f"找不到扩展压缩包：{ext_zip_path}", file=sys.stderr)
+            return 1
+        ext_ver = "2.2.2"
+        mf_candidate = Path(args.pack_extension or "browser-extension") / "manifest.json"
+        if mf_candidate.is_file():
+            try:
+                ext_ver = json.loads(mf_candidate.read_text(encoding="utf-8")).get("version", ext_ver)
+            except Exception:
+                pass
+        ext_url = f"https://github.com/{args.repo}/releases/download/{tag}/{args.extension_asset_name}"
+        extension_block = {
+            "version": ext_ver,
+            "asset": asset_from(ext_zip_path, ext_url),
+        }
+
     manifest = {
         "schema": SCHEMA,
         "app": {
@@ -121,6 +156,7 @@ def main() -> int:
             "notes": args.notes,
             "assets": {args.platform: asset_from(exe, url)},
         },
+        **({"extension": extension_block} if extension_block else {}),
         "tools": tools,
         "history": upsert_history(
             history,

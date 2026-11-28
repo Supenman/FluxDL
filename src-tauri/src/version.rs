@@ -435,13 +435,154 @@ pub async fn download_app_update(
     let installed = crate::appversion::install_version_file(&app, &staged, &manifest.app.latest)?;
     // 只保留最近几个版本，避免目录无限膨胀（失败不影响更新本身）。
     let _ = crate::appversion::prune_versions(&app, crate::appversion::KEEP_VERSIONS);
+    let extension_updated = match manifest.extension.as_ref() {
+        Some(ext) => sync_extension_asset(&app, &client, ext).await.unwrap_or(false),
+        None => false,
+    };
     let _ = current;
     Ok(StagedUpdate {
         version: manifest.app.latest,
         size: downloaded,
         staged_path: installed.to_string_lossy().to_string(),
         needs_restart: true,
+        extension_updated,
     })
+}
+
+/// 定位可写的本地 `browser-extension` 目录（优先安装目录/便携目录）。
+fn writable_extension_dir(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let dir = resource_dir.join("browser-extension");
+        if dir.exists() {
+            return Some(dir);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let direct = parent.join("browser-extension");
+            if direct.exists() {
+                return Some(direct);
+            }
+            // 版本库运行（<root>/app-versions/<ver>/fluxdl.exe）向上查找 <root>/browser-extension
+            let mut up = parent.to_path_buf();
+            for _ in 0..3 {
+                if let Some(p) = up.parent() {
+                    up = p.to_path_buf();
+                    let cand = up.join("browser-extension");
+                    if cand.exists() {
+                        return Some(cand);
+                    }
+                }
+            }
+        }
+    }
+    app.path()
+        .resource_dir()
+        .ok()
+        .map(|d| d.join("browser-extension"))
+}
+
+/// 若更新清单带 `extension` 资产且本地 SHA-256 标记不一致，自动下载校验并安全覆盖
+/// 本地 `browser-extension/` 目录（防 Zip-Slip 路径穿越）。失败不阻断主程序更新。
+async fn sync_extension_asset(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    ext: &update::ExtensionRelease,
+) -> Result<bool, String> {
+    if ext.asset.url.trim().is_empty() {
+        return Ok(false);
+    }
+    let Some(target_dir) = writable_extension_dir(app) else {
+        return Ok(false);
+    };
+    let stamp_path = target_dir.join(".fluxdl-ext.sha256");
+    if let Some(expected_sha) = ext.asset.sha256.as_deref() {
+        if let Ok(current_sha) = std::fs::read_to_string(&stamp_path) {
+            if current_sha.trim().eq_ignore_ascii_case(expected_sha.trim()) {
+                return Ok(false);
+            }
+        }
+    }
+
+    let tmp_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取数据目录：{e}"))?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败：{e}"))?;
+    let zip_tmp = tmp_dir.join("fluxdl-extension.zip.download");
+    let _ = std::fs::remove_file(&zip_tmp);
+
+    let candidates = asset_mirror_urls(&ext.asset.url);
+    let mut verified = false;
+    let mut last_err = String::from("扩展下载源均不可用");
+    for url in &candidates {
+        match client.get(url).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                Ok(bytes) => {
+                    if std::fs::write(&zip_tmp, &bytes).is_ok() {
+                        match update::verify_file(&zip_tmp, &ext.asset) {
+                            Ok(()) => {
+                                verified = true;
+                                break;
+                            }
+                            Err(e) => last_err = format!("扩展包校验失败：{e}"),
+                        }
+                    }
+                }
+                Err(e) => last_err = format!("读取扩展包失败：{e}"),
+            },
+            Ok(resp) => last_err = format!("HTTP {}", resp.status().as_u16()),
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    if !verified {
+        let _ = std::fs::remove_file(&zip_tmp);
+        return Err(last_err);
+    }
+
+    let zip_for_extract = zip_tmp.clone();
+    let dest = target_dir.clone();
+    let extract_res = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        std::fs::create_dir_all(&dest).map_err(|e| format!("创建扩展目录失败：{e}"))?;
+        let f = std::fs::File::open(&zip_for_extract).map_err(|e| format!("打开扩展包失败：{e}"))?;
+        let mut archive = zip::ZipArchive::new(f).map_err(|e| format!("解析扩展 zip 失败：{e}"))?;
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).map_err(|e| format!("读取扩展条目失败：{e}"))?;
+            let Some(enclosed) = entry.enclosed_name() else {
+                continue;
+            };
+            // 兼容打包时是否包含顶层 `browser-extension/` 目录
+            let rel = enclosed
+                .strip_prefix("browser-extension")
+                .unwrap_or(&enclosed);
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            let out_path = dest.join(rel);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out_path).map_err(|e| format!("创建扩展子目录失败：{e}"))?;
+            } else {
+                if let Some(p) = out_path.parent() {
+                    std::fs::create_dir_all(p).map_err(|e| format!("创建扩展父目录失败：{e}"))?;
+                }
+                let mut out = std::fs::File::create(&out_path)
+                    .map_err(|e| format!("写入扩展文件失败：{e}"))?;
+                std::io::copy(&mut entry, &mut out)
+                    .map_err(|e| format!("解压扩展文件失败：{e}"))?;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("扩展解压任务异常：{e}"))?;
+
+    let _ = std::fs::remove_file(&zip_tmp);
+    extract_res?;
+
+    if let Some(sha) = ext.asset.sha256.as_deref() {
+        let _ = std::fs::write(&stamp_path, sha.trim());
+    }
+    Ok(true)
 }
 
 /// 让暂存的新版本生效：Unix 直接换文件，Windows 交给延迟脚本并退出进程。

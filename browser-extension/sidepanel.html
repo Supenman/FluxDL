@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FluxDL 侧栏抓图</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="sp-head">
+      <div class="sp-brand">
+        <img src="icons/32.png" alt="" width="20" height="20" />
+        <div>
+          <h1>FluxDL 侧栏抓图</h1>
+          <p id="sp-status">点击扫描当前网页图片</p>
+        </div>
+      </div>
+      <div class="sp-head-btns">
+        <button id="sp-scan" class="btn primary sm" type="button">扫描本页</button>
+        <button id="sp-deep" class="btn sm" type="button" title="自动滚动页面触发懒加载后再扫描">深度</button>
+        <button id="sp-open-full" class="btn sm" type="button" title="在完整标签页打开画廊">全屏</button>
+      </div>
+    </header>
+
+    <section class="sp-controls">
+      <div class="sp-cats" id="sp-cats">
+        <button type="button" class="cat-pill active" data-cat="all">全部</button>
+        <button type="button" class="cat-pill" data-cat="main">主图</button>
+        <button type="button" class="cat-pill" data-cat="sku">SKU</button>
+        <button type="button" class="cat-pill" data-cat="detail">详情</button>
+        <button type="button" class="cat-pill" data-cat="review">评论</button>
+      </div>
+
+      <div class="sp-row">
+        <input id="sp-query" class="sp-input" type="search" placeholder="搜索文件名或链接…" />
+        <select id="sp-min" class="sp-select" aria-label="最小尺寸">
+          <option value="120">≥120px</option>
+          <option value="0">不限</option>
+          <option value="300">≥300px</option>
+          <option value="600">≥600px</option>
+        </select>
+        <button id="sp-sel-all" class="btn sm" type="button">全选</button>
+      </div>
+    </section>
+
+    <main id="sp-grid" class="sp-grid"></main>
+
+    <footer class="sp-foot">
+      <select id="sp-folder" class="sp-select" aria-label="子文件夹归档">
+        <option value="title_cat">页标题/区块</option>
+        <option value="title">仅页标题</option>
+        <option value="none">不建子目录</option>
+      </select>
+      <button id="sp-browser-dl" class="btn sm" type="button" disabled title="浏览器直接按子文件夹保存">按文件夹下</button>
+      <button id="sp-send" class="btn primary sm" type="button" disabled>发往 FluxDL (0)</button>
+    </footer>
+
+    <div id="sp-toast" class="sp-toast" hidden></div>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

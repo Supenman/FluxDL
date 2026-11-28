@@ -17,6 +17,14 @@
       </div>
 
       <div class="top-actions">
+        <label class="rename-box" title="自动建子文件夹归档，避免几十张图散落下载根目录">
+          <span>文件夹</span>
+          <select id="folder-tpl">
+            <option value="title_cat">页标题 / 区块</option>
+            <option value="title">仅页标题</option>
+            <option value="none">不建子目录</option>
+          </select>
+        </label>
         <label class="rename-box" title="批量下载文件名模板">
           <span>命名</span>
           <select id="rename-tpl">
@@ -26,17 +34,29 @@
             <option value="dim_index">分辨率 + 序号</option>
           </select>
         </label>
-        <label class="rename-box" title="打包 ZIP 时可顺手把 WEBP/AVIF 转成 JPG 或 PNG">
-          <span>格式</span>
+        <label class="rename-box" title="打包 ZIP 时可转 JPG/PNG 并限制最大宽度与压缩质量">
+          <span>转换</span>
           <select id="export-fmt">
-            <option value="orig">保持原格式</option>
+            <option value="orig">原格式</option>
             <option value="jpg">转 JPG</option>
             <option value="png">转 PNG</option>
+          </select>
+          <select id="export-max-w" title="导出最大宽度缩放">
+            <option value="0">原尺寸</option>
+            <option value="1920">宽≤1920</option>
+            <option value="1200">宽≤1200</option>
+            <option value="800">宽≤800</option>
+          </select>
+          <select id="export-quality" title="JPG 导出压缩质量">
+            <option value="0.92">92%</option>
+            <option value="0.85">85%</option>
+            <option value="0.75">75%</option>
           </select>
         </label>
         <button id="btn-export-txt" class="btn" type="button" disabled title="导出原图直链清单">导出链接</button>
         <button id="btn-stitch" class="btn" type="button" disabled title="将选中图片纵向拼接为一张长图">拼成长图</button>
-        <button id="btn-zip" class="btn" type="button" disabled title="浏览器本地打包为单个 ZIP（支持格式转换）">打包 ZIP</button>
+        <button id="btn-zip" class="btn" type="button" disabled title="按子目录打包为单个 ZIP（支持格式转换与缩放）">打包 ZIP</button>
+        <button id="btn-browser-dl" class="btn" type="button" disabled title="浏览器直接按子文件夹保存到系统下载目录（无需等待桌面端更新）">按文件夹直下</button>
         <button id="btn-download" class="btn primary" type="button" disabled>发送到 FluxDL (0)</button>
       </div>
     </header>
@@ -78,8 +98,18 @@
         <option value="avif">AVIF</option>
       </select>
 
+      <select id="f-cat" class="f-select" aria-label="商品区块">
+        <option value="all">全部区块</option>
+        <option value="main">商品主图</option>
+        <option value="sku">SKU 规格图</option>
+        <option value="detail">详情页</option>
+        <option value="review">评论图</option>
+        <option value="other">其他图片</option>
+      </select>
+
       <select id="f-group" class="f-select" aria-label="分组方式">
         <option value="none">平铺显示</option>
+        <option value="category">按商品区块分组</option>
         <option value="size">按尺寸分组</option>
         <option value="source">按来源页分组</option>
       </select>

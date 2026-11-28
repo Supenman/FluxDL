@@ -281,6 +281,92 @@
       },
     },
     {
+      name: "唯品会",
+      host: /(?:^|\.)vipstatic\.com$/i,
+      apply(url) {
+        return url.replace(/_\d+x\d+(?:_\d+)?(?=\.[a-z0-9]+(?:\?|$))/i, "");
+      },
+    },
+    {
+      name: "得物 / 毒",
+      host: /(?:^|\.)(?:poizon|dewu)\.com$/i,
+      apply(url) {
+        return url.replace(/\?x-oss-process=.*$/i, "").replace(/\?imageMogr2\/.*$/i, "");
+      },
+    },
+    {
+      name: "小米商城",
+      host: /(?:^|\.)mi-img\.com$/i,
+      apply(url) {
+        return url.replace(/\?thumb=.*$/i, "").replace(/!\d+x\d+.*$/i, "");
+      },
+    },
+    {
+      name: "网易严选 / NOS",
+      host: /(?:^|\.)127\.net$/i,
+      apply(url) {
+        return url.replace(/\?(?:imageView|thumbnail)=.*$/i, "");
+      },
+    },
+    {
+      name: "Ozon",
+      host: /(?:^|\.)ozone\.ru$/i,
+      apply(url) {
+        return url.replace(/\/wc\d+\//i, "/");
+      },
+    },
+    {
+      name: "Wildberries",
+      host: /(?:^|\.)wbstatic\.net$|wbbasket\.ru$/i,
+      apply(url) {
+        return url.replace(/\/(?:tm|c246x328|c516x688)\//i, "/big/");
+      },
+    },
+    {
+      name: "AliExpress",
+      host: /(?:^|\.)aliexpress-media\.com$/i,
+      apply(url) {
+        return url
+          .replace(/_\.webp$/i, "")
+          .replace(/_\d+x\d+(?:q\d+)?(?:\.(?:jpg|jpeg|png|webp))?$/i, "");
+      },
+    },
+    {
+      name: "MercadoLibre",
+      host: /(?:^|\.)mlstatic\.com$/i,
+      apply(url) {
+        return url.replace(/-[A-Z](?=\.[a-z0-9]+(?:\?|$))/, "-O");
+      },
+    },
+    {
+      name: "Coupang",
+      host: /(?:^|\.)coupangcdn\.com$/i,
+      apply(url) {
+        return url.replace(/\/thumbnails\/remote\/\d+x\d+[^/]*\//i, "/");
+      },
+    },
+    {
+      name: "Naver / SmartStore",
+      host: /(?:^|\.)pstatic\.net$/i,
+      apply(url) {
+        return url.replace(/\?type=[a-z0-9_]+$/i, "");
+      },
+    },
+    {
+      name: "堆糖",
+      host: /(?:^|\.)duitang\.com$/i,
+      apply(url) {
+        return url.replace(/\.thumb\.\d+_\d+(?:_c)?(?=\.[a-z0-9]+(?:\?|$))/i, "");
+      },
+    },
+    {
+      name: "花瓣网",
+      host: /(?:^|\.)huaban\.com$/i,
+      apply(url) {
+        return url.replace(/_fw\d+(?:\/format\/[a-z]+)?$/i, "");
+      },
+    },
+    {
       name: "通用云存储缩放参数",
       host: /.*/,
       apply(url) {

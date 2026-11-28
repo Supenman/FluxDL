@@ -2,11 +2,15 @@
   "use strict";
 
   const summaryText = document.getElementById("summary-text");
+  const folderTpl = document.getElementById("folder-tpl");
   const renameTpl = document.getElementById("rename-tpl");
   const exportFmt = document.getElementById("export-fmt");
+  const exportMaxW = document.getElementById("export-max-w");
+  const exportQuality = document.getElementById("export-quality");
   const btnExportTxt = document.getElementById("btn-export-txt");
   const btnStitch = document.getElementById("btn-stitch");
   const btnZip = document.getElementById("btn-zip");
+  const btnBrowserDl = document.getElementById("btn-browser-dl");
   const btnDownload = document.getElementById("btn-download");
 
   const fQuery = document.getElementById("f-query");
@@ -17,7 +21,17 @@
   const fMaxH = document.getElementById("f-max-h");
   const fRatio = document.getElementById("f-ratio");
   const fExt = document.getElementById("f-ext");
+  const fCat = document.getElementById("f-cat");
   const fGroup = document.getElementById("f-group");
+
+  const CAT_LABELS = {
+    main: "商品主图",
+    sku: "SKU 规格图",
+    detail: "详情页",
+    review: "评论图",
+    other: "其他图片",
+  };
+  const CAT_SHORT = { main: "主图", sku: "SKU", detail: "详情", review: "评论" };
   const fSort = document.getElementById("f-sort");
   const fHdOnly = document.getElementById("f-hd-only");
   const fHideBroken = document.getElementById("f-hide-broken");
@@ -102,6 +116,15 @@
     return base;
   }
 
+  function buildSubdir(item) {
+    const mode = folderTpl ? folderTpl.value : "title_cat";
+    if (mode === "none") return "";
+    const pageFolder = sanitizeName(item.tabTitle || "FluxDL图片") || "FluxDL图片";
+    if (mode === "title") return pageFolder;
+    const cat = item.category && CAT_SHORT[item.category] ? CAT_SHORT[item.category] : "其他";
+    return `${pageFolder}/${cat}`;
+  }
+
   function parseOptionalNum(el) {
     if (!el) return null;
     const raw = String(el.value || "").trim();
@@ -127,6 +150,8 @@
       if (src !== "all" && String(item.tabId) !== src) return false;
       if (hdOnly && !item.upgraded) return false;
       if (ext !== "all" && inferExt(item) !== ext) return false;
+      const catFilter = fCat ? fCat.value : "all";
+      if (catFilter !== "all" && (item.category || "other") !== catFilter) return false;
 
       const w = item.width || 0;
       const h = item.height || 0;
@@ -167,6 +192,7 @@
     btnDownload.disabled = n === 0;
     btnExportTxt.disabled = n === 0;
     btnZip.disabled = n === 0;
+    if (btnBrowserDl) btnBrowserDl.disabled = n === 0;
     btnStitch.disabled = n < 2;
     btnDownload.textContent = `发送到 FluxDL (${n})`;
     const hdCount = visible.filter((i) => i.upgraded).length;
@@ -231,6 +257,12 @@
     extBadge.className = "badge";
     extBadge.textContent = inferExt(item).toUpperCase();
     badges.appendChild(extBadge);
+    if (item.category && CAT_SHORT[item.category]) {
+      const catBadge = document.createElement("span");
+      catBadge.className = `badge cat-${item.category}`;
+      catBadge.textContent = CAT_SHORT[item.category];
+      badges.appendChild(catBadge);
+    }
     if (item.upgraded) {
       const hd = document.createElement("span");
       hd.className = "badge hd";
@@ -363,6 +395,9 @@
   }
 
   function groupBucket(item, mode) {
+    if (mode === "category") {
+      return CAT_LABELS[item.category] || "其他图片";
+    }
     if (mode === "source") {
       return item.tabTitle || "当前页面";
     }
@@ -415,9 +450,12 @@
       groups.get(key).push({ item: list[i], idx: i });
     }
 
+    const catOrder = ["商品主图", "SKU 规格图", "详情页", "评论图", "其他图片"];
     const keys = groupMode === "size"
       ? sizeOrder.filter((k) => groups.has(k))
-      : Array.from(groups.keys());
+      : groupMode === "category"
+        ? catOrder.filter((k) => groups.has(k))
+        : Array.from(groups.keys());
 
     const frag = document.createDocumentFragment();
     for (const key of keys) {
@@ -564,24 +602,34 @@
     setTimeout(() => URL.revokeObjectURL(dlUrl), 4000);
   }
 
-  async function convertBlobIfNeeded(blob, targetFmt) {
-    if (targetFmt !== "jpg" && targetFmt !== "png") {
+  async function convertBlobIfNeeded(blob, targetFmt, maxW, quality) {
+    const needFmt = targetFmt === "jpg" || targetFmt === "png";
+    const needResize = Number(maxW) > 0;
+    if (!needFmt && !needResize) {
       return { blob, ext: null };
     }
     const bmp = await createImageBitmap(blob);
     try {
-      const canvas = document.createElement("canvas");
-      canvas.width = bmp.width;
-      canvas.height = bmp.height;
-      const ctx = canvas.getContext("2d");
-      if (targetFmt === "jpg") {
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const scale = needResize && bmp.width > maxW ? maxW / bmp.width : 1;
+      if (!needFmt && scale === 1) {
+        return { blob, ext: null };
       }
-      ctx.drawImage(bmp, 0, 0);
-      const mime = targetFmt === "jpg" ? "image/jpeg" : "image/png";
-      const out = await new Promise((resolve) => canvas.toBlob(resolve, mime, 0.92));
-      return out ? { blob: out, ext: targetFmt } : { blob, ext: null };
+      const w = Math.max(1, Math.round(bmp.width * scale));
+      const h = Math.max(1, Math.round(bmp.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      const outFmt = needFmt ? targetFmt : (blob.type === "image/png" ? "png" : "jpg");
+      if (outFmt === "jpg") {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, w, h);
+      }
+      ctx.drawImage(bmp, 0, 0, w, h);
+      const mime = outFmt === "jpg" ? "image/jpeg" : "image/png";
+      const q = Number(quality) || 0.92;
+      const out = await new Promise((resolve) => canvas.toBlob(resolve, mime, q));
+      return out ? { blob: out, ext: outFmt } : { blob, ext: null };
     } finally {
       bmp.close();
     }
@@ -600,6 +648,7 @@
             url: item.url,
             kind: "http",
             filename: buildFilename(item, i),
+            subdir: buildSubdir(item) || undefined,
             referer: item.referer,
           },
         });
@@ -640,6 +689,8 @@
     const picked = currentVisible.filter((i) => selected.has(i.url));
     if (!picked.length) return;
     const targetFmt = exportFmt ? exportFmt.value : "orig";
+    const maxW = exportMaxW ? Number(exportMaxW.value) || 0 : 0;
+    const quality = exportQuality ? Number(exportQuality.value) || 0.92 : 0.92;
     btnZip.disabled = true;
     const usedNames = new Set();
     const files = [];
@@ -656,9 +707,10 @@
             continue;
           }
           const rawBlob = await resp.blob();
-          const { blob, ext } = await convertBlobIfNeeded(rawBlob, targetFmt);
+          const { blob, ext } = await convertBlobIfNeeded(rawBlob, targetFmt, maxW, quality);
           const bytes = new Uint8Array(await blob.arrayBuffer());
-          let fname = buildFilename(item, i, ext);
+          const sub = buildSubdir(item);
+          let fname = sub ? `${sub}/${buildFilename(item, i, ext)}` : buildFilename(item, i, ext);
           if (usedNames.has(fname.toLowerCase())) {
             const dot = fname.lastIndexOf(".");
             fname = dot > 0
@@ -687,6 +739,30 @@
       syncToolbar(currentVisible);
     }
   });
+
+  if (btnBrowserDl) {
+    btnBrowserDl.addEventListener("click", async () => {
+      const picked = currentVisible.filter((i) => selected.has(i.url));
+      if (!picked.length) return;
+      btnBrowserDl.disabled = true;
+      btnBrowserDl.textContent = `下载中 (${picked.length})…`;
+      try {
+        const items = picked.map((item, i) => {
+          const sub = buildSubdir(item);
+          const fname = buildFilename(item, i);
+          return {
+            url: item.url,
+            filename: sub ? `FluxDL/${sub}/${fname}` : `FluxDL/${fname}`,
+          };
+        });
+        const resp = await chrome.runtime.sendMessage({ type: "browserDownloadImages", items });
+        showToast(`已通过浏览器按子文件夹保存 ${resp && resp.count ? resp.count : 0} / ${picked.length} 张图片`);
+      } finally {
+        btnBrowserDl.textContent = "按文件夹直下";
+        syncToolbar(currentVisible);
+      }
+    });
+  }
 
   // 纯原生 Canvas 纵向拼成长图导出 PNG（零外部依赖）
   btnStitch.addEventListener("click", async () => {
@@ -753,7 +829,7 @@
     render();
   });
 
-  for (const el of [fQuery, fSource, fMinW, fMaxW, fMinH, fMaxH, fRatio, fExt, fGroup, fSort, fHdOnly, fHideBroken]) {
+  for (const el of [fQuery, fSource, fMinW, fMaxW, fMinH, fMaxH, fRatio, fExt, fCat, fGroup, fSort, fHdOnly, fHideBroken]) {
     if (!el) continue;
     el.addEventListener("input", render);
     el.addEventListener("change", render);
@@ -807,7 +883,10 @@
           maxW: fMaxW ? fMaxW.value : "",
           minH: fMinH ? fMinH.value : "120",
           maxH: fMaxH ? fMaxH.value : "",
+          folderTpl: folderTpl ? folderTpl.value : "title_cat",
           renameTpl: renameTpl ? renameTpl.value : "orig",
+          exportMaxW: exportMaxW ? exportMaxW.value : "0",
+          exportQuality: exportQuality ? exportQuality.value : "0.92",
           exportFmt: exportFmt ? exportFmt.value : "orig",
           zoom: fZoom ? fZoom.value : "192",
           hideBroken: fHideBroken ? fHideBroken.checked : true,
@@ -816,7 +895,7 @@
     } catch {}
   }
 
-  for (const el of [fMinW, fMaxW, fMinH, fMaxH, renameTpl, exportFmt, fZoom, fHideBroken]) {
+  for (const el of [fMinW, fMaxW, fMinH, fMaxH, folderTpl, renameTpl, exportFmt, exportMaxW, exportQuality, fZoom, fHideBroken]) {
     if (el) el.addEventListener("change", saveGalleryPrefs);
   }
 
@@ -886,7 +965,10 @@
         if (fMaxW && prefs.maxW !== undefined) fMaxW.value = prefs.maxW;
         if (fMinH && prefs.minH !== undefined) fMinH.value = prefs.minH;
         if (fMaxH && prefs.maxH !== undefined) fMaxH.value = prefs.maxH;
+        if (folderTpl && prefs.folderTpl) folderTpl.value = prefs.folderTpl;
         if (renameTpl && prefs.renameTpl) renameTpl.value = prefs.renameTpl;
+        if (exportMaxW && prefs.exportMaxW) exportMaxW.value = prefs.exportMaxW;
+        if (exportQuality && prefs.exportQuality) exportQuality.value = prefs.exportQuality;
         if (exportFmt && prefs.exportFmt) exportFmt.value = prefs.exportFmt;
         if (fHideBroken && typeof prefs.hideBroken === "boolean") fHideBroken.checked = prefs.hideBroken;
         if (fZoom && prefs.zoom) {
@@ -910,6 +992,10 @@
       opt.value = String(s.tabId);
       opt.textContent = `${s.title.slice(0, 28)} (${s.count})`;
       fSource.appendChild(opt);
+    }
+    const hasEcCategories = allImages.some((i) => i.category && i.category !== "other");
+    if (hasEcCategories && fGroup) {
+      fGroup.value = "category";
     }
     for (const item of filteredImages()) selected.add(item.url);
     render();

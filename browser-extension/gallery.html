@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FluxDL 批量抓图工作台</title>
+    <link rel="stylesheet" href="gallery.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="icons/32.png" alt="" width="24" height="24" />
+        <div>
+          <h1>FluxDL 批量抓图工作台</h1>
+          <p id="summary-text">正在加载采集结果…</p>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <label class="rename-box" title="批量下载文件名模板：{name} 原名，{index} 序号，{title} 来源页标题">
+          <span>命名</span>
+          <select id="rename-tpl">
+            <option value="orig">保持原文件名</option>
+            <option value="index">序号命名 (001.jpg)</option>
+            <option value="title_index">页标题 + 序号</option>
+          </select>
+        </label>
+        <button id="btn-copy" class="btn" type="button" disabled>复制原图链接</button>
+        <button id="btn-stitch" class="btn" type="button" disabled title="将已选图片等宽纵向拼接为一张长图导出">拼成长图</button>
+        <button id="btn-download" class="btn primary" type="button" disabled>发送到 FluxDL (0)</button>
+      </div>
+    </header>
+
+    <section class="filterbar">
+      <input id="f-query" class="f-input" type="search" placeholder="搜索文件名、链接或来源页…" />
+
+      <select id="f-source" class="f-select" aria-label="来源标签页">
+        <option value="all">全部来源页</option>
+      </select>
+
+      <select id="f-min-w" class="f-select" aria-label="最小宽度">
+        <option value="0">宽度不限</option>
+        <option value="120" selected>宽 ≥ 120px</option>
+        <option value="300">宽 ≥ 300px</option>
+        <option value="600">宽 ≥ 600px</option>
+        <option value="1000">宽 ≥ 1000px</option>
+      </select>
+
+      <select id="f-min-h" class="f-select" aria-label="最小高度">
+        <option value="0">高度不限</option>
+        <option value="120" selected>高 ≥ 120px</option>
+        <option value="300">高 ≥ 300px</option>
+        <option value="600">高 ≥ 600px</option>
+        <option value="1000">高 ≥ 1000px</option>
+      </select>
+
+      <select id="f-ext" class="f-select" aria-label="图片格式">
+        <option value="all">全部格式</option>
+        <option value="jpg">JPG / JPEG</option>
+        <option value="png">PNG</option>
+        <option value="webp">WEBP</option>
+        <option value="gif">GIF</option>
+        <option value="avif">AVIF</option>
+      </select>
+
+      <select id="f-sort" class="f-select" aria-label="排序">
+        <option value="area">分辨率从大到小</option>
+        <option value="width">宽度从大到小</option>
+        <option value="name">文件名 A→Z</option>
+      </select>
+
+      <label class="f-check">
+        <input id="f-hd-only" type="checkbox" />
+        <span>仅看已还原 HD 原图</span>
+      </label>
+
+      <div class="f-right">
+        <button id="btn-select-all" class="btn sm" type="button">全选</button>
+        <button id="btn-invert" class="btn sm" type="button">反选</button>
+        <button id="btn-clear-sel" class="btn sm" type="button">清空勾选</button>
+      </div>
+    </section>
+
+    <main id="grid" class="grid" aria-label="图片画廊"></main>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <div id="lightbox" class="lightbox" hidden>
+      <div class="lightbox-card">
+        <div class="lightbox-head">
+          <span id="lb-title" class="lb-title"></span>
+          <div class="lb-actions">
+            <a id="lb-open" class="btn sm" target="_blank" rel="noreferrer">新标签打开</a>
+            <button id="lb-send" class="btn sm primary" type="button">发往 FluxDL</button>
+            <button id="lb-close" class="btn sm" type="button">关闭 (Esc)</button>
+          </div>
+        </div>
+        <div class="lightbox-body">
+          <img id="lb-img" alt="" referrerpolicy="no-referrer" />
+        </div>
+      </div>
+    </div>
+
+    <script src="gallery.js"></script>
+  </body>
+</html>

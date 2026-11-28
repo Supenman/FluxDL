@@ -642,3 +642,51 @@ void recheckMetadata();
     setTimeout(() => syncButtons(visibleImages()), 1800);
   });
 })();
+
+
+/* ------------------------------------------------------------------ *
+ * 客户端同款三段 Tab 切换 + 全屏批量抓图画廊入口
+ * ------------------------------------------------------------------ */
+(function initTabsAndGallery() {
+  const tabs = document.querySelectorAll(".popup-tab[data-tab]");
+  const panes = document.querySelectorAll(".tab-pane[data-pane]");
+  tabs.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = btn.getAttribute("data-tab");
+      tabs.forEach((t) => {
+        const active = t === btn;
+        t.classList.toggle("active", active);
+        t.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      panes.forEach((p) => {
+        p.classList.toggle("active", p.getAttribute("data-pane") === target);
+      });
+    });
+  });
+
+  const btnCur = document.getElementById("open-gallery-current");
+  const btnAll = document.getElementById("open-gallery-all");
+
+  async function launchGallery(scope, triggerBtn, origText) {
+    if (!triggerBtn) return;
+    triggerBtn.disabled = true;
+    triggerBtn.textContent = scope === "all" ? "扫描全部标签页…" : "扫描当前页…";
+    try {
+      await chrome.runtime.sendMessage({ type: "openImageGallery", scope });
+      window.close();
+    } catch {
+      triggerBtn.textContent = "打开失败，请刷新网页重试";
+      setTimeout(() => {
+        triggerBtn.textContent = origText;
+        triggerBtn.disabled = false;
+      }, 1800);
+    }
+  }
+
+  if (btnCur) {
+    btnCur.addEventListener("click", () => void launchGallery("current", btnCur, "抓取当前页 → 画廊"));
+  }
+  if (btnAll) {
+    btnAll.addEventListener("click", () => void launchGallery("all", btnAll, "抓取所有标签页"));
+  }
+})();

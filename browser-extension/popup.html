@@ -6,8 +6,8 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <div class="wrap">
-      <header class="head">
+    <div class="wrap popup-desktop">
+      <header class="head head-compact">
         <div class="logo" aria-hidden="true">
           <svg viewBox="0 0 100 100" fill="none">
             <rect class="icon-bg" width="100" height="100" rx="23" />
@@ -25,107 +25,137 @@
         <span id="status-dot" class="dot pending"></span>
       </header>
 
-      <section class="card">
-        <div class="row">
+      <!-- 客户端同款三段式顶部导航，告别一长条卡片堆砌 -->
+      <nav class="popup-tabs" role="tablist" aria-label="扩展功能切换">
+        <button type="button" role="tab" class="popup-tab active" data-tab="resources" aria-selected="true">
+          本页资源 <b id="res-count">0</b>
+        </button>
+        <button type="button" role="tab" class="popup-tab" data-tab="images" aria-selected="false">
+          批量抓图 <b id="img-count">0</b>
+        </button>
+        <button type="button" role="tab" class="popup-tab" data-tab="settings" aria-selected="false">
+          设置
+        </button>
+      </nav>
+
+      <!-- Tab 1: 本页资源与视频嗅探 -->
+      <div class="tab-pane active" data-pane="resources">
+        <section class="card video-card" id="video-card" hidden>
           <div class="copy">
-            <span>自动接管浏览器下载</span>
-            <small>所有下载一律交给 FluxDL，不设类型或大小限制</small>
+            <span>本页检测到视频</span>
+            <small id="video-tip">由桌面端 yt-dlp 解析清晰度并合并音视频</small>
           </div>
-          <label class="switch">
-            <input id="auto-capture" type="checkbox" />
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="row row-sep">
+          <button id="parse-video" class="primary">下载本页视频</button>
+        </section>
+
+        <section class="card res-card">
+          <div class="res-head">
+            <div class="copy">
+              <span>嗅探到的媒体与文件</span>
+              <small>自动收集页面音视频、直链与压缩包</small>
+            </div>
+            <button id="clear-res" class="link">清空</button>
+          </div>
+
+          <div class="res-toolbar">
+            <input id="res-search" class="res-search" type="search" placeholder="搜索名称或地址" autocomplete="off" />
+            <div class="res-toolbar-row">
+              <select id="res-filter" class="res-select" aria-label="按类型筛选">
+                <option value="all">全部类型</option>
+                <option value="视频">视频</option>
+                <option value="音频">音频</option>
+                <option value="压缩包">压缩包</option>
+                <option value="安装包">安装包</option>
+                <option value="文档">文档</option>
+                <option value="文件">其它文件</option>
+              </select>
+              <select id="res-sort" class="res-select" aria-label="排序方式">
+                <option value="recent">最新嗅探</option>
+                <option value="size">体积从大到小</option>
+                <option value="name">名称 A→Z</option>
+              </select>
+              <button id="res-select-all" class="res-mini" type="button">全选</button>
+            </div>
+          </div>
+
+          <div id="res-list" class="res-list"></div>
+
+          <div class="res-actions">
+            <button id="res-download-selected" class="secondary" hidden>下载选中</button>
+            <button id="res-copy-selected" class="secondary" hidden>复制直链</button>
+            <button id="download-all" class="secondary" hidden>全部发送到 FluxDL</button>
+          </div>
+          <div id="res-summary" class="res-summary"></div>
+        </section>
+      </div>
+
+      <!-- Tab 2: Fatkun 同款批量抓图与全屏画廊入口 -->
+      <div class="tab-pane" data-pane="images">
+        <section class="card gallery-entry-card">
           <div class="copy">
-            <span>视频悬浮下载按钮</span>
-            <small>鼠标悬停于网页播放器右上角时显示快捷下载胶囊</small>
+            <span>全屏批量抓图工作台</span>
+            <small>内置 34 类站点高清原图规则、按宽高/格式筛选、原图灯箱、重命名与长图拼接</small>
           </div>
-          <label class="switch">
-            <input id="video-widget" type="checkbox" />
-            <span class="slider"></span>
-          </label>
-        </div>
-      </section>
-
-      <!-- 视频站点：可整页解析时交给 yt-dlp；不可解析时弹窗改走嗅探到的直链 -->
-      <section class="card video-card" id="video-card" hidden>
-        <div class="copy">
-          <span>本页检测到视频</span>
-          <small id="video-tip">由桌面端 yt-dlp 解析清晰度并合并音视频</small>
-        </div>
-        <button id="parse-video" class="primary">下载本页视频</button>
-      </section>
-
-      <!-- 嗅探到的可下载资源 -->
-      <section class="card res-card">
-        <div class="res-head">
-          <div class="copy">
-            <span>本页资源 <b id="res-count">0</b></span>
-            <small>自动嗅探页面加载的媒体与文件</small>
+          <div class="gallery-entry-actions">
+            <button id="open-gallery-current" class="primary" type="button">抓取当前页 → 画廊</button>
+            <button id="open-gallery-all" class="secondary" type="button">抓取所有标签页</button>
           </div>
-          <button id="clear-res" class="link">清空</button>
-        </div>
+        </section>
 
-        <div class="res-toolbar">
-          <input id="res-search" class="res-search" type="search" placeholder="搜索名称或地址" autocomplete="off" />
-          <div class="res-toolbar-row">
-            <select id="res-filter" class="res-select" aria-label="按类型筛选">
-              <option value="all">全部类型</option>
-              <option value="视频">视频</option>
-              <option value="音频">音频</option>
-              <option value="压缩包">压缩包</option>
-              <option value="安装包">安装包</option>
-              <option value="文档">文档</option>
-              <option value="文件">其它文件</option>
-            </select>
-            <select id="res-sort" class="res-select" aria-label="排序方式">
-              <option value="recent">最新嗅探</option>
-              <option value="size">体积从大到小</option>
-              <option value="name">名称 A→Z</option>
-            </select>
-            <button id="res-select-all" class="res-mini" type="button">全选</button>
+        <section class="card img-card">
+          <div class="res-head">
+            <div class="copy">
+              <span>弹窗快速抓图</span>
+              <small>快速扫描当前页并一键发往 FluxDL</small>
+            </div>
+            <button id="scan-images" class="res-mini" type="button">扫描本页</button>
           </div>
-        </div>
 
-        <div id="res-list" class="res-list"></div>
-
-        <div class="res-actions">
-          <button id="res-download-selected" class="secondary" hidden>下载选中</button>
-          <button id="res-copy-selected" class="secondary" hidden>复制直链</button>
-          <button id="download-all" class="secondary" hidden>全部发送到 FluxDL</button>
-        </div>
-        <div id="res-summary" class="res-summary"></div>
-      </section>
-
-      <!-- 批量抓图（自动按规则还原高清原图） -->
-      <section class="card img-card">
-        <div class="res-head">
-          <div class="copy">
-            <span>本页图片 <b id="img-count">0</b></span>
-            <small>自动匹配 16 类站点规则还原高清原图，发送到桌面端高速下载</small>
+          <div id="img-panel" hidden>
+            <div class="res-toolbar-row img-toolbar">
+              <select id="img-min-size" class="res-select" aria-label="最小像素过滤">
+                <option value="120">≥ 120px</option>
+                <option value="0">不限尺寸</option>
+                <option value="300">≥ 300px</option>
+                <option value="600">≥ 600px</option>
+              </select>
+              <button id="img-select-all" class="res-mini" type="button">全选</button>
+              <button id="img-download" class="primary img-dl-btn" type="button" disabled>下载 (0)</button>
+            </div>
+            <div id="img-grid" class="img-grid"></div>
           </div>
-          <button id="scan-images" class="res-mini" type="button">抓取本页图片</button>
-        </div>
+        </section>
+      </div>
 
-        <div id="img-panel" hidden>
-          <div class="res-toolbar-row img-toolbar">
-            <select id="img-min-size" class="res-select" aria-label="最小像素过滤">
-              <option value="120">≥ 120px（过滤小图标）</option>
-              <option value="0">不限尺寸</option>
-              <option value="300">≥ 300px（中等图）</option>
-              <option value="600">≥ 600px（高清大图）</option>
-            </select>
-            <button id="img-select-all" class="res-mini" type="button">全选</button>
-            <button id="img-download" class="primary img-dl-btn" type="button" disabled>下载选中 (0)</button>
+      <!-- Tab 3: 设置 -->
+      <div class="tab-pane" data-pane="settings">
+        <section class="card">
+          <div class="row">
+            <div class="copy">
+              <span>自动接管浏览器下载</span>
+              <small>所有下载一律交给 FluxDL，不设类型或大小限制</small>
+            </div>
+            <label class="switch">
+              <input id="auto-capture" type="checkbox" />
+              <span class="slider"></span>
+            </label>
           </div>
-          <div id="img-grid" class="img-grid"></div>
-        </div>
-      </section>
+          <div class="row row-sep">
+            <div class="copy">
+              <span>视频悬浮下载按钮</span>
+              <small>鼠标悬停于网页播放器右上角时显示快捷下载胶囊</small>
+            </div>
+            <label class="switch">
+              <input id="video-widget" type="checkbox" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </section>
 
-      <section class="hint" id="hint">
-        浏览页面时自动收集资源；也可在链接或视频上右键直接发送。
-      </section>
+        <section class="hint" id="hint">
+          浏览页面时自动收集资源；也可在链接或视频上右键直接发送。
+        </section>
+      </div>
 
       <footer class="foot">
         <span>本地服务 127.0.0.1:35917</span>

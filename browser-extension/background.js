@@ -998,11 +998,38 @@ chrome.downloads.onCreated.addListener(async (item) => {
  * 弹窗消息
  * ------------------------------------------------------------------ */
 
-const quickCollectState = {
-  pages: 0,
-  sources: [],
-  seen: new Map(),
-};
+const QC_SESSION_KEY = "quickCollect:state";
+
+async function loadQuickCollect() {
+  try {
+    const data = await chrome.storage.session.get(QC_SESSION_KEY);
+    const st = data && data[QC_SESSION_KEY];
+    if (st && Array.isArray(st.images) && Array.isArray(st.sources)) {
+      return { pages: Number(st.pages) || 0, sources: st.sources, images: st.images };
+    }
+  } catch {}
+  return { pages: 0, sources: [], images: [] };
+}
+
+async function saveQuickCollect(st) {
+  try {
+    await chrome.storage.session.set({ [QC_SESSION_KEY]: st });
+  } catch {}
+}
+
+function sanitizeDownloadRelPath(raw) {
+  if (!raw || typeof raw !== "string") return undefined;
+  const parts = raw
+    .split(/[\\/]+/)
+    .map((seg) =>
+      seg
+        .replace(/[\x00-\x1f\x7f<>:"|?*]+/g, "_")
+        .replace(/^[\s.]+|[\s.]+$/g, "")
+        .slice(0, 60),
+    )
+    .filter((seg) => seg && seg !== "." && seg !== "..");
+  return parts.length ? parts.join("/") : undefined;
+}
 
 function waitForTabComplete(tabId, timeoutMs = 12000) {
   return new Promise((resolve) => {
@@ -1297,22 +1324,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           );
           const imgs = resp && Array.isArray(resp.images) ? resp.images : [];
           const pageTitle = (freshTab && freshTab.title) || targetUrl;
-          quickCollectState.pages += 1;
-          const sid = `qc-${Date.now()}-${quickCollectState.pages}`;
+          const st = await loadQuickCollect();
+          st.pages += 1;
+          const sid = `qc-${Date.now()}-${st.pages}`;
           if (imgs.length > 0) {
-            quickCollectState.sources.push({ tabId: sid, title: pageTitle, url: targetUrl, count: imgs.length });
+            st.sources.push({ tabId: sid, title: pageTitle, url: targetUrl, count: imgs.length });
           }
+          const existingUrls = new Set(st.images.map((x) => x.url));
           for (const img of imgs) {
-            if (!img || !img.url) continue;
-            if (!quickCollectState.seen.has(img.url)) {
-              quickCollectState.seen.set(img.url, { ...img, tabId: sid, tabTitle: pageTitle });
-            }
+            if (!img || !img.url || existingUrls.has(img.url)) continue;
+            existingUrls.add(img.url);
+            st.images.push({ ...img, tabId: sid, tabTitle: pageTitle });
           }
+          await saveQuickCollect(st);
           return {
             ok: true,
             added: imgs.length,
-            totalPages: quickCollectState.pages,
-            totalImages: quickCollectState.seen.size,
+            totalPages: st.pages,
+            totalImages: st.images.length,
           };
         } catch (err) {
           return { ok: false, error: String(err) };
@@ -1323,13 +1352,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
       case "openQuickCollectGallery": {
-        const images = Array.from(quickCollectState.seen.values()).sort(
+        const st = await loadQuickCollect();
+        const images = st.images.slice().sort(
           (a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0),
         );
         const sessionData = {
           scope: "quickCollect",
           createdAt: Date.now(),
-          sources: quickCollectState.sources.slice(),
+          sources: st.sources.slice(),
           images,
         };
         await chrome.storage.session.set({ "gallery:latest": sessionData });
@@ -1337,9 +1367,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return { ok: true, count: images.length };
       }
       case "clearQuickCollect": {
-        quickCollectState.pages = 0;
-        quickCollectState.sources = [];
-        quickCollectState.seen.clear();
+        await saveQuickCollect({ pages: 0, sources: [], images: [] });
         return { ok: true };
       }
       case "browserDownloadImages": {
@@ -1350,7 +1378,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           try {
             await chrome.downloads.download({
               url: it.url,
-              filename: it.filename || undefined,
+              filename: sanitizeDownloadRelPath(it.filename),
               conflictAction: "uniquify",
               saveAs: false,
             });

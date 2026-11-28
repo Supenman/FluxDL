@@ -32,10 +32,10 @@
 
   function sanitizeName(str) {
     return String(str || "")
-      .replace(/[\\/:*?"<>|]+/g, "_")
+      .replace(/[\x00-\x1f\x7f\\/:*?"<>|]+/g, "_")
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 60);
+      .slice(0, 60)
+      .replace(/^[\s.]+|[\s.]+$/g, "");
   }
 
   function buildSubdir(item) {
@@ -104,7 +104,7 @@
       cb.checked = selected.has(item.url);
 
       const img = document.createElement("img");
-      img.src = item.previewUrl || item.url;
+      img.src = item.url || item.previewUrl;
       img.loading = "lazy";
       img.referrerPolicy = "no-referrer";
 
@@ -280,10 +280,20 @@
     syncButtons(visibleImages());
   });
 
-  // 切换标签页时自动同步扫描，像 Fatkun 侧栏一样边逛边看
+  // 切换标签页或在当前标签页跳转新商品时自动同步扫描，边逛边看
+  let navTimer = null;
+  const scheduleSyncScan = () => {
+    if (navTimer) clearTimeout(navTimer);
+    navTimer = setTimeout(() => { void scanCurrentTab(false); }, 450);
+  };
   if (chrome.tabs && chrome.tabs.onActivated) {
-    chrome.tabs.onActivated.addListener(() => {
-      void scanCurrentTab(false);
+    chrome.tabs.onActivated.addListener(scheduleSyncScan);
+  }
+  if (chrome.tabs && chrome.tabs.onUpdated) {
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      if (changeInfo.status === "complete" && tab && tab.active) {
+        scheduleSyncScan();
+      }
     });
   }
 

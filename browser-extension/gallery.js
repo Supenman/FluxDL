@@ -90,10 +90,10 @@
 
   function sanitizeName(str) {
     return String(str || "")
-      .replace(/[\\/:*?"<>|]+/g, "_")
+      .replace(/[\x00-\x1f\x7f\\/:*?"<>|]+/g, "_")
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 60);
+      .slice(0, 60)
+      .replace(/^[\s.]+|[\s.]+$/g, "");
   }
 
   function buildFilename(item, idx, forcedExt) {
@@ -247,7 +247,7 @@
     cb.checked = selected.has(item.url);
 
     const img = document.createElement("img");
-    img.src = item.previewUrl || item.url;
+    img.src = item.url || item.previewUrl;
     img.loading = "lazy";
     img.referrerPolicy = "no-referrer";
 
@@ -289,7 +289,7 @@
 
     quickbar.appendChild(mkQBtn("原图", "灯箱查看大图（也可双击卡片）", "", () => openLightboxAt(listIndex)));
     quickbar.appendChild(mkQBtn("下载", "单张发送到 FluxDL", "", async () => {
-      const ok = await sendBatch([item]);
+      const { ok } = await sendBatch([item]);
       showToast(ok ? "已发送原图到 FluxDL" : "发送失败，请先启动 FluxDL");
     }));
     quickbar.appendChild(mkQBtn("复制", "复制高清原图链接", "", async () => {
@@ -350,9 +350,16 @@
         return;
       }
       item.broken = true;
-      card.classList.add("is-broken");
-      dimSpan.textContent = "加载失败";
-      scheduleBackfillRefresh();
+      selected.delete(item.url);
+      if (fHideBroken && fHideBroken.checked) {
+        card.remove();
+        currentVisible = currentVisible.filter((x) => x.url !== item.url);
+        syncToolbar(currentVisible);
+      } else {
+        card.classList.add("is-broken");
+        dimSpan.textContent = "加载失败";
+        syncToolbar(currentVisible);
+      }
     });
 
     const handleToggle = (shiftKey) => {
@@ -635,11 +642,16 @@
     }
   }
 
-  async function sendBatch(items) {
+  async function sendBatch(items, onProgress) {
     let ok = 0;
+    let skippedData = 0;
     for (let i = 0; i < items.length; i += 1) {
+      if (typeof onProgress === "function") onProgress(i + 1, items.length);
       const item = items[i];
-      if (!/^https?:/i.test(item.url || "")) continue;
+      if (!/^https?:/i.test(item.url || "")) {
+        skippedData += 1;
+        continue;
+      }
       try {
         const res = await chrome.runtime.sendMessage({
           type: "sendDownload",
@@ -657,16 +669,18 @@
         // ignore single error
       }
     }
-    return ok;
+    return { ok, skippedData };
   }
 
   btnDownload.addEventListener("click", async () => {
     const picked = currentVisible.filter((i) => selected.has(i.url));
     if (picked.length === 0) return;
     btnDownload.disabled = true;
-    btnDownload.textContent = `发送中 (0/${picked.length})…`;
-    const ok = await sendBatch(picked);
-    showToast(`已成功发送 ${ok} / ${picked.length} 张原图到 FluxDL 桌面端`);
+    const { ok, skippedData } = await sendBatch(picked, (done, total) => {
+      btnDownload.textContent = `发送中 (${done}/${total})…`;
+    });
+    const extra = skippedData > 0 ? `（${skippedData} 张内嵌图请用「按文件夹直下」或「打包 ZIP」）` : "";
+    showToast(`已发送 ${ok} / ${picked.length} 张原图到 FluxDL 桌面端${extra}`);
     syncToolbar(currentVisible);
   });
 
@@ -871,7 +885,7 @@
   lbSend.addEventListener("click", async () => {
     const item = currentVisible[currentLbIndex];
     if (!item) return;
-    const ok = await sendBatch([item]);
+    const { ok } = await sendBatch([item]);
     showToast(ok ? "已发送原图到 FluxDL" : "发送失败，请确认 FluxDL 桌面端已启动");
   });
 

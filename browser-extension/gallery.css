@@ -8,6 +8,7 @@
   --text-2: #9aa3b2;
   --accent: #3b82f6;
   --ok: #22c55e;
+  --card-w: 192px;
 }
 
 @media (prefers-color-scheme: light) {
@@ -155,7 +156,37 @@ body {
 }
 
 .f-input {
-  width: 210px;
+  width: 195px;
+}
+
+.dim-box,
+.zoom-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+.dim-box input[type="number"] {
+  width: 52px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  padding: 0 2px;
+}
+
+.zoom-box input[type="range"] {
+  width: 72px;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .f-check {
@@ -176,7 +207,42 @@ body {
 .grid {
   padding: 14px 18px 40px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(192px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-w), 1fr));
+  gap: 10px;
+}
+
+.grid.is-grouped {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.group-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.group-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-w), 1fr));
   gap: 10px;
 }
 
@@ -198,6 +264,7 @@ body {
   flex-direction: column;
   cursor: pointer;
   transition: border-color 0.12s ease, transform 0.12s ease;
+  user-select: none;
 }
 
 .card:hover {
@@ -206,6 +273,11 @@ body {
 
 .card.is-selected {
   border-color: var(--accent);
+}
+
+.card.is-broken {
+  opacity: 0.52;
+  border-style: dashed;
 }
 
 .thumb-wrap {
@@ -291,6 +363,7 @@ body {
 .card-meta {
   display: flex;
   justify-content: space-between;
+  gap: 6px;
   font-size: 10.5px;
   color: var(--text-2);
 }

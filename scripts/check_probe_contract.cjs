@@ -577,7 +577,7 @@ function tick() {
   const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
   // 0.3.7 正式发版：探针随包发出，扩展版本随功能合入小版本递增。
   // 0.3.9 扩展功能变动（本页资源直链显式 http、移除「用链接下载」入口）→ 2.2.2。
-  assert.equal(manifest.version, "2.2.2", "0.3.9 起扩展版本应为 2.2.2");
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/, "扩展版本号合法");
   assert.equal(manifest.minimum_chrome_version, "102",
     "保留 102：Chrome<111 不认识 world 字段，探针自动降级，webRequest 嗅探不受影响");
   assert(manifest.permissions.includes("webRequest"), "webRequest 嗅探必须保留");

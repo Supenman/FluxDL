@@ -1126,6 +1126,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case "openImageGallery": {
         const scope = message.scope === "all" ? "all" : "current";
+        const autoScroll = Boolean(message.autoScroll);
         const targetTabs = scope === "all"
           ? await chrome.tabs.query({ currentWindow: true })
           : (tab ? [tab] : []);
@@ -1135,7 +1136,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         for (const t of targetTabs) {
           if (!t || typeof t.id !== "number" || !/^https?:/i.test(t.url || "")) continue;
           try {
-            const resp = await chrome.tabs.sendMessage(t.id, { type: "scanPageImages" });
+            const resp = await chrome.tabs.sendMessage(t.id, { type: "scanPageImages", autoScroll });
             const imgs = resp && Array.isArray(resp.images) ? resp.images : [];
             if (imgs.length > 0) {
               sources.push({ tabId: t.id, title: t.title || t.url, url: t.url, count: imgs.length });

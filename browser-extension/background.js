@@ -13,6 +13,9 @@ const API = "http://127.0.0.1:35917";
 const TOKEN = "fluxdl-local-v1";
 const MENU_LINK = "fluxdl-download-link";
 const MENU_MEDIA = "fluxdl-download-media";
+const MENU_IMG_SINGLE = "fluxdl-download-image";
+const MENU_IMG_CURRENT = "fluxdl-grab-images-current";
+const MENU_IMG_ALL = "fluxdl-grab-images-all";
 
 const DEFAULT_SETTINGS = { autoCapture: true };
 const MAX_RESOURCES = 48;
@@ -674,10 +677,40 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "用 FluxDL 下载此媒体",
       contexts: ["video", "audio"],
     });
+    chrome.contextMenus.create({
+      id: MENU_IMG_SINGLE,
+      title: "用 FluxDL 下载此原图",
+      contexts: ["image"],
+    });
+    chrome.contextMenus.create({
+      id: MENU_IMG_CURRENT,
+      title: "抓取当前页图片（画廊 Alt+Z）",
+      contexts: ["page", "image"],
+    });
+    chrome.contextMenus.create({
+      id: MENU_IMG_ALL,
+      title: "抓取所有标签页图片（Alt+X）",
+      contexts: ["page", "image"],
+    });
   });
 });
 
-chrome.contextMenus.onClicked.addListener((info) => {
+chrome.contextMenus.onClicked.addListener((info, clickTab) => {
+  if (info.menuItemId === MENU_IMG_SINGLE) {
+    const src = info.srcUrl;
+    if (src && /^https?:/i.test(src)) {
+      void sendToFluxDL({ url: src, kind: "http", referer: info.pageUrl }).catch(() => {});
+    }
+    return;
+  }
+  if (info.menuItemId === MENU_IMG_CURRENT) {
+    void openImageGalleryForScope("current", clickTab, false).catch(() => {});
+    return;
+  }
+  if (info.menuItemId === MENU_IMG_ALL) {
+    void openImageGalleryForScope("all", clickTab, false).catch(() => {});
+    return;
+  }
   // 「下载此媒体」(contexts: video/audio) 拿到的是 <video>/<audio> 的 srcUrl ——
   // 已经是可直接下载的文件 / 视频直链，不是网页。一律显式 kind:"http" 走普通
   // 下载，且不做网页判定：抖快的 srcUrl 常无扩展名（.../play/?mime_type=video_mp4），
@@ -953,6 +986,74 @@ chrome.downloads.onCreated.addListener(async (item) => {
  * 弹窗消息
  * ------------------------------------------------------------------ */
 
+async function openImageGalleryForScope(scope, activeTab, autoScroll) {
+  const safeScope = scope === "all" ? "all" : "current";
+  let tab = activeTab;
+  if (!tab && safeScope === "current") {
+    const [cur] = await chrome.tabs.query({ active: true, currentWindow: true });
+    tab = cur || null;
+  }
+  const targetTabs = safeScope === "all"
+    ? await chrome.tabs.query({ currentWindow: true })
+    : (tab ? [tab] : []);
+
+  const seen = new Map();
+  const sources = [];
+  for (const t of targetTabs) {
+    if (!t || typeof t.id !== "number" || !/^https?:/i.test(t.url || "")) continue;
+    try {
+      const resp = await chrome.tabs.sendMessage(
+        t.id,
+        { type: "scanPageImages", autoScroll: Boolean(autoScroll) },
+        { frameId: 0 },
+      );
+      const imgs = resp && Array.isArray(resp.images) ? resp.images : [];
+      if (imgs.length > 0) {
+        sources.push({ tabId: t.id, title: t.title || t.url, url: t.url, count: imgs.length });
+      }
+      for (const img of imgs) {
+        if (!img || !img.url) continue;
+        const prev = seen.get(img.url);
+        if (prev) {
+          prev.width = Math.max(prev.width || 0, img.width || 0);
+          prev.height = Math.max(prev.height || 0, img.height || 0);
+        } else {
+          seen.set(img.url, {
+            ...img,
+            tabId: t.id,
+            tabTitle: t.title || t.url,
+          });
+        }
+      }
+    } catch {
+      // 系统页或未加载完成页静默跳过
+    }
+  }
+
+  const images = Array.from(seen.values()).sort(
+    (a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0),
+  );
+  const sessionData = {
+    scope: safeScope,
+    createdAt: Date.now(),
+    sources,
+    images,
+  };
+  await chrome.storage.session.set({ "gallery:latest": sessionData });
+  await chrome.tabs.create({ url: chrome.runtime.getURL("gallery.html") });
+  return { ok: true, count: images.length, tabCount: sources.length };
+}
+
+if (chrome.commands && chrome.commands.onCommand) {
+  chrome.commands.onCommand.addListener((command) => {
+    if (command === "CMD_GRAB_CURRENT_TAB") {
+      void openImageGalleryForScope("current", null, false).catch(() => {});
+    } else if (command === "CMD_GRAB_ALL_TABS") {
+      void openImageGalleryForScope("all", null, false).catch(() => {});
+    }
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     const [tab] = await chrome.tabs.query({
@@ -1125,53 +1226,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return { ok: true, data };
       }
       case "openImageGallery": {
-        const scope = message.scope === "all" ? "all" : "current";
-        const autoScroll = Boolean(message.autoScroll);
-        const targetTabs = scope === "all"
-          ? await chrome.tabs.query({ currentWindow: true })
-          : (tab ? [tab] : []);
-
-        const seen = new Map();
-        const sources = [];
-        for (const t of targetTabs) {
-          if (!t || typeof t.id !== "number" || !/^https?:/i.test(t.url || "")) continue;
-          try {
-            const resp = await chrome.tabs.sendMessage(t.id, { type: "scanPageImages", autoScroll });
-            const imgs = resp && Array.isArray(resp.images) ? resp.images : [];
-            if (imgs.length > 0) {
-              sources.push({ tabId: t.id, title: t.title || t.url, url: t.url, count: imgs.length });
-            }
-            for (const img of imgs) {
-              if (!img || !img.url) continue;
-              const prev = seen.get(img.url);
-              if (prev) {
-                prev.width = Math.max(prev.width || 0, img.width || 0);
-                prev.height = Math.max(prev.height || 0, img.height || 0);
-              } else {
-                seen.set(img.url, {
-                  ...img,
-                  tabId: t.id,
-                  tabTitle: t.title || t.url,
-                });
-              }
-            }
-          } catch {
-            // 系统页或未加载完成页静默跳过
-          }
-        }
-
-        const images = Array.from(seen.values()).sort(
-          (a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0),
-        );
+        return openImageGalleryForScope(message.scope, tab, message.autoScroll);
+      }
+      case "openCollectedGallery": {
+        const imgs = Array.isArray(message.images) ? message.images : [];
+        const pageTitle = String(message.pageTitle || (sender && sender.tab && sender.tab.title) || "拖放收集篮");
+        const tabId = (sender && sender.tab && sender.tab.id) || 0;
         const sessionData = {
-          scope,
+          scope: "collected",
           createdAt: Date.now(),
-          sources,
-          images,
+          sources: imgs.length ? [{ tabId, title: `收集篮 · ${pageTitle}`, url: message.pageUrl || "", count: imgs.length }] : [],
+          images: imgs.map((img) => ({ ...img, tabId, tabTitle: `收集篮 · ${pageTitle}` })),
         };
         await chrome.storage.session.set({ "gallery:latest": sessionData });
         await chrome.tabs.create({ url: chrome.runtime.getURL("gallery.html") });
-        return { ok: true, count: images.length, tabCount: sources.length };
+        return { ok: true, count: imgs.length };
       }
       case "getGallerySession": {
         const stored = await chrome.storage.session.get("gallery:latest");

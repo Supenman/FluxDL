@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FluxDL 资源捕获",
-  "version": "2.2.4",
+  "version": "2.2.5",
   "description": "自动接管浏览器下载，嗅探页面音视频资源，并发送到 FluxDL 桌面下载器。不读取、不传输任何登录凭证。",
   "permissions": [
     "contextMenus",
@@ -21,15 +21,27 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["page-probe.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "page-probe.js"
+      ],
       "world": "MAIN",
       "run_at": "document_start",
       "all_frames": true
     },
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["probe-bridge.js", "hd-rules.js", "page-assistant.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "probe-bridge.js",
+        "hd-rules.js",
+        "page-assistant.js"
+      ],
       "run_at": "document_start",
       "all_frames": true
     }
@@ -50,5 +62,19 @@
     "48": "icons/48.png",
     "128": "icons/128.png"
   },
-  "minimum_chrome_version": "102"
+  "minimum_chrome_version": "102",
+  "commands": {
+    "CMD_GRAB_CURRENT_TAB": {
+      "suggested_key": {
+        "default": "Alt+Z"
+      },
+      "description": "抓取当前页面图片到 FluxDL 画廊"
+    },
+    "CMD_GRAB_ALL_TABS": {
+      "suggested_key": {
+        "default": "Alt+X"
+      },
+      "description": "抓取所有标签页图片到 FluxDL 画廊"
+    }
+  }
 }

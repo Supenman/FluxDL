@@ -59,9 +59,10 @@
       host: /(?:^|\.)alicdn\.com$/i,
       apply(url) {
         return url
-          .replace(/_\d+x\d+(?:q\d+)?(?:\.(?:jpg|jpeg|png|webp))?$/i, "")
-          .replace(/\.\d+x\d+\.(?=(?:jpg|jpeg|png|webp)(?:\?|$))/i, ".")
-          .replace(/_\.webp$/i, "");
+          .replace(/_\.webp$/i, "")
+          .replace(/_\d+x\d+(?:q\d+|xz|s\d+)?(?:\.(?:jpg|jpeg|png|webp))?$/i, "")
+          .replace(/_q\d+\.(?:jpg|jpeg|png|webp)$/i, "")
+          .replace(/\.\d+x\d+\.(?=(?:jpg|jpeg|png|webp)(?:\?|$))/i, ".");
       },
     },
     {

@@ -26,6 +26,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0;
   background: var(--bg);
@@ -440,4 +441,50 @@ body {
   max-width: 86vw;
   max-height: 80vh;
   object-fit: contain;
+}
+
+.card-quickbar {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 3;
+}
+
+.card:hover .card-quickbar {
+  opacity: 1;
+}
+
+.qbtn {
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(15, 23, 42, 0.84);
+  color: #fff;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.qbtn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.qbtn.danger:hover {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+
+.lasso-box {
+  position: fixed;
+  z-index: 80;
+  border: 1.5px solid var(--accent);
+  background: rgba(59, 130, 246, 0.18);
+  pointer-events: none;
 }

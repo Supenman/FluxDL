@@ -239,19 +239,45 @@
       badges.appendChild(hd);
     }
 
-    const zoomBtn = document.createElement("button");
-    zoomBtn.type = "button";
-    zoomBtn.className = "zoom-btn";
-    zoomBtn.textContent = "看原图";
-    zoomBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openLightboxAt(listIndex);
-    });
+    const quickbar = document.createElement("div");
+    quickbar.className = "card-quickbar";
+
+    const mkQBtn = (label, title, cls, onClick) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = cls ? `qbtn ${cls}` : "qbtn";
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onClick();
+      });
+      return b;
+    };
+
+    quickbar.appendChild(mkQBtn("原图", "灯箱查看大图（也可双击卡片）", "", () => openLightboxAt(listIndex)));
+    quickbar.appendChild(mkQBtn("下载", "单张发送到 FluxDL", "", async () => {
+      const ok = await sendBatch([item]);
+      showToast(ok ? "已发送原图到 FluxDL" : "发送失败，请先启动 FluxDL");
+    }));
+    quickbar.appendChild(mkQBtn("复制", "复制高清原图链接", "", async () => {
+      try {
+        await navigator.clipboard.writeText(item.url);
+        showToast("已复制原图链接");
+      } catch {
+        showToast("复制失败");
+      }
+    }));
+    quickbar.appendChild(mkQBtn("✕", "从当前列表移除此图", "danger", () => {
+      allImages = allImages.filter((x) => x.url !== item.url);
+      selected.delete(item.url);
+      render();
+    }));
 
     thumb.appendChild(cb);
     thumb.appendChild(img);
     thumb.appendChild(badges);
-    thumb.appendChild(zoomBtn);
+    thumb.appendChild(quickbar);
 
     const foot = document.createElement("div");
     foot.className = "card-foot";
@@ -284,6 +310,13 @@
       }
     });
     img.addEventListener("error", () => {
+      // 若 HD 规则还原后的原图 404，自动回退到原始预览图，避免误判破图
+      if (item.upgraded && item.previewUrl && img.src !== item.previewUrl) {
+        item.url = item.previewUrl;
+        item.upgraded = false;
+        img.src = item.previewUrl;
+        return;
+      }
       item.broken = true;
       card.classList.add("is-broken");
       dimSpan.textContent = "加载失败";
@@ -313,7 +346,12 @@
       syncToolbar(listRef);
     };
 
+    card.dataset.url = item.url;
     card.addEventListener("click", (e) => handleToggle(e.shiftKey));
+    card.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      openLightboxAt(listIndex);
+    });
     cb.addEventListener("click", (e) => {
       e.stopPropagation();
       handleToggle(e.shiftKey);
@@ -347,7 +385,9 @@
     if (list.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "没有符合筛选条件的图片，可调低最小宽高或切换来源页。";
+      empty.textContent = allImages.length === 0
+        ? "未扫描到图片。如果你刚更新/重载过扩展，请先刷新目标网页（F5）后再点「抓取当前页 → 画廊」。"
+        : "没有符合筛选条件的图片，可调低最小宽高或切换来源页。";
       grid.appendChild(empty);
       return;
     }
@@ -759,7 +799,103 @@
     showToast(ok ? "已发送原图到 FluxDL" : "发送失败，请确认 FluxDL 桌面端已启动");
   });
 
+  function saveGalleryPrefs() {
+    try {
+      chrome.storage.local.set({
+        "gallery:prefs": {
+          minW: fMinW ? fMinW.value : "120",
+          maxW: fMaxW ? fMaxW.value : "",
+          minH: fMinH ? fMinH.value : "120",
+          maxH: fMaxH ? fMaxH.value : "",
+          renameTpl: renameTpl ? renameTpl.value : "orig",
+          exportFmt: exportFmt ? exportFmt.value : "orig",
+          zoom: fZoom ? fZoom.value : "192",
+          hideBroken: fHideBroken ? fHideBroken.checked : true,
+        },
+      });
+    } catch {}
+  }
+
+  for (const el of [fMinW, fMaxW, fMinH, fMaxH, renameTpl, exportFmt, fZoom, fHideBroken]) {
+    if (el) el.addEventListener("change", saveGalleryPrefs);
+  }
+
+  // 鼠标拖拽框选（套索多选，和 Fatkun / Windows 桌面一样在空白处拖动即可框选）
+  (function initLassoSelect() {
+    let lassoEl = null;
+    let startX = 0;
+    let startY = 0;
+    let dragging = false;
+
+    grid.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest(".card") || e.target.closest("button") || e.target.closest("input")) return;
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      lassoEl = document.createElement("div");
+      lassoEl.className = "lasso-box";
+      document.body.appendChild(lassoEl);
+      e.preventDefault();
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!dragging || !lassoEl) return;
+      const x1 = Math.min(startX, e.clientX);
+      const y1 = Math.min(startY, e.clientY);
+      const w = Math.abs(e.clientX - startX);
+      const h = Math.abs(e.clientY - startY);
+      lassoEl.style.left = `${x1}px`;
+      lassoEl.style.top = `${y1}px`;
+      lassoEl.style.width = `${w}px`;
+      lassoEl.style.height = `${h}px`;
+    });
+
+    window.addEventListener("mouseup", (e) => {
+      if (!dragging) return;
+      dragging = false;
+      if (lassoEl) {
+        const box = lassoEl.getBoundingClientRect();
+        lassoEl.remove();
+        lassoEl = null;
+        if (box.width > 8 && box.height > 8) {
+          const cards = grid.querySelectorAll(".card[data-url]");
+          let changed = 0;
+          for (const c of cards) {
+            const r = c.getBoundingClientRect();
+            const hit = !(r.right < box.left || r.left > box.right || r.bottom < box.top || r.top > box.bottom);
+            if (hit) {
+              const u = c.dataset.url;
+              if (e.altKey) selected.delete(u);
+              else selected.add(u);
+              changed += 1;
+            }
+          }
+          if (changed > 0) render();
+        }
+      }
+    });
+  })();
+
   async function boot() {
+    try {
+      const saved = await chrome.storage.local.get("gallery:prefs");
+      const prefs = saved && saved["gallery:prefs"];
+      if (prefs) {
+        if (fMinW && prefs.minW !== undefined) fMinW.value = prefs.minW;
+        if (fMaxW && prefs.maxW !== undefined) fMaxW.value = prefs.maxW;
+        if (fMinH && prefs.minH !== undefined) fMinH.value = prefs.minH;
+        if (fMaxH && prefs.maxH !== undefined) fMaxH.value = prefs.maxH;
+        if (renameTpl && prefs.renameTpl) renameTpl.value = prefs.renameTpl;
+        if (exportFmt && prefs.exportFmt) exportFmt.value = prefs.exportFmt;
+        if (fHideBroken && typeof prefs.hideBroken === "boolean") fHideBroken.checked = prefs.hideBroken;
+        if (fZoom && prefs.zoom) {
+          fZoom.value = prefs.zoom;
+          document.documentElement.style.setProperty("--card-w", `${prefs.zoom}px`);
+        }
+      }
+    } catch {}
+
     const resp = await chrome.runtime.sendMessage({ type: "getGallerySession" });
     const session = resp && resp.session;
     if (!session || !Array.isArray(session.images)) {

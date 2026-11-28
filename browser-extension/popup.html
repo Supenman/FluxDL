@@ -101,9 +101,10 @@
             <span>深度抓取（自动滚动页面触发懒加载图片）</span>
           </label>
           <div class="gallery-entry-actions">
-            <button id="open-gallery-current" class="primary" type="button">抓取当前页 → 画廊</button>
-            <button id="open-gallery-all" class="secondary" type="button">抓取所有标签页</button>
+            <button id="open-gallery-current" class="primary" type="button">下载当前页 (Alt+Z)</button>
+            <button id="open-gallery-all" class="secondary" type="button">下载所有页 (Alt+X)</button>
           </div>
+          <button id="toggle-click-dl" class="secondary click-dl-btn" type="button">开启点图即下载模式（网页上点哪张下哪张）</button>
         </section>
 
         <section class="card img-card">
@@ -151,6 +152,16 @@
             </div>
             <label class="switch">
               <input id="video-widget" type="checkbox" />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="row row-sep">
+            <div class="copy">
+              <span>拖拽图片快捷下载</span>
+              <small>在网页上拖动图片时底部显示 FluxDL 拖放下载与收集篮</small>
+            </div>
+            <label class="switch">
+              <input id="drag-drop-img" type="checkbox" />
               <span class="slider"></span>
             </label>
           </div>

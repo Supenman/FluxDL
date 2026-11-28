@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FluxDL 资源捕获",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "description": "自动接管浏览器下载，嗅探页面音视频资源，并发送到 FluxDL 桌面下载器。不读取、不传输任何登录凭证。",
   "permissions": [
     "contextMenus",
@@ -9,7 +9,8 @@
     "storage",
     "notifications",
     "webRequest",
-    "tabs"
+    "tabs",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>",
@@ -76,5 +77,8 @@
       },
       "description": "抓取所有标签页图片到 FluxDL 画廊"
     }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   }
 }

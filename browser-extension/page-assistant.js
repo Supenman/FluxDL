@@ -100,6 +100,45 @@
     await new Promise((r) => setTimeout(r, 120));
   }
 
+  // 电商智能区块识别（主图 / SKU 规格图 / 详情页 / 评论图），纯 DOM 启发式 + 主流电商精准选择器
+  const EC_SELECTORS = {
+    review: [
+      "[class*='rate']", "[class*='Rate']", "[class*='comment']", "[class*='Comment']",
+      "[class*='review']", "[class*='Review']", "[id*='comment']", "[id*='review']",
+      "[data-hook*='review']", ".cr-lightbox-image-thumbnail", ".buyer-pic",
+    ].join(","),
+    sku: [
+      ".J_TSaleProp", "[class*='skuItem']", "[class*='SkuItem']", "[class*='sku-item']",
+      "[class*='valueItem']", "[class*='SkuPanel']", "[class*='sku-']", "#choose-attrs",
+      "#variation_color_name", ".sku-property-image", "[class*='swatch']", "[class*='prop-item']",
+    ].join(","),
+    detail: [
+      "#description", "#J_DivItemDesc", "#detailContentContainer", "#J-detail-content",
+      "#aplus", "#productDescription", "[class*='desc-']", "[class*='Desc']",
+      "[class*='detail-content']", "[class*='RichText']", "[class*='detailImg']",
+      "[class*='product-detail']", "[class*='goods-detail']", "[class*='graphic-detail']",
+    ].join(","),
+    main: [
+      "#J_UlThumb", ".tb-booth", "#spec-list", "#spec-n1", "#altImages", "#imgTagWrapperId",
+      ".detail-gallery-img", ".img-list-wrapper", "[class*='PicGallery']", "[class*='MainPic']",
+      "[class*='mainPic']", "[class*='main-img']", "[class*='gallery-img']", "[class*='product-gallery']",
+      "[class*='carousel']", "[class*='swiper']",
+    ].join(","),
+  };
+
+  function classifyImageCategory(el) {
+    if (!el || !(el instanceof Element)) return "other";
+    try {
+      if (el.closest(EC_SELECTORS.review)) return "review";
+      if (el.closest(EC_SELECTORS.sku)) return "sku";
+      if (el.closest(EC_SELECTORS.detail)) return "detail";
+      if (el.closest(EC_SELECTORS.main)) return "main";
+    } catch {
+      // ignore selector error
+    }
+    return "other";
+  }
+
   function scanPageImages() {
     const hd = globalThis.__FLUXDL_HD_RULES__;
     const upgrade = (u) =>
@@ -108,7 +147,7 @@
         : { url: u, upgraded: false, rule: null };
 
     const seen = new Map();
-    const record = (rawUrl, previewUrl, width, height, sourceType) => {
+    const record = (rawUrl, previewUrl, width, height, sourceType, category) => {
       const abs = toAbsUrl(rawUrl, true);
       if (!abs) return;
       const isData = abs.startsWith("data:");
@@ -120,6 +159,9 @@
       if (prev) {
         prev.width = Math.max(prev.width, w);
         prev.height = Math.max(prev.height, h);
+        if (prev.category === "other" && category && category !== "other") {
+          prev.category = category;
+        }
         return;
       }
       seen.set(key, {
@@ -130,6 +172,7 @@
         upgraded: Boolean(up.upgraded),
         rule: up.rule || null,
         sourceType: sourceType || "img",
+        category: category || "other",
         referer: window.location.href,
       });
     };
@@ -165,7 +208,7 @@
         }
       }
       if (!best) best = preview;
-      if (best) record(best, preview || best, w, h, "img");
+      if (best) record(best, preview || best, w, h, "img", classifyImageCategory(img));
     }
 
     // 2. <picture><source srcset>
@@ -175,7 +218,7 @@
         const parentImg = srcEl.parentElement && srcEl.parentElement.querySelector("img");
         const w = parentImg ? parentImg.naturalWidth || 0 : 0;
         const h = parentImg ? parentImg.naturalHeight || 0 : 0;
-        record(best, best, w, h, "picture");
+        record(best, best, w, h, "picture", classifyImageCategory(srcEl));
       }
     }
 
@@ -187,7 +230,7 @@
       const preview = innerImg ? innerImg.currentSrc || innerImg.getAttribute("src") || href : href;
       const w = innerImg ? innerImg.naturalWidth || 0 : 0;
       const h = innerImg ? innerImg.naturalHeight || 0 : 0;
-      record(href, preview, w, h, "link");
+      record(href, preview, w, h, "link", classifyImageCategory(a));
     }
 
     // 4. CSS background-image（扫描计算样式，上限 600 个可见大节点防卡顿）
@@ -202,7 +245,7 @@
       if (!bg || bg === "none" || !bg.includes("url(")) continue;
       const matches = bg.matchAll(/url\((['"]?)(https?:[^'")]+)\1\)/gi);
       for (const m of matches) {
-        if (m[2]) record(m[2], m[2], rect.width, rect.height, "bg");
+        if (m[2]) record(m[2], m[2], rect.width, rect.height, "bg", classifyImageCategory(el));
       }
     }
 
@@ -217,6 +260,15 @@
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message && message.type === "toggleQuickCollect") {
+      setQuickCollectMode(message.enabled !== undefined ? Boolean(message.enabled) : !quickCollectActive);
+      sendResponse({ ok: true, active: quickCollectActive });
+      return false;
+    }
+    if (message && message.type === "getQuickCollectState") {
+      sendResponse({ ok: true, active: quickCollectActive, pages: qcPages, images: qcImages });
+      return false;
+    }
     if (message && message.type === "toggleClickDownload") {
       setClickDownloadMode(message.enabled !== undefined ? Boolean(message.enabled) : !clickDlActive);
       sendResponse({ ok: true, active: clickDlActive });
@@ -722,6 +774,106 @@
           }
         },
       );
+    },
+    true,
+  );
+
+  // ------------------------------------------------------------------ //
+  // Fatkun 熟悉工作流 #3：列表页「点击链接快速采集」模式
+  // ------------------------------------------------------------------ //
+  let quickCollectActive = false;
+  let qcPages = 0;
+  let qcImages = 0;
+  let qcBusy = false;
+  let qcBarHost = null;
+  let qcBarStatus = null;
+
+  function updateQuickCollectBar() {
+    if (!quickCollectActive) {
+      if (qcBarHost) qcBarHost.style.display = "none";
+      return;
+    }
+    if (!qcBarHost) {
+      qcBarHost = document.createElement("div");
+      qcBarHost.id = "fluxdl-quickcollect-bar-host";
+      qcBarHost.style.cssText = "position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483647;";
+      const shadow = qcBarHost.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = `
+        .bar { display:flex; align-items:center; gap:8px; padding:8px 14px; border-radius:999px;
+          background:rgba(15,17,23,0.94); color:#fff; border:1px solid rgba(34,197,94,0.75);
+          font:600 12px/1 system-ui,-apple-system,sans-serif; box-shadow:0 8px 26px rgba(0,0,0,0.42); }
+        button { border:1px solid rgba(255,255,255,0.22); background:rgba(255,255,255,0.08);
+          color:#fff; border-radius:999px; padding:4px 10px; font-size:11px; cursor:pointer; }
+        button.primary { background:#2563eb; border-color:#2563eb; }
+        button:hover { opacity:0.9; }
+      `;
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      qcBarStatus = document.createElement("span");
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "primary";
+      openBtn.textContent = "打开画廊";
+      openBtn.addEventListener("click", () => {
+        chrome.runtime.sendMessage({ type: "openQuickCollectGallery" });
+      });
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.textContent = "清空";
+      clearBtn.addEventListener("click", () => {
+        qcPages = 0;
+        qcImages = 0;
+        chrome.runtime.sendMessage({ type: "clearQuickCollect" });
+        updateQuickCollectBar();
+      });
+      const exitBtn = document.createElement("button");
+      exitBtn.type = "button";
+      exitBtn.textContent = "退出";
+      exitBtn.addEventListener("click", () => setQuickCollectMode(false));
+      bar.appendChild(qcBarStatus);
+      bar.appendChild(openBtn);
+      bar.appendChild(clearBtn);
+      bar.appendChild(exitBtn);
+      shadow.appendChild(style);
+      shadow.appendChild(bar);
+      (document.documentElement || document.body).appendChild(qcBarHost);
+    }
+    qcBarStatus.textContent = qcBusy
+      ? `正在后台采集商品页…（已采 ${qcPages} 页 / ${qcImages} 张）`
+      : `快速采集已开启（点击商品链接后台抓图）· 已采 ${qcPages} 页 / ${qcImages} 张`;
+    qcBarHost.style.display = "block";
+  }
+
+  function setQuickCollectMode(enabled) {
+    quickCollectActive = Boolean(enabled);
+    updateQuickCollectBar();
+  }
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (!quickCollectActive) return;
+      if (qcBarHost && (e.target === qcBarHost || qcBarHost.contains(e.target))) return;
+      const anchor = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+      if (!anchor) return;
+      const href = toAbsUrl(anchor.getAttribute("href"), false);
+      if (!href) return;
+      e.preventDefault();
+      e.stopPropagation();
+      qcBusy = true;
+      updateQuickCollectBar();
+      chrome.runtime.sendMessage({ type: "quickCollectUrl", url: href }, (resp) => {
+        qcBusy = false;
+        if (resp && resp.ok) {
+          qcPages = resp.totalPages || qcPages + 1;
+          qcImages = resp.totalImages || qcImages;
+          showPageToast(`✓ 后台采集完成 +${resp.added || 0} 张（共 ${qcPages} 页）`);
+        } else {
+          showPageToast("该页面采集失败，请稍后重试", false);
+        }
+        updateQuickCollectBar();
+      });
     },
     true,
   );

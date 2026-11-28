@@ -970,6 +970,40 @@ struct CaptureRequest {
     user_agent: Option<String>,
     #[serde(default)]
     kind: Option<String>,
+    /// 可选相对子目录（例如 `商品标题/主图`），安全清洗后拼接到默认下载目录下。
+    #[serde(default)]
+    subdir: Option<String>,
+}
+
+/// 将扩展传来的相对子目录安全拼接到默认下载目录下，防止路径穿越或非法字符。
+fn resolve_capture_subdir(base_dir: &str, raw: &str) -> Option<String> {
+    let base = base_dir.trim();
+    if base.is_empty() {
+        return None;
+    }
+    let mut out = PathBuf::from(base);
+    let mut depth = 0usize;
+    for part in raw.split(|c| c == '/' || c == '\\') {
+        if depth >= 3 {
+            break;
+        }
+        let cleaned: String = part
+            .chars()
+            .filter(|c| !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+            .collect();
+        let trimmed = cleaned.trim().trim_matches('.');
+        if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+            continue;
+        }
+        let limited: String = trimmed.chars().take(60).collect();
+        out.push(limited);
+        depth += 1;
+    }
+    if depth == 0 {
+        None
+    } else {
+        Some(out.to_string_lossy().to_string())
+    }
 }
 
 struct HttpRequest {
@@ -1234,9 +1268,15 @@ async fn handle_capture_conn(mut stream: TcpStream, engine: Arc<Engine>) {
     }
 
     let kind = capture_task_kind(payload.kind.as_deref(), &url);
-    let require_approval = engine.options().approve_captured_downloads;
+    let opts_snapshot = engine.options();
+    let require_approval = opts_snapshot.approve_captured_downloads;
+    let save_dir = payload
+        .subdir
+        .as_deref()
+        .and_then(|s| resolve_capture_subdir(&opts_snapshot.save_dir, s));
 
     let options = NewTaskOptions {
+        save_dir,
         filename: payload.filename,
         prefer_header_filename: true,
         referer: payload.referer,

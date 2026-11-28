@@ -488,3 +488,8 @@ body {
   background: rgba(59, 130, 246, 0.18);
   pointer-events: none;
 }
+
+.badge.cat-main { background: #2563eb; }
+.badge.cat-sku { background: #9333ea; }
+.badge.cat-detail { background: #d97706; }
+.badge.cat-review { background: #0891b2; }

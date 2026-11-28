@@ -16,6 +16,7 @@ const MENU_MEDIA = "fluxdl-download-media";
 const MENU_IMG_SINGLE = "fluxdl-download-image";
 const MENU_IMG_CURRENT = "fluxdl-grab-images-current";
 const MENU_IMG_ALL = "fluxdl-grab-images-all";
+const MENU_SIDEPANEL = "fluxdl-open-sidepanel";
 
 const DEFAULT_SETTINGS = { autoCapture: true };
 const MAX_RESOURCES = 48;
@@ -692,6 +693,11 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "抓取所有标签页图片（Alt+X）",
       contexts: ["page", "image"],
     });
+    chrome.contextMenus.create({
+      id: MENU_SIDEPANEL,
+      title: "在浏览器侧栏打开 FluxDL 抓图",
+      contexts: ["page", "image"],
+    });
   });
 });
 
@@ -709,6 +715,12 @@ chrome.contextMenus.onClicked.addListener((info, clickTab) => {
   }
   if (info.menuItemId === MENU_IMG_ALL) {
     void openImageGalleryForScope("all", clickTab, false).catch(() => {});
+    return;
+  }
+  if (info.menuItemId === MENU_SIDEPANEL) {
+    if (chrome.sidePanel && chrome.sidePanel.open && clickTab && typeof clickTab.windowId === "number") {
+      void chrome.sidePanel.open({ windowId: clickTab.windowId }).catch(() => {});
+    }
     return;
   }
   // 「下载此媒体」(contexts: video/audio) 拿到的是 <video>/<audio> 的 srcUrl ——
@@ -986,6 +998,30 @@ chrome.downloads.onCreated.addListener(async (item) => {
  * 弹窗消息
  * ------------------------------------------------------------------ */
 
+const quickCollectState = {
+  pages: 0,
+  sources: [],
+  seen: new Map(),
+};
+
+function waitForTabComplete(tabId, timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(onUpd);
+      clearTimeout(timer);
+      setTimeout(resolve, 1100);
+    };
+    const onUpd = (id, info) => {
+      if (id === tabId && info.status === "complete") finish();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    chrome.tabs.onUpdated.addListener(onUpd);
+  });
+}
+
 async function openImageGalleryForScope(scope, activeTab, autoScroll) {
   const safeScope = scope === "all" ? "all" : "current";
   let tab = activeTab;
@@ -1245,6 +1281,85 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "getGallerySession": {
         const stored = await chrome.storage.session.get("gallery:latest");
         return { ok: true, session: stored["gallery:latest"] || null };
+      }
+      case "quickCollectUrl": {
+        const targetUrl = String(message.url || "");
+        if (!/^https?:/i.test(targetUrl)) return { ok: false, error: "仅支持 http/https 链接" };
+        let bgTab = null;
+        try {
+          bgTab = await chrome.tabs.create({ url: targetUrl, active: false });
+          await waitForTabComplete(bgTab.id);
+          const freshTab = await chrome.tabs.get(bgTab.id).catch(() => bgTab);
+          const resp = await chrome.tabs.sendMessage(
+            bgTab.id,
+            { type: "scanPageImages", autoScroll: false },
+            { frameId: 0 },
+          );
+          const imgs = resp && Array.isArray(resp.images) ? resp.images : [];
+          const pageTitle = (freshTab && freshTab.title) || targetUrl;
+          quickCollectState.pages += 1;
+          const sid = `qc-${Date.now()}-${quickCollectState.pages}`;
+          if (imgs.length > 0) {
+            quickCollectState.sources.push({ tabId: sid, title: pageTitle, url: targetUrl, count: imgs.length });
+          }
+          for (const img of imgs) {
+            if (!img || !img.url) continue;
+            if (!quickCollectState.seen.has(img.url)) {
+              quickCollectState.seen.set(img.url, { ...img, tabId: sid, tabTitle: pageTitle });
+            }
+          }
+          return {
+            ok: true,
+            added: imgs.length,
+            totalPages: quickCollectState.pages,
+            totalImages: quickCollectState.seen.size,
+          };
+        } catch (err) {
+          return { ok: false, error: String(err) };
+        } finally {
+          if (bgTab && typeof bgTab.id === "number") {
+            chrome.tabs.remove(bgTab.id).catch(() => {});
+          }
+        }
+      }
+      case "openQuickCollectGallery": {
+        const images = Array.from(quickCollectState.seen.values()).sort(
+          (a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0),
+        );
+        const sessionData = {
+          scope: "quickCollect",
+          createdAt: Date.now(),
+          sources: quickCollectState.sources.slice(),
+          images,
+        };
+        await chrome.storage.session.set({ "gallery:latest": sessionData });
+        await chrome.tabs.create({ url: chrome.runtime.getURL("gallery.html") });
+        return { ok: true, count: images.length };
+      }
+      case "clearQuickCollect": {
+        quickCollectState.pages = 0;
+        quickCollectState.sources = [];
+        quickCollectState.seen.clear();
+        return { ok: true };
+      }
+      case "browserDownloadImages": {
+        const items = Array.isArray(message.items) ? message.items : [];
+        let ok = 0;
+        for (const it of items) {
+          if (!it || !it.url || !/^(?:https?:|data:image\/)/i.test(it.url)) continue;
+          try {
+            await chrome.downloads.download({
+              url: it.url,
+              filename: it.filename || undefined,
+              conflictAction: "uniquify",
+              saveAs: false,
+            });
+            ok += 1;
+          } catch {
+            // 忽略单张失败
+          }
+        }
+        return { ok: true, count: ok };
       }
       case "sendDownload": {
         const data = await sendToFluxDL(message.payload || {}, {

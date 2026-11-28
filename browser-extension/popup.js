@@ -676,6 +676,23 @@ void recheckMetadata();
     });
   } catch {}
 
+  const sidePanelBtn = document.getElementById("open-sidepanel");
+  if (sidePanelBtn) {
+    sidePanelBtn.addEventListener("click", async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (chrome.sidePanel && chrome.sidePanel.open && tab && typeof tab.windowId === "number") {
+          await chrome.sidePanel.open({ windowId: tab.windowId });
+          window.close();
+        } else {
+          sidePanelBtn.textContent = "当前浏览器版本不支持侧栏 API";
+        }
+      } catch {
+        sidePanelBtn.textContent = "打开侧栏失败，请升级 Chrome/Edge";
+      }
+    });
+  }
+
   const clickDlBtn = document.getElementById("toggle-click-dl");
   if (clickDlBtn) {
     (async () => {
@@ -724,6 +741,31 @@ void recheckMetadata();
         triggerBtn.disabled = false;
       }, 1800);
     }
+  }
+
+  const qcBtn = document.getElementById("toggle-quick-collect");
+  if (qcBtn) {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || typeof tab.id !== "number") return;
+        const st = await chrome.tabs.sendMessage(tab.id, { type: "getQuickCollectState" }, { frameId: 0 });
+        if (st && st.active) {
+          qcBtn.classList.add("is-active");
+          qcBtn.textContent = `关闭点链接快速采集（已采 ${st.pages || 0} 页）`;
+        }
+      } catch {}
+    })();
+    qcBtn.addEventListener("click", async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || typeof tab.id !== "number") return;
+        const res = await chrome.tabs.sendMessage(tab.id, { type: "toggleQuickCollect" }, { frameId: 0 });
+        if (res && res.ok) window.close();
+      } catch {
+        qcBtn.textContent = "请先刷新当前网页后再试";
+      }
+    });
   }
 
   if (btnCur) {

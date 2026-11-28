@@ -38,7 +38,8 @@
     const s = raw.trim();
     if (!s || s.startsWith("blob:") || s.startsWith("javascript:")) return null;
     if (s.startsWith("data:image/")) {
-      return allowData && s.length <= 2 * 1024 * 1024 ? s : null;
+      // 过滤 1x1 占位符/透明像素等超短 Base64 垃圾图
+      return allowData && s.length >= 200 && s.length <= 2 * 1024 * 1024 ? s : null;
     }
     try {
       const u = new URL(s, window.location.href);
@@ -154,8 +155,12 @@
       const up = isData ? { url: abs, upgraded: false, rule: null } : upgrade(abs);
       const key = up.url;
       const prev = seen.get(key);
-      const w = Math.round(Number(width) || 0);
-      const h = Math.round(Number(height) || 0);
+      // 若命中 HD 规则从缩略图还原为原图（例如淘宝 60x60 主图缩略图 -> 800x800 原图），
+      // 丢弃 DOM 缩略图尺寸，让画廊/侧栏加载原图后回填真实分辨率，避免被 minW=120 误杀！
+      const rawW = Math.round(Number(width) || 0);
+      const rawH = Math.round(Number(height) || 0);
+      const w = up.upgraded && rawW < 400 ? 0 : rawW;
+      const h = up.upgraded && rawH < 400 ? 0 : rawH;
       if (prev) {
         prev.width = Math.max(prev.width, w);
         prev.height = Math.max(prev.height, h);
@@ -233,19 +238,45 @@
       record(href, preview, w, h, "link", classifyImageCategory(a));
     }
 
-    // 4. CSS background-image（扫描计算样式，上限 600 个可见大节点防卡顿）
+    // 4. CSS background-image（主图缩略图条/SKU 块放宽到 ≥32px，普通区域 ≥100px，上限 800 防卡顿）
     const candidates = document.querySelectorAll("div, section, article, figure, a, span, li, header");
     let scannedBg = 0;
     for (const el of candidates) {
-      if (scannedBg >= 600) break;
+      if (scannedBg >= 800) break;
       const rect = el.getBoundingClientRect();
-      if (rect.width < 100 || rect.height < 100) continue;
+      const cat = classifyImageCategory(el);
+      const minEdge = (cat === "main" || cat === "sku") ? 32 : 100;
+      if (rect.width < minEdge || rect.height < minEdge) continue;
       scannedBg += 1;
       const bg = window.getComputedStyle(el).backgroundImage;
       if (!bg || bg === "none" || !bg.includes("url(")) continue;
-      const matches = bg.matchAll(/url\((['"]?)(https?:[^'")]+)\1\)/gi);
+      const matches = bg.matchAll(/url\((['"]?)((?:https?:)?\/\/[^'")]+)\1\)/gi);
       for (const m of matches) {
-        if (m[2]) record(m[2], m[2], rect.width, rect.height, "bg", classifyImageCategory(el));
+        if (m[2]) record(m[2], m[2], rect.width, rect.height, "bg", cat);
+      }
+    }
+
+    // 5. 内联脚本 JSON 商品主图/轮播图提取（补齐未切换出来的隐藏轮播主图，如淘宝/天猫/京东/Amazon）
+    const jsonKeyRe = /"(?:auctionImages|imageList|galleryImages|mainImgs|picUrls|images|hiRes|large|skuImages)"\s*:\s*(\[[^\]]{10,8000}\]|"[^"]{10,500}")/gi;
+    const urlInJsonRe = /((?:https?:)?\/\/[^"'\\\s<>]+?\.(?:jpe?g|png|webp|avif)(?:[^"'\\\s<>]{0,120})?)/gi;
+    let scriptBudget = 0;
+    for (const sc of document.querySelectorAll("script")) {
+      if (scriptBudget >= 40) break;
+      const txt = sc.textContent || "";
+      if (txt.length < 40 || txt.length > 600000) continue;
+      if (!/(?:auctionImages|imageList|galleryImages|mainImgs|picUrls|hiRes|skuImages)/i.test(txt)) continue;
+      scriptBudget += 1;
+      let jm;
+      jsonKeyRe.lastIndex = 0;
+      while ((jm = jsonKeyRe.exec(txt)) !== null) {
+        const keyPart = jm[0].slice(0, 24).toLowerCase();
+        const cat = keyPart.includes("sku") ? "sku" : "main";
+        const snippet = jm[1].replace(/\\u002F/gi, "/").replace(/\\\//g, "/");
+        let um;
+        urlInJsonRe.lastIndex = 0;
+        while ((um = urlInJsonRe.exec(snippet)) !== null) {
+          record(um[1], um[1], 0, 0, "json", cat);
+        }
       }
     }
 

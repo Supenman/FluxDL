@@ -1,6 +1,6 @@
 /**
- * FluxDL 原创高清原图还原规则（纯函数、零凭证、零外连）：
- * 仅做 URL 形态归一化，将常见图站与电商 CDN 的缩略图/裁切参数还原为原始大图直链。
+ * FluxDL 原创高清原图还原规则库（35+ 主流站点与云存储 CDN，纯函数、零凭证、零外连）：
+ * 仅做 URL 形态归一化，将缩略图/裁切/质量压缩参数还原为原始大图直链。
  * 兼容浏览器内容脚本与 Node 契约单测。
  */
 (function (root) {
@@ -48,11 +48,19 @@
       },
     },
     {
-      name: "阿里 / 淘宝 / 1688",
+      name: "抖音 / 字节图床",
+      host: /(?:^|\.)(?:byteimg|douyinpic|pstatp)\.com$/i,
+      apply(url) {
+        return url.replace(/~tplv-[^/?#]+/i, "~noop.image");
+      },
+    },
+    {
+      name: "阿里 / 淘宝 / 天猫 / 1688",
       host: /(?:^|\.)alicdn\.com$/i,
       apply(url) {
         return url
           .replace(/_\d+x\d+(?:q\d+)?(?:\.(?:jpg|jpeg|png|webp))?$/i, "")
+          .replace(/\.\d+x\d+\.(?=(?:jpg|jpeg|png|webp)(?:\?|$))/i, ".")
           .replace(/_\.webp$/i, "");
       },
     },
@@ -63,7 +71,15 @@
         return url
           .replace(/\/n[1-9]\//i, "/n0/")
           .replace(/\/s\d+x\d+_jfs\//i, "/jfs/")
-          .replace(/!cc_\d+x\d+.*$/i, "");
+          .replace(/!cc_\d+x\d+.*$/i, "")
+          .replace(/\.avif$/i, "");
+      },
+    },
+    {
+      name: "拼多多",
+      host: /(?:^|\.)pddpic\.com$/i,
+      apply(url) {
+        return url.replace(/\?imageView2\/.*$/i, "").replace(/\?imageMogr2\/.*$/i, "");
       },
     },
     {
@@ -87,17 +103,54 @@
       },
     },
     {
+      name: "Shopee",
+      host: /(?:^|\.)susercontent\.com$|(?:^|\.)shopee\.[^/]+$/i,
+      apply(url) {
+        return url.replace(/_tn(?=\.[a-z0-9]+(?:\?|$)|$)/i, "").replace(/@resize_w\d+[^/?#]*/i, "");
+      },
+    },
+    {
+      name: "Temu / Shein",
+      host: /(?:^|\.)(?:kwcdn|ltwebstatic)\.com$/i,
+      apply(url) {
+        return url
+          .replace(/\?imageView2\/.*$/i, "")
+          .replace(/_thumbnail_\d+x\d+/i, "");
+      },
+    },
+    {
+      name: "Etsy",
+      host: /(?:^|\.)etsystatic\.com$/i,
+      apply(url) {
+        return url.replace(/\/il_\d+x(?:\d+|N)\./i, "/il_fullxfull.");
+      },
+    },
+    {
+      name: "eBay",
+      host: /(?:^|\.)ebayimg\.com$/i,
+      apply(url) {
+        return url.replace(/\/s-l\d+\.(?=[a-z0-9]+(?:\?|$))/i, "/s-l1600.");
+      },
+    },
+    {
       name: "Pinterest",
       host: /(?:^|\.)pinimg\.com$/i,
       apply(url) {
-        return url.replace(/\/(?:\d+x|736x|564x|474x|236x)\//i, "/originals/");
+        return url.replace(/\/(?:\d+x|736x|564x|474x|236x|170x)\//i, "/originals/");
       },
     },
     {
       name: "花瓣",
       host: /(?:^|\.)huaban(?:img)?\.com$/i,
       apply(url) {
-        return url.replace(/_fw\d+(?:\/format\/webp)?$/i, "");
+        return url.replace(/_fw\d+(?:\/format\/webp)?$/i, "").replace(/_sq\d+.*$/i, "");
+      },
+    },
+    {
+      name: "站酷 ZCOOL",
+      host: /(?:^|\.)zcool\.cn$/i,
+      apply(url) {
+        return url.replace(/@\d+w_.*$/i, "");
       },
     },
     {
@@ -111,7 +164,7 @@
       name: "知乎",
       host: /(?:^|\.)zhimg\.com$/i,
       apply(url) {
-        return url.replace(/_(?:b|l|r|720w|hd)(?=\.[a-z0-9]+(?:\?|$))/i, "");
+        return url.replace(/_(?:b|l|r|720w|hd|qhd)(?=\.[a-z0-9]+(?:\?|$))/i, "");
       },
     },
     {
@@ -122,10 +175,32 @@
       },
     },
     {
+      name: "Behance",
+      host: /(?:^|\.)behance\.net$/i,
+      apply(url) {
+        return url.replace(/\/projects\/(?:202|404|808|max_808|disp)\//i, "/projects/max_3840/");
+      },
+    },
+    {
+      name: "Dribbble",
+      host: /(?:^|\.)dribbble\.com$/i,
+      apply(url) {
+        return url.replace(/\?resize=\d+x\d+.*$/i, "");
+      },
+    },
+    {
+      name: "Pixiv",
+      host: /^i\.pximg\.net$/i,
+      apply(url) {
+        return url
+          .replace(/\/c\/\d+x\d+[^/]*\/img-master\//i, "/img-original/")
+          .replace(/_master1200(?=\.[a-z0-9]+(?:\?|$))/i, "");
+      },
+    },
+    {
       name: "Wikimedia",
       host: /^upload\.wikimedia\.org$/i,
       apply(url) {
-        // /wikipedia/commons/thumb/a/ab/Foo.jpg/800px-Foo.jpg -> /wikipedia/commons/a/ab/Foo.jpg
         return url.replace(/\/thumb\/(.+?)\/\d+px-[^/?#]+$/i, "/$1");
       },
     },
@@ -149,14 +224,70 @@
       },
     },
     {
+      name: "Pexels",
+      host: /^images\.pexels\.com$/i,
+      apply(url) {
+        return url.replace(/\?.*$/, "");
+      },
+    },
+    {
+      name: "Imgur",
+      host: /^i\.imgur\.com$/i,
+      apply(url) {
+        return url.replace(/([a-zA-Z0-9]{5,})[sbtmlh](?=\.(?:jpg|jpeg|png|webp|gif)(?:\?|$))/i, "$1");
+      },
+    },
+    {
+      name: "Reddit",
+      host: /^preview\.redd\.it$/i,
+      apply(url) {
+        return url.replace(/^https?:\/\/preview\.redd\.it\//i, "https://i.redd.it/").replace(/\?.*$/, "");
+      },
+    },
+    {
+      name: "YouTube 缩略图",
+      host: /^i\.ytimg\.com$/i,
+      apply(url) {
+        return url.replace(/\/(?:hqdefault|mqdefault|sddefault|default)\.jpg/i, "/maxresdefault.jpg");
+      },
+    },
+    {
+      name: "QQ 空间 / 腾讯图床",
+      host: /(?:^|\.)(?:qpic\.cn|photo\.store\.qq\.com)$/i,
+      apply(url) {
+        return url.replace(/\/(?:m|b|s)(?=\?|$)/i, "/0").replace(/\/\d+\?/, "/0?");
+      },
+    },
+    {
+      name: "百度图床",
+      host: /(?:^|\.)bdstatic\.com$/i,
+      apply(url) {
+        return url.replace(/\/f=JPEG\?w=\d+&h=\d+/i, "");
+      },
+    },
+    {
+      name: "WordPress 缩略图",
+      host: /.*/,
+      apply(url) {
+        return url.replace(/-\d{2,4}x\d{2,4}(?=\.(?:jpg|jpeg|png|webp)(?:\?|$))/i, "");
+      },
+    },
+    {
+      name: "Cloudflare Image Resizing",
+      host: /.*/,
+      apply(url) {
+        return url.replace(/\/cdn-cgi\/image\/[^/]+\/(https?:\/\/)/i, "/$1");
+      },
+    },
+    {
       name: "通用云存储缩放参数",
       host: /.*/,
       apply(url) {
-        // 清理阿里云 OSS / 腾讯云 COS / 七牛常见的缩略图处理参数
         return url
           .replace(/[?&]x-oss-process=image\/[^&#]+/i, "")
           .replace(/[?&]imageMogr2\/[^&#]+/i, "")
-          .replace(/[?&]imageView2\/[^&#]+/i, "");
+          .replace(/[?&]imageView2\/[^&#]+/i, "")
+          .replace(/[?&]x-bce-process=image\/[^&#]+/i, "");
       },
     },
   ];

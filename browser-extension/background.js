@@ -1124,6 +1124,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const data = await sendToFluxDL(payload, { silent: false });
         return { ok: true, data };
       }
+      case "openImageGallery": {
+        const scope = message.scope === "all" ? "all" : "current";
+        const targetTabs = scope === "all"
+          ? await chrome.tabs.query({ currentWindow: true })
+          : (tab ? [tab] : []);
+
+        const seen = new Map();
+        const sources = [];
+        for (const t of targetTabs) {
+          if (!t || typeof t.id !== "number" || !/^https?:/i.test(t.url || "")) continue;
+          try {
+            const resp = await chrome.tabs.sendMessage(t.id, { type: "scanPageImages" });
+            const imgs = resp && Array.isArray(resp.images) ? resp.images : [];
+            if (imgs.length > 0) {
+              sources.push({ tabId: t.id, title: t.title || t.url, url: t.url, count: imgs.length });
+            }
+            for (const img of imgs) {
+              if (!img || !img.url) continue;
+              const prev = seen.get(img.url);
+              if (prev) {
+                prev.width = Math.max(prev.width || 0, img.width || 0);
+                prev.height = Math.max(prev.height || 0, img.height || 0);
+              } else {
+                seen.set(img.url, {
+                  ...img,
+                  tabId: t.id,
+                  tabTitle: t.title || t.url,
+                });
+              }
+            }
+          } catch {
+            // 系统页或未加载完成页静默跳过
+          }
+        }
+
+        const images = Array.from(seen.values()).sort(
+          (a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0),
+        );
+        const sessionData = {
+          scope,
+          createdAt: Date.now(),
+          sources,
+          images,
+        };
+        await chrome.storage.session.set({ "gallery:latest": sessionData });
+        await chrome.tabs.create({ url: chrome.runtime.getURL("gallery.html") });
+        return { ok: true, count: images.length, tabCount: sources.length };
+      }
+      case "getGallerySession": {
+        const stored = await chrome.storage.session.get("gallery:latest");
+        return { ok: true, session: stored["gallery:latest"] || null };
+      }
       case "sendDownload": {
         const data = await sendToFluxDL(message.payload || {}, {
           silent: message.silent === true,

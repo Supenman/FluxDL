@@ -891,3 +891,84 @@ button.res-variants:hover {
   font-size: 9.5px;
   font-weight: 700;
 }
+
+/* 客户端同款三段式顶部导航与紧凑卡片 */
+.popup-desktop {
+  gap: 8px;
+}
+
+.head.head-compact {
+  padding-bottom: 2px;
+}
+
+.popup-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.popup-tab {
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.72;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.popup-tab:hover {
+  opacity: 1;
+}
+
+.popup-tab.active {
+  background: var(--accent, #2563eb);
+  color: #fff;
+  opacity: 1;
+  font-weight: 600;
+}
+
+.popup-tab b {
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.tab-pane {
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tab-pane.active {
+  display: flex;
+}
+
+.gallery-entry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gallery-entry-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.gallery-entry-actions button {
+  margin: 0;
+  width: 100%;
+  font-size: 12px;
+  padding: 7px 8px;
+}

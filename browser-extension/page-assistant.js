@@ -1,9 +1,9 @@
 /**
- * FluxDL 页面助手（ISOLATED world，零凭证、零外连、不改写网页安全头）：
- * 1. 按需页面批量抓图：响应弹窗请求，扫描 <img> / srcset / 懒加载属性 / 大尺寸背景图，
- *    自动调用 hd-rules.js 还原高清原图直链并去重。
- * 2. 页面视频悬浮下载按钮：仅在顶层窗口、鼠标悬停于较大 <video> 上时显示轻巧胶囊，
- *    点击一键发送到 FluxDL 桌面端，可在扩展弹窗随时关闭。
+ * FluxDL 深度页面助手（ISOLATED world，零凭证、零外连、不改写网页安全头）：
+ * 1. 全量深度抓图：支持自动滚动触发懒加载，扫描 <img> / srcset / 10+ 懒加载属性 /
+ *    <picture> / <a href="图片直链"> / getComputedStyle 背景图 / data:image / 大尺寸 <canvas>。
+ * 2. 自动调用 hd-rules.js 还原 34+ 类站点高清原图，并记录区域类型（主图/正文/背景/链接）。
+ * 3. 页面视频悬浮下载按钮：仅在顶层窗口、鼠标悬停于较大 <video> 上时显示轻巧胶囊。
  */
 (function () {
   "use strict";
@@ -19,13 +19,22 @@
     "data-actualsrc",
     "data-url",
     "data-hi-res-src",
+    "data-large-src",
+    "data-zoom-image",
+    "data-old-hires",
+    "data-ks-lazyload",
+    "data-img",
+    "original-src",
   ];
 
-  function toAbsHttpUrl(raw) {
+  const IMG_EXT_RE = /\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:[?#]|$)/i;
+
+  function toAbsUrl(raw, allowData = false) {
     if (!raw || typeof raw !== "string") return null;
     const s = raw.trim();
-    if (!s || s.startsWith("data:") || s.startsWith("blob:") || s.startsWith("javascript:")) {
-      return null;
+    if (!s || s.startsWith("blob:") || s.startsWith("javascript:")) return null;
+    if (s.startsWith("data:image/")) {
+      return allowData && s.length <= 2 * 1024 * 1024 ? s : null;
     }
     try {
       const u = new URL(s, window.location.href);
@@ -57,11 +66,16 @@
   }
 
   function inferImageFilename(url, idx) {
+    if (String(url).startsWith("data:image/")) {
+      const m = url.match(/^data:image\/([a-z0-9+.-]+);/i);
+      const ext = m ? m[1].replace("jpeg", "jpg").replace("svg+xml", "svg") : "png";
+      return `embedded_${String(idx + 1).padStart(3, "0")}.${ext}`;
+    }
     try {
       const u = new URL(url);
       const last = u.pathname.split("/").filter(Boolean).pop() || "";
       const decoded = decodeURIComponent(last).replace(/[\\/:*?"<>|]+/g, "_");
-      if (decoded && /\.(?:jpe?g|png|webp|gif|bmp|avif|svg)$/i.test(decoded)) {
+      if (decoded && IMG_EXT_RE.test(decoded)) {
         return decoded.slice(0, 120);
       }
     } catch {
@@ -70,21 +84,35 @@
     return `image_${String(idx + 1).padStart(3, "0")}.jpg`;
   }
 
+  async function autoScrollForLazyLoad() {
+    const startY = window.scrollY;
+    const maxH = Math.min(document.documentElement.scrollHeight || 0, 24000);
+    const step = Math.max(500, Math.round(window.innerHeight * 0.85));
+    for (let y = 0; y <= maxH; y += step) {
+      window.scrollTo(0, y);
+      await new Promise((r) => setTimeout(r, 160));
+    }
+    window.scrollTo(0, startY);
+    await new Promise((r) => setTimeout(r, 120));
+  }
+
   function scanPageImages() {
     const hd = globalThis.__FLUXDL_HD_RULES__;
-    const upgrade = (u) => (hd && typeof hd.upgradeToHdUrl === "function"
-      ? hd.upgradeToHdUrl(u)
-      : { url: u, upgraded: false, rule: null });
+    const upgrade = (u) =>
+      hd && typeof hd.upgradeToHdUrl === "function"
+        ? hd.upgradeToHdUrl(u)
+        : { url: u, upgraded: false, rule: null };
 
     const seen = new Map();
-    const record = (rawUrl, previewUrl, width, height) => {
-      const abs = toAbsHttpUrl(rawUrl);
+    const record = (rawUrl, previewUrl, width, height, sourceType) => {
+      const abs = toAbsUrl(rawUrl, true);
       if (!abs) return;
-      const up = upgrade(abs);
+      const isData = abs.startsWith("data:");
+      const up = isData ? { url: abs, upgraded: false, rule: null } : upgrade(abs);
       const key = up.url;
       const prev = seen.get(key);
-      const w = Number(width) || 0;
-      const h = Number(height) || 0;
+      const w = Math.round(Number(width) || 0);
+      const h = Math.round(Number(height) || 0);
       if (prev) {
         prev.width = Math.max(prev.width, w);
         prev.height = Math.max(prev.height, h);
@@ -92,20 +120,21 @@
       }
       seen.set(key, {
         url: up.url,
-        previewUrl: toAbsHttpUrl(previewUrl) || abs,
+        previewUrl: toAbsUrl(previewUrl, true) || abs,
         width: w,
         height: h,
         upgraded: Boolean(up.upgraded),
         rule: up.rule || null,
+        sourceType: sourceType || "img",
         referer: window.location.href,
       });
     };
 
-    // 1. <img> 元素（含 srcset 与常见懒加载属性）
-    const imgs = document.querySelectorAll("img");
-    for (const img of imgs) {
-      const w = img.naturalWidth || Math.round(img.getBoundingClientRect().width);
-      const h = img.naturalHeight || Math.round(img.getBoundingClientRect().height);
+    // 1. <img> 元素（含 srcset 与 12 种常见懒加载属性）
+    for (const img of document.querySelectorAll("img")) {
+      const rect = img.getBoundingClientRect();
+      const w = img.naturalWidth || rect.width;
+      const h = img.naturalHeight || rect.height;
       const preview = img.currentSrc || img.getAttribute("src") || "";
       const fromSrcset = pickLargestFromSrcset(img.getAttribute("srcset"));
       let best = fromSrcset || "";
@@ -119,33 +148,44 @@
         }
       }
       if (!best) best = preview;
-      if (best) record(best, preview || best, w, h);
+      if (best) record(best, preview || best, w, h, "img");
     }
 
     // 2. <picture><source srcset>
-    const sources = document.querySelectorAll("picture source[srcset]");
-    for (const srcEl of sources) {
+    for (const srcEl of document.querySelectorAll("picture source[srcset]")) {
       const best = pickLargestFromSrcset(srcEl.getAttribute("srcset"));
       if (best) {
         const parentImg = srcEl.parentElement && srcEl.parentElement.querySelector("img");
         const w = parentImg ? parentImg.naturalWidth || 0 : 0;
         const h = parentImg ? parentImg.naturalHeight || 0 : 0;
-        record(best, best, w, h);
+        record(best, best, w, h, "picture");
       }
     }
 
-    // 3. 大尺寸 CSS background-image（上限 120 个节点防重排卡顿）
-    const bgNodes = document.querySelectorAll("[style*='background']");
-    let checked = 0;
-    for (const el of bgNodes) {
-      if (checked >= 120) break;
-      checked += 1;
+    // 3. <a href="...jpg/png/webp/gif"> 直接指向大图原图的链接
+    for (const a of document.querySelectorAll("a[href]")) {
+      const href = a.getAttribute("href") || "";
+      if (!IMG_EXT_RE.test(href)) continue;
+      const innerImg = a.querySelector("img");
+      const preview = innerImg ? innerImg.currentSrc || innerImg.getAttribute("src") || href : href;
+      const w = innerImg ? innerImg.naturalWidth || 0 : 0;
+      const h = innerImg ? innerImg.naturalHeight || 0 : 0;
+      record(href, preview, w, h, "link");
+    }
+
+    // 4. CSS background-image（扫描计算样式，上限 600 个可见大节点防卡顿）
+    const candidates = document.querySelectorAll("div, section, article, figure, a, span, li, header");
+    let scannedBg = 0;
+    for (const el of candidates) {
+      if (scannedBg >= 600) break;
       const rect = el.getBoundingClientRect();
-      if (rect.width < 120 || rect.height < 120) continue;
-      const bg = el.style.backgroundImage || "";
-      const match = bg.match(/url\((['"]?)(https?:[^'")]+)\1\)/i);
-      if (match && match[2]) {
-        record(match[2], match[2], Math.round(rect.width), Math.round(rect.height));
+      if (rect.width < 100 || rect.height < 100) continue;
+      scannedBg += 1;
+      const bg = window.getComputedStyle(el).backgroundImage;
+      if (!bg || bg === "none" || !bg.includes("url(")) continue;
+      const matches = bg.matchAll(/url\((['"]?)(https?:[^'")]+)\1\)/gi);
+      for (const m of matches) {
+        if (m[2]) record(m[2], m[2], rect.width, rect.height, "bg");
       }
     }
 
@@ -156,17 +196,21 @@
       }))
       .sort((a, b) => b.width * b.height - a.width * a.height);
 
-    return list.slice(0, 300);
+    return list.slice(0, 800);
   }
 
-  // 响应弹窗「扫描本页图片」请求
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message && message.type === "scanPageImages") {
-      try {
-        sendResponse({ ok: true, images: scanPageImages(), pageUrl: window.location.href });
-      } catch (err) {
-        sendResponse({ ok: false, error: String(err), images: [] });
-      }
+      (async () => {
+        try {
+          if (message.autoScroll && window === window.top) {
+            await autoScrollForLazyLoad();
+          }
+          sendResponse({ ok: true, images: scanPageImages(), pageUrl: window.location.href });
+        } catch (err) {
+          sendResponse({ ok: false, error: String(err), images: [] });
+        }
+      })();
       return true;
     }
     return false;
@@ -248,7 +292,7 @@
       ev.stopPropagation();
       ev.preventDefault();
       if (!activeVideo) return;
-      const directSrc = toAbsHttpUrl(activeVideo.currentSrc || activeVideo.getAttribute("src") || "");
+      const directSrc = toAbsUrl(activeVideo.currentSrc || activeVideo.getAttribute("src") || "", false);
       btnEl.textContent = "正在发送…";
       chrome.runtime.sendMessage(
         {
@@ -262,7 +306,7 @@
             btnEl.classList.add("ok");
             btnEl.textContent = "✓ 已发往 FluxDL";
           } else {
-            btnEl.textContent = (resp && resp.error) ? "发送失败" : "请先打开 FluxDL";
+            btnEl.textContent = resp && resp.error ? "发送失败" : "请先打开 FluxDL";
           }
           setTimeout(() => {
             if (btnEl) {
@@ -307,7 +351,6 @@
     if (target.tagName === "VIDEO") return target;
     const closest = target.closest && target.closest("video");
     if (closest) return closest;
-    // 很多播放器在 <video> 上面盖了一层透明控制 div，按鼠标坐标命中同容器内的 <video>
     const videos = document.querySelectorAll("video");
     for (const v of videos) {
       const r = v.getBoundingClientRect();

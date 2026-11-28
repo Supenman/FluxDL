@@ -666,13 +666,17 @@ void recheckMetadata();
 
   const btnCur = document.getElementById("open-gallery-current");
   const btnAll = document.getElementById("open-gallery-all");
+  const autoScrollEl = document.getElementById("gallery-autoscroll");
 
   async function launchGallery(scope, triggerBtn, origText) {
     if (!triggerBtn) return;
+    const autoScroll = Boolean(autoScrollEl && autoScrollEl.checked);
     triggerBtn.disabled = true;
-    triggerBtn.textContent = scope === "all" ? "扫描全部标签页…" : "扫描当前页…";
+    triggerBtn.textContent = autoScroll
+      ? "深度滚动扫描中…"
+      : (scope === "all" ? "扫描全部标签页…" : "扫描当前页…");
     try {
-      await chrome.runtime.sendMessage({ type: "openImageGallery", scope });
+      await chrome.runtime.sendMessage({ type: "openImageGallery", scope, autoScroll });
       window.close();
     } catch {
       triggerBtn.textContent = "打开失败，请刷新网页重试";

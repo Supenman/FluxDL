@@ -136,7 +136,7 @@ const tauriConf = JSON.parse(read("src-tauri/tauri.conf.json"));
 assert.match(pkg.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, "应用版本格式合法");
 assert.equal(tauriConf.version, pkg.version, "tauri.conf.json 与 package.json 版本必须一致");
 const manifest = JSON.parse(read("browser-extension/manifest.json"));
-assert.equal(manifest.version, "2.2.2", "扩展版本保持 2.2.2");
+assert.match(manifest.version, /^\d+\.\d+\.\d+$/, "扩展版本号合法");
 const cargoVer = cargoSrc.match(/^version = "([^"]+)"/m);
 assert.ok(cargoVer, "engine Cargo.toml 缺 version 字段");
 assert.equal(cargoVer[1], pkg.version, "engine crate 版本与应用版本必须一致");

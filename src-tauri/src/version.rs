@@ -313,6 +313,8 @@ pub struct StagedUpdate {
     pub staged_path: String,
     /// Windows 上运行中的 exe 不能自我覆盖，必须重启由脚本替换。
     pub needs_restart: bool,
+    /// 本次更新是否同步覆盖了浏览器扩展资产（可选，旧版本缺省）。
+    pub extension_updated: bool,
 }
 
 /// 下载并暂存新版本。只写 `fluxdl.exe.new`，不动正在运行的 exe。
